@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tracked-file secret scan
+        run: node scripts/scan-secrets.mjs
+      - name: Gitleaks (history and working tree)
+        env:
+          GITLEAKS_VERSION: 8.21.2
+        run: |
+          curl -sSfL -o /tmp/gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --config .gitleaks.toml --redact --no-banner
+          /tmp/gitleaks detect --no-git --source . --config .gitleaks.toml --redact --no-banner
+
+  api:
+    name: API and contracts (lint, typecheck, tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+  android-core:
+    name: Android core (pure Kotlin) + live API contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Start the API with fake providers
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          PROVIDER_MODE=fake PORT=8787 FAKE_STREAM_DELAY_MS=2 LOG_LEVEL=warn node apps/api/dist/index.js > /tmp/api.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8787/health && break; sleep 1; done
+      - name: Core unit, contract and live contract tests
+        working-directory: apps/android/core
+        env:
+          DASH_API_BASE_URL: http://127.0.0.1:8787
+        run: ../gradlew test --no-daemon
+      - name: Upload core test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-test-reports
+          path: apps/android/core/build/reports/tests/
+          if-no-files-found: ignore
+      - name: API log
+        if: failure()
+        run: cat /tmp/api.log || true
+
+  android-app:
+    name: Android app (build, lint, Compose UI tests, APK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
+      - name: Build debug APK
+        working-directory: apps/android
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+      - name: Robolectric Compose UI and unit tests
+        working-directory: apps/android
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+      - name: Android lint
+        working-directory: apps/android
+        run: ./gradlew :app:lintDebug --no-daemon
+      - name: Check the APK contains no provider keys or endpoints
+        run: scripts/check-apk.sh apps/android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dash-ai-debug-apk
+          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+      - name: Upload app test and lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-app-reports
+          path: |
+            apps/android/app/build/reports/
+            apps/android/app/build/test-results/
+          if-no-files-found: ignore

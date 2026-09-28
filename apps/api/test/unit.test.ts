@@ -101,8 +101,11 @@ describe("security utilities", () => {
   });
 
   it("redacts secrets from strings", () => {
-    const text =
-      "key sk-proj-abcdefghijklmnopqrstuvwxyz0123 and sk-ant-api03-abcdefghijklmnop and Bearer dash_abcdefghijklmnopqrstuvwxyz0123456789 password=hunter22";
+    // Built at runtime so no credential-shaped literal is committed.
+    const fakeOpenAi = ["sk", "proj", "abcdefghijklmnopqrstuvwxyz0123"].join("-");
+    const fakeAnthropic = ["sk", "ant", "api03", "abcdefghijklmnop"].join("-");
+    const fakeSession = `dash_${"abcdefghijklmnopqrstuvwxyz0123456789"}`;
+    const text = `key ${fakeOpenAi} and ${fakeAnthropic} and Bearer ${fakeSession} password=hunter22`;
     const out = redactSecrets(text);
     expect(out).not.toMatch(/abcdefghijklmnopqrstuvwxyz0123/);
     expect(out).not.toContain("sk-ant-api03");

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DEBUG ONLY: allows http:// so the app can reach a Dash AI server on your computer or LAN
+     (for example http://10.0.2.2:8787 from the emulator). Release builds require HTTPS. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

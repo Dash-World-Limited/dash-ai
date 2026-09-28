@@ -1,0 +1,12 @@
+# Gitleaks configuration: default rules plus an allowlist for obvious test placeholders.
+title = "Dash AI"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test placeholders and contract fixture examples (never real credentials)"
+regexTarget = "match"
+regexes = [
+  '''(?i)(placeholder|not-a-real|not-real|dash_session_token_example|dash_test_token|canary)''',
+]

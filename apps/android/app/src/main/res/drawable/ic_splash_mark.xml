@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TEMPORARY typographic "D" mark for Dash AI. Replace with the official Dash World asset. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillType="evenOdd"
+        android:pathData="M37,33 L52,33 A21,21 0,0 1,52 75 L37,75 Z M44.5,40.5 L52,40.5 A13.5,13.5 0,0 1,52 67.5 L44.5,67.5 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:endX="73"
+                android:endY="75"
+                android:startX="37"
+                android:startY="33"
+                android:type="linear">
+                <item android:color="#FFF3D98A" android:offset="0" />
+                <item android:color="#FFD4AF37" android:offset="0.55" />
+                <item android:color="#FF9C7A1F" android:offset="1" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>
