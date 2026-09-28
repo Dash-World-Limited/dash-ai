@@ -3,7 +3,10 @@ package com.dashworldng.ai
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isRoot
+import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -71,12 +74,31 @@ class DashAiUiTest {
         compose.waitForIdle()
     }
 
-    private fun waitForTag(tag: String) {
-        compose.waitUntil(timeoutMillis = 5_000) { compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty() }
+    /** Waits for a condition; on timeout, fails with the semantics tree (including bounds) for diagnosis. */
+    private fun await(what: String, condition: () -> Boolean) {
+        try {
+            compose.waitUntil(timeoutMillis = 5_000, condition = condition)
+        } catch (e: ComposeTimeoutException) {
+            val tree = runCatching { compose.onAllNodes(isRoot(), useUnmergedTree = true).printToString(maxDepth = 40) }.getOrDefault("<unavailable>")
+            throw AssertionError("Timed out waiting for $what. Semantics tree:\n$tree", e)
+        }
     }
 
-    private fun waitForText(text: String) {
-        compose.waitUntil(timeoutMillis = 5_000) { compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty() }
+    private fun waitForTag(tag: String) = await("tag '$tag'") {
+        compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+    }
+
+    private fun waitForText(text: String) = await("text '$text'") {
+        compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty()
+    }
+
+    /** The drawer is always composed; wait until it has actually slid on screen before tapping inside it. */
+    private fun openHistoryDrawer() {
+        compose.onNodeWithTag("open_history").performClick()
+        await("the history drawer to be displayed") {
+            runCatching { compose.onNodeWithTag("history_drawer").assertIsDisplayed() }.isSuccess
+        }
+        compose.waitForIdle()
     }
 
     @Test
@@ -210,7 +232,7 @@ class DashAiUiTest {
             )
         }
         launch(services, Routes.CHAT)
-        compose.onNodeWithTag("open_history").performClick()
+        openHistoryDrawer()
         waitForTag("history_list")
         compose.onNodeWithText("Quarterly plan").assertExists()
         compose.onNodeWithText("Quarterly plan").performClick()
@@ -236,8 +258,7 @@ class DashAiUiTest {
     fun promptLibrarySearchAndUseFillsTheComposer() {
         val services = InMemoryServices(signedInDemo)
         launch(services, Routes.CHAT)
-        compose.onNodeWithTag("open_history").performClick()
-        waitForTag("drawer_prompts")
+        openHistoryDrawer()
         compose.onNodeWithTag("drawer_prompts").performClick()
         waitForTag("prompt_library")
         compose.onNodeWithTag("prompt_search").performTextInput("SWOT")
