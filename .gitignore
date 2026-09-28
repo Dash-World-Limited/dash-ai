@@ -1,0 +1,36 @@
+# Secrets — never commit real credentials
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+local.properties
+google-services.json
+
+# Node / TypeScript
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.pnpm-store/
+
+# Gradle / Android
+.gradle/
+build/
+.kotlin/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.iml
+.idea/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+
+# Local data written by the API in development
+apps/api/.data/

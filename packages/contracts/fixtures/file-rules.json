@@ -1,0 +1,9 @@
+{
+  "maxUploadBytes": 10485760,
+  "rules": [
+    { "kind": "pdf", "extensions": ["pdf"], "mimeTypes": ["application/pdf"] },
+    { "kind": "docx", "extensions": ["docx"], "mimeTypes": ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"] },
+    { "kind": "txt", "extensions": ["txt"], "mimeTypes": ["text/plain"] },
+    { "kind": "image", "extensions": ["png", "jpg", "jpeg", "webp"], "mimeTypes": ["image/png", "image/jpeg", "image/webp"] }
+  ]
+}

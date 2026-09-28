@@ -1,0 +1,10 @@
+{
+  "token": "dash_session_token_example_value_000000000000",
+  "expiresAt": "2026-10-28T09:00:00.000Z",
+  "user": {
+    "id": "c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f",
+    "email": "ada@example.com",
+    "displayName": "Ada",
+    "createdAt": "2026-09-28T09:00:00.000Z"
+  }
+}

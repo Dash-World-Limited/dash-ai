@@ -1,0 +1,18 @@
+{
+  "providers": [
+    { "id": "openai", "displayName": "OpenAI", "configured": true, "model": "configured-openai-model", "mode": "live" },
+    { "id": "anthropic", "displayName": "Claude", "configured": false, "model": null, "mode": "unconfigured" }
+  ],
+  "compareAvailable": false,
+  "smartRouting": {
+    "general": ["openai", "anthropic"],
+    "business": ["openai", "anthropic"],
+    "writing": ["anthropic", "openai"],
+    "documents": ["anthropic", "openai"],
+    "research": ["openai", "anthropic"]
+  },
+  "research": {
+    "liveSearchAvailable": false,
+    "note": "No live web search provider is configured. Research answers use the model's built-in knowledge only."
+  }
+}

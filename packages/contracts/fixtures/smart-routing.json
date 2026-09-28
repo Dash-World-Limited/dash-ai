@@ -1,0 +1,7 @@
+{
+  "general": ["openai", "anthropic"],
+  "business": ["openai", "anthropic"],
+  "writing": ["anthropic", "openai"],
+  "documents": ["anthropic", "openai"],
+  "research": ["openai", "anthropic"]
+}

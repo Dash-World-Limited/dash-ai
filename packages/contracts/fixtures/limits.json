@@ -1,0 +1,12 @@
+{
+  "maxMessageChars": 32000,
+  "maxHistoryMessages": 60,
+  "maxAttachmentsPerMessage": 5,
+  "maxTitleChars": 120,
+  "maxDisplayNameChars": 80,
+  "minPasswordChars": 8,
+  "maxPasswordChars": 200,
+  "maxUploadBytes": 10485760,
+  "maxExtractedChars": 200000,
+  "maxHistoryChars": 200000
+}

@@ -1,0 +1,131 @@
+import {
+  ChatStreamRequest,
+  Id,
+  LIMITS,
+  encodeSseEvent,
+  type CancelStreamResponse,
+  type StreamEvent,
+} from "@dash-ai/contracts";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { ServerResponse } from "node:http";
+import { z } from "zod";
+import { currentUser } from "../auth/requireAuth.js";
+import { prepareChat, runChat, type SseSink } from "../chat/orchestrator.js";
+import { AppError, parseOrThrow } from "../errors.js";
+import { newId } from "../security/crypto.js";
+import type { RouteContext } from "./context.js";
+
+const HEARTBEAT_MS = 15_000;
+// A full history (LIMITS.maxHistoryChars) of multi-byte text plus the new message.
+const CHAT_BODY_LIMIT = 2 * 1024 * 1024;
+
+function createSink(res: ServerResponse): SseSink {
+  const writable = () => !res.writableEnded && !res.destroyed;
+  return {
+    get open() {
+      return writable();
+    },
+    send(event: StreamEvent) {
+      if (writable()) res.write(encodeSseEvent(event));
+    },
+    comment(text: string) {
+      if (writable()) res.write(`: ${text}\n\n`);
+    },
+  };
+}
+
+export function chatRoutes(app: FastifyInstance, ctx: RouteContext): void {
+  const chatLimit = ctx.rateLimit("chat", (r) => `chat:${r.authUser?.id ?? r.ip}`);
+
+  app.post(
+    "/v1/chat/stream",
+    { preHandler: [ctx.requireAuth, chatLimit], bodyLimit: CHAT_BODY_LIMIT },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = currentUser(request);
+      const body = parseOrThrow(ChatStreamRequest, request.body);
+      if (body.message.content.length > LIMITS.maxMessageChars) {
+        throw new AppError("payload_too_large", "Message is too long.");
+      }
+      if (ctx.streams.countForUser(user.id) >= ctx.config.maxConcurrentStreamsPerUser) {
+        throw new AppError("too_many_streams", "Too many responses are generating at once. Wait for one to finish.");
+      }
+      const prepared = await prepareChat(
+        { store: ctx.store, providers: ctx.providers, config: ctx.config, log: request.log, now: ctx.now },
+        user.id,
+        body,
+      );
+
+      const streamId = newId();
+      const controller = new AbortController();
+      ctx.streams.register(streamId, user.id, controller);
+      const startedAt = Date.now();
+
+      reply.hijack();
+      const res = reply.raw;
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-store, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+        "X-Content-Type-Options": "nosniff",
+        "X-Stream-Id": streamId,
+      });
+      res.flushHeaders();
+
+      const sink = createSink(res);
+      let finished = false;
+      res.on("close", () => {
+        // The client went away (e.g. the app pressed Stop or lost its connection).
+        if (!finished) controller.abort("cancelled");
+      });
+      const heartbeat = setInterval(() => sink.comment("ping"), HEARTBEAT_MS);
+
+      let outcome = "ok";
+      try {
+        const results = await runChat(
+          { store: ctx.store, providers: ctx.providers, config: ctx.config, log: request.log, now: ctx.now },
+          prepared,
+          streamId,
+          sink,
+          controller.signal,
+        );
+        outcome = results.map((r) => `${r.provider}:${r.status}`).join(",");
+      } catch (err) {
+        outcome = "error";
+        request.log.error({ err }, "chat stream failed");
+        sink.send({
+          event: "stream.error",
+          data: { error: { code: "internal_error", message: "Something went wrong on the Dash AI server.", retryable: true } },
+        });
+      } finally {
+        finished = true;
+        clearInterval(heartbeat);
+        ctx.streams.unregister(streamId);
+        if (!res.writableEnded) res.end();
+        // Metadata only: never the prompt, documents or model output.
+        request.log.info(
+          {
+            streamId,
+            modelChoice: body.modelChoice,
+            mode: body.mode,
+            targets: prepared.targets.length,
+            outcome,
+            cancelled: controller.signal.aborted,
+            durationMs: Date.now() - startedAt,
+          },
+          "chat stream finished",
+        );
+      }
+    },
+  );
+
+  app.post(
+    "/v1/chat/streams/:streamId/cancel",
+    { preHandler: ctx.requireAuth },
+    async (request: FastifyRequest): Promise<CancelStreamResponse> => {
+      const { streamId } = parseOrThrow(z.object({ streamId: Id }), request.params, "stream id");
+      const cancelled = ctx.streams.cancel(currentUser(request).id, streamId);
+      return { streamId, cancelled };
+    },
+  );
+}

@@ -1,0 +1,12 @@
+{
+  "id": "d0c5e1a2-3b4c-4d5e-8f60-718293a4b5c6",
+  "name": "kiosk-notes.txt",
+  "kind": "txt",
+  "mimeType": "text/plain",
+  "sizeBytes": 1834,
+  "status": "ready",
+  "statusDetail": "Text extracted (1,790 characters).",
+  "extractedChars": 1790,
+  "pageCount": null,
+  "createdAt": "2026-09-28T09:00:00.000Z"
+}

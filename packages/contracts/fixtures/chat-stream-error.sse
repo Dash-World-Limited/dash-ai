@@ -1,0 +1,3 @@
+event: stream.error
+data: {"error":{"code":"internal_error","message":"Something went wrong on the Dash AI server.","retryable":true}}
+

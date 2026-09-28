@@ -1,0 +1,43 @@
+import { z } from "zod";
+import { Id, IsoDateTime, ProviderId } from "./common.js";
+import { User } from "./auth.js";
+import { ConversationDetailResponse } from "./conversations.js";
+import { DocumentResponse } from "./documents.js";
+
+export const UsageRecord = z.object({
+  conversationId: Id,
+  messageId: Id,
+  provider: ProviderId,
+  model: z.string(),
+  demo: z.boolean(),
+  inputTokens: z.number().int().nonnegative().nullable(),
+  outputTokens: z.number().int().nonnegative().nullable(),
+  createdAt: IsoDateTime,
+});
+export type UsageRecord = z.infer<typeof UsageRecord>;
+
+export const UsageTotals = z.object({
+  provider: ProviderId,
+  requests: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+});
+
+export const UsageSummaryResponse = z.object({
+  totals: z.array(UsageTotals),
+  recent: z.array(UsageRecord),
+});
+export type UsageSummaryResponse = z.infer<typeof UsageSummaryResponse>;
+
+export const MeResponse = z.object({ user: User });
+export type MeResponse = z.infer<typeof MeResponse>;
+
+/** Everything the API holds about a user, for data-portability requests. */
+export const DataExportResponse = z.object({
+  exportedAt: IsoDateTime,
+  user: User,
+  conversations: z.array(ConversationDetailResponse),
+  documents: z.array(DocumentResponse),
+  usage: z.array(UsageRecord),
+});
+export type DataExportResponse = z.infer<typeof DataExportResponse>;

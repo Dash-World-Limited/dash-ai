@@ -1,0 +1,31 @@
+{
+  "name": "@dash-ai/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dash AI secure backend: authentication, conversations, streaming multi-model chat, documents.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "start": "node --env-file-if-exists=.env dist/index.js",
+    "start:fake": "PROVIDER_MODE=fake node dist/index.js",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
+    "@dash-ai/contracts": "workspace:*",
+    "@fastify/multipart": "^10.1.2",
+    "fastify": "^5.12.5",
+    "mammoth": "^1.13.0",
+    "openai": "^7.23.0",
+    "unpdf": "^1.8.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "jszip": "^3.10.2",
+    "tsx": "^4.23.15"
+  }
+}

@@ -1,0 +1,58 @@
+[
+  {
+    "input": "write a business plan for a bakery in Lagos",
+    "expected": "Write a business plan for a bakery in Lagos"
+  },
+  {
+    "input": "  Hello there!  How are you? ",
+    "expected": "Hello there"
+  },
+  {
+    "input": "Can you summarise this **quarterly report** for the board and highlight the risks we should discuss next week?",
+    "expected": "Can you summarise this quarterly report for the…"
+  },
+  {
+    "input": "```kotlin\nfun main() {}\n```\nWhy does this crash?",
+    "expected": "Why does this crash"
+  },
+  {
+    "input": "Check https://example.com/page and tell me what you think.",
+    "expected": "Check and tell me what you think"
+  },
+  {
+    "input": "",
+    "expected": "New chat"
+  },
+  {
+    "input": "***",
+    "expected": "New chat"
+  },
+  {
+    "input": "Supercalifragilisticexpialidociousandevenlongerwordwithoutanyspacesatall",
+    "expected": "Supercalifragilisticexpialidociousandevenlongerw…"
+  },
+  {
+    "input": "# Launch plan\nWe need to launch in May.",
+    "expected": "Launch plan"
+  },
+  {
+    "input": "[Dash World](https://dash.world) marketing ideas",
+    "expected": "Dash World marketing ideas"
+  },
+  {
+    "input": "é début: ça marche?",
+    "expected": "É début: ça marche"
+  },
+  {
+    "input": "v2.0 release notes for the Android app",
+    "expected": "V2.0 release notes for the Android app"
+  },
+  {
+    "input": "   \n\n  - draft an email to my landlord about the broken heater, keep it polite but firm",
+    "expected": "Draft an email to my landlord about the broken…"
+  },
+  {
+    "input": "What's 2+2?",
+    "expected": "What's 2+2"
+  }
+]
