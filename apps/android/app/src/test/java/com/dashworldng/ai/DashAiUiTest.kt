@@ -95,8 +95,12 @@ class DashAiUiTest {
     /** The drawer is always composed; wait until it has actually slid on screen before tapping inside it. */
     private fun openHistoryDrawer() {
         compose.onNodeWithTag("open_history").performClick()
-        await("the history drawer to be displayed") {
-            runCatching { compose.onNodeWithTag("history_drawer").assertIsDisplayed() }.isSuccess
+        // Wait until the slide-in has finished (left edge on screen); a tap during the animation can
+        // land on the scrim, which just closes the drawer.
+        await("the history drawer to be fully open") {
+            runCatching {
+                compose.onNodeWithTag("history_drawer", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot.left >= 0f
+            }.getOrDefault(false)
         }
         compose.waitForIdle()
     }
