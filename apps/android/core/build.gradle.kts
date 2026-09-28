@@ -24,7 +24,8 @@ dependencies {
     api(libs.kotlinx.coroutines.core)
     api(libs.kotlinx.serialization.json)
     api(libs.okhttp)
-    implementation(libs.retrofit)
+    // DashApiService exposes Retrofit types (e.g. retrofit2.Response), so Retrofit is part of the API.
+    api(libs.retrofit)
     implementation(libs.retrofit.kotlinx.serialization)
 
     testImplementation(libs.kotlin.test)
