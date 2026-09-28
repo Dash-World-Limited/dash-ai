@@ -9,6 +9,8 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.dashworldng.ai.core.chat.ChatGateway
@@ -55,7 +57,8 @@ private class HangingGateway : ChatGateway {
 }
 
 @RunWith(AndroidJUnit4::class)
-@Config(sdk = [34])
+// Samsung A55-sized screen (≈411×891 dp) instead of Robolectric's small default.
+@Config(sdk = [34], qualifiers = "w411dp-h891dp-xxhdpi")
 class DashAiUiTest {
     @get:Rule
     val compose = createComposeRule()
@@ -107,7 +110,7 @@ class DashAiUiTest {
     fun continuingInDemoModeOpensTheAssistant() {
         val services = InMemoryServices(AppSettings(loaded = true, onboardingComplete = true, serverUrl = "http://127.0.0.1:8787/"))
         launch(services, Routes.AUTH)
-        compose.onNodeWithTag("continue_demo").performClick()
+        compose.onNodeWithTag("continue_demo").performScrollTo().performClick()
         waitForTag("empty_chat")
         compose.onNodeWithTag("demo_banner").assertExists()
         assertEquals(true, services.settings.settings.value.account?.isDemo)
@@ -118,7 +121,7 @@ class DashAiUiTest {
         val services = InMemoryServices(AppSettings(loaded = true, onboardingComplete = true, serverUrl = "http://127.0.0.1:8787/"))
         launch(services, Routes.AUTH)
         compose.onNodeWithTag("auth_email").performTextInput("not-an-email")
-        compose.onNodeWithTag("auth_submit").performClick()
+        compose.onNodeWithTag("auth_submit").performScrollTo().performClick()
         compose.waitForIdle()
         compose.onNodeWithText("Enter a valid email address.").assertExists()
         compose.onNodeWithText("Enter your password.").assertExists()
@@ -133,8 +136,9 @@ class DashAiUiTest {
         compose.onNodeWithTag("send_button").performClick()
         waitForTag("assistant_message")
         waitForText("Demo response · simulated")
-        compose.onNodeWithTag("user_message").assertExists()
         compose.onNodeWithTag("model_label").assertTextContains("simulated", substring = true)
+        compose.onNodeWithTag("message_list").performScrollToNode(hasTestTag("user_message"))
+        compose.onNodeWithTag("user_message").assertExists()
         compose.onNodeWithTag("chat_title").assertTextContains("Draft a launch plan")
         compose.onNodeWithTag("send_button").assertExists()
     }
@@ -143,12 +147,12 @@ class DashAiUiTest {
     fun modelSelectionIncludingTheCompareWarning() {
         val services = InMemoryServices(signedInDemo, chatGatewayOverride = DemoChatGateway(chunkDelayMillis = 0))
         launch(services, Routes.CHAT)
-        compose.onNodeWithTag("selected_model").assertTextContains("Dash Smart")
+        compose.onNodeWithTag("selected_model", useUnmergedTree = true).assertTextContains("Dash Smart")
 
         compose.onNodeWithTag("model_selector").performClick()
         compose.onNodeWithTag("model_option_claude").performClick()
         compose.waitForIdle()
-        compose.onNodeWithTag("selected_model").assertTextContains("Claude")
+        compose.onNodeWithTag("selected_model", useUnmergedTree = true).assertTextContains("Claude")
 
         compose.onNodeWithTag("model_selector").performClick()
         compose.onNodeWithTag("model_option_compare").performClick()
@@ -157,7 +161,7 @@ class DashAiUiTest {
         compose.onNodeWithText("may cost more", substring = true).assertExists()
         compose.onNodeWithTag("confirm_compare").performClick()
         compose.waitForIdle()
-        compose.onNodeWithTag("selected_model").assertTextContains("Compare")
+        compose.onNodeWithTag("selected_model", useUnmergedTree = true).assertTextContains("Compare")
 
         compose.onNodeWithTag("composer_input").performTextInput("Compare these")
         compose.onNodeWithTag("send_button").performClick()
@@ -210,7 +214,8 @@ class DashAiUiTest {
         waitForTag("history_list")
         compose.onNodeWithText("Quarterly plan").assertExists()
         compose.onNodeWithText("Quarterly plan").performClick()
-        waitForText("Plan Q3 please")
+        waitForTag("message_list")
+        compose.onNodeWithTag("message_list").performScrollToNode(hasText("Plan Q3 please"))
         compose.onNodeWithTag("chat_title").assertTextContains("Quarterly plan")
         compose.onNodeWithText("Grow revenue", substring = true).assertExists()
     }
