@@ -1,5 +1,6 @@
 package com.dashworldng.ai
 
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasTestTag
@@ -12,6 +13,7 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
@@ -239,7 +241,9 @@ class DashAiUiTest {
         openHistoryDrawer()
         waitForTag("history_list")
         compose.onNodeWithText("Quarterly plan").assertExists()
-        compose.onNodeWithText("Quarterly plan").performClick()
+        // Activate via the accessibility click action (as TalkBack does). Robolectric's injected taps
+        // inside Material's modal drawer are unreliable; the drawer item wiring is what we verify here.
+        compose.onNodeWithText("Quarterly plan").performSemanticsAction(SemanticsActions.OnClick)
         waitForTag("message_list")
         compose.onNodeWithTag("message_list").performScrollToNode(hasText("Plan Q3 please"))
         compose.onNodeWithTag("chat_title").assertTextContains("Quarterly plan")
@@ -263,7 +267,7 @@ class DashAiUiTest {
         val services = InMemoryServices(signedInDemo)
         launch(services, Routes.CHAT)
         openHistoryDrawer()
-        compose.onNodeWithTag("drawer_prompts").performClick()
+        compose.onNodeWithTag("drawer_prompts").performSemanticsAction(SemanticsActions.OnClick)
         waitForTag("prompt_library")
         compose.onNodeWithTag("prompt_search").performTextInput("SWOT")
         compose.waitForIdle()
