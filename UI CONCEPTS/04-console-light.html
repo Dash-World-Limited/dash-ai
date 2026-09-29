@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Console Light — Dash Dashboard Concept 04</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+/* Layout: black labelled sidebar with a capacity footer, light working canvas, KPI row over a wide activity table. */
+:root{
+  color-scheme: light;
+  --ink:#0A0A0B; --ink-2:#17171A; --ink-3:#232328;
+  --canvas:#F6F5F1; --card:#FFFFFF; --edge:#E6E4DC; --edge-2:#EFEDE6;
+  --text:#1A1A1D; --text-2:#5C5C63; --text-3:#87868E;
+  --gold:#D4AF37; --gold-lite:#F3D98A; --gold-deep:#8A6E14;
+  --gold-grad:linear-gradient(135deg,#F3D98A 0%,#D4AF37 45%,#9C7A1F 100%);
+  --good:#177A54; --good-bg:#E4F5EC; --info:#2F5BC4; --info-bg:#E6EDFB;
+  --warn:#9A5B12; --warn-bg:#FBEEDF; --bad:#B3342B; --bad-bg:#FBE8E6;
+  --font-ui:'Manrope',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:var(--font-ui);background:var(--canvas);color:var(--text);-webkit-font-smoothing:antialiased}
+/* ---------- top bar ---------- */
+header.bar{
+  position:sticky;top:env(safe-area-inset-top,0px);z-index:30;
+  background:var(--ink);color:#F7F7F5;border-bottom:1px solid rgba(247,247,245,.10);
+}
+.bar-in{display:flex;align-items:center;gap:16px;padding:12px 20px;max-width:1440px;margin:0 auto;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:14.5px;letter-spacing:-.01em}
+.brand .mark{width:29px;height:29px;border-radius:9px;background:var(--gold-grad);display:grid;place-items:center;color:#161309;font-size:14px}
+.brand em{font-style:normal;font-weight:300;color:#A1A1A8}
+.bar .search{
+  display:flex;align-items:center;gap:9px;background:rgba(247,247,245,.07);border:1px solid rgba(247,247,245,.10);
+  border-radius:10px;padding:9px 14px;flex:1;max-width:420px;min-width:180px;color:#A1A1A8;
+}
+.bar .search svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.8;flex:none}
+.bar .search input{border:0;background:transparent;color:#F7F7F5;font:inherit;font-size:12.5px;outline:none;width:100%;min-width:0}
+.bar .search input::placeholder{color:#7A7A82}
+.bar-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.ghost{
+  position:relative;width:34px;height:34px;border-radius:9px;background:transparent;border:1px solid rgba(247,247,245,.10);
+  color:#A1A1A8;display:grid;place-items:center;cursor:pointer;
+}
+.ghost svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.ghost:hover{color:#F7F7F5;background:rgba(247,247,245,.07)}
+.ghost .dot{position:absolute;top:6px;right:7px;width:6px;height:6px;border-radius:50%;background:#FF7A70}
+.acct{display:flex;align-items:center;gap:9px;font-size:12.5px;font-weight:600;padding-left:6px}
+.acct .av{width:30px;height:30px;border-radius:50%;background:var(--gold-grad);display:grid;place-items:center;color:#161309;font-size:12px;font-weight:800}
+/* ---------- shell ---------- */
+.shell{display:grid;grid-template-columns:238px minmax(0,1fr);max-width:1440px;margin:0 auto;align-items:start}
+.side{
+  background:var(--ink);color:#F7F7F5;min-height:calc(100vh - 58px);
+  padding:18px 14px calc(18px + env(safe-area-inset-bottom,0px));
+  display:flex;flex-direction:column;gap:20px;position:sticky;top:58px;
+}
+.side .new{
+  width:100%;font:inherit;font-size:12.5px;font-weight:700;color:#161309;background:var(--gold-grad);
+  border:0;border-radius:11px;padding:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;
+}
+.side .new svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2.3;stroke-linecap:round}
+.side nav{display:flex;flex-direction:column;gap:2px}
+.side nav a{
+  display:flex;align-items:center;gap:11px;font-size:13px;font-weight:600;color:#A1A1A8;text-decoration:none;
+  padding:10px 12px;border-radius:10px;
+}
+.side nav a svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.side nav a:hover{background:rgba(247,247,245,.06);color:#F7F7F5}
+.side nav a[aria-current="page"]{background:rgba(212,175,55,.14);color:var(--gold-lite)}
+.side nav a .count{margin-left:auto;font-family:var(--font-mono);font-size:10.5px;color:#7A7A82}
+.cap{margin-top:auto;border-top:1px solid rgba(247,247,245,.09);padding-top:15px}
+.cap h3{margin:0 0 12px;font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#7A7A82}
+.cap .item{margin-bottom:13px}
+.cap .item .l{display:flex;align-items:center;gap:7px;font-size:11.5px;color:#A1A1A8;margin-bottom:6px}
+.cap .item .l b{margin-left:auto;font-family:var(--font-mono);color:#F7F7F5;font-weight:500}
+.cap .track{height:4px;border-radius:999px;background:rgba(247,247,245,.10);overflow:hidden}
+.cap .track i{display:block;height:100%;border-radius:999px;background:var(--gold-grad)}
+.cap .track i.warm{background:#FF7A70}
+.cap a.tel{font-size:11.5px;color:var(--gold-lite);text-decoration:none;display:inline-flex;gap:5px;align-items:center}
+/* ---------- content ---------- */
+.content{padding:24px 24px 28px;min-width:0}
+.crumb{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+.crumb h1{margin:0;font-size:24px;font-weight:800;letter-spacing:-.025em}
+.crumb .tag{
+  font-family:var(--font-mono);font-size:10.5px;font-weight:500;color:var(--gold-deep);
+  background:#F7EFD6;border:1px solid #EADFB8;border-radius:999px;padding:4px 10px;
+}
+.crumb .acts{margin-left:auto;display:flex;gap:8px}
+.crumb .acts button{
+  font:inherit;font-size:12px;font-weight:600;color:var(--text-2);background:var(--card);
+  border:1px solid var(--edge);border-radius:9px;padding:8px 13px;cursor:pointer;
+}
+.crumb .acts button:hover{border-color:#D5D2C6;color:var(--text)}
+.crumb .acts button:focus-visible{outline:2px solid var(--gold-deep);outline-offset:1px}
+.eyebrow{font-size:10.5px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--text-3);margin:0 0 11px}
+/* ---------- kpi ---------- */
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:13px;margin-bottom:26px}
+.kpi{background:var(--card);border:1px solid var(--edge);border-radius:14px;padding:15px 16px}
+.kpi.is-primary{background:var(--ink-2);border-color:var(--ink-2);color:#F7F7F5}
+.kpi h3{margin:0;font-size:10.5px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--text-3)}
+.kpi.is-primary h3{color:#A1A1A8}
+.kpi .stack{display:flex;align-items:center;margin:11px 0 9px;height:24px}
+.kpi .stack i{
+  width:24px;height:24px;border-radius:50%;border:2px solid var(--card);display:grid;place-items:center;
+  font-size:9.5px;font-weight:700;color:#fff;margin-right:-7px;font-family:var(--font-mono);
+}
+.kpi.is-primary .stack i{border-color:var(--ink-2)}
+.kpi .lab{margin:0;font-size:10.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--text-3)}
+.kpi.is-primary .lab{color:#A1A1A8}
+.kpi .val{
+  margin:5px 0 0;font-family:var(--font-mono);font-size:19px;font-weight:700;letter-spacing:-.03em;
+  font-variant-numeric:tabular-nums;color:var(--info);
+}
+.kpi.is-primary .val{color:var(--gold-lite)}
+.kpi .val small{font-family:var(--font-ui);font-size:11.5px;font-weight:600;color:var(--good);margin-left:5px}
+.kpi.is-dispatch{border-left:3px solid var(--gold)}
+.kpi.is-dispatch h4{margin:9px 0 0;font-size:12.5px;font-weight:700;line-height:1.35;color:var(--text)}
+.kpi.is-dispatch time{display:block;margin-top:9px;font-family:var(--font-mono);font-size:10.5px;color:var(--text-3)}
+/* ---------- table ---------- */
+.table-card{background:var(--card);border:1px solid var(--edge);border-radius:14px;overflow:hidden}
+.table-head{display:flex;align-items:center;gap:12px;padding:15px 18px;border-bottom:1px solid var(--edge-2);flex-wrap:wrap}
+.table-head h2{margin:0;font-size:14px;font-weight:800;letter-spacing:-.01em}
+.table-head .chips{margin-left:auto;display:flex;gap:4px;background:var(--canvas);border-radius:9px;padding:3px}
+.table-head .chips button{font:inherit;font-size:11.5px;font-weight:600;color:var(--text-2);background:transparent;border:0;padding:6px 11px;border-radius:7px;cursor:pointer}
+.table-head .chips button[aria-pressed="true"]{background:var(--card);color:var(--text);box-shadow:0 1px 2px rgba(20,20,25,.08)}
+.t-scroll{width:100%;overflow-x:auto}
+table.grid{width:100%;border-collapse:collapse;min-width:720px}
+table.grid th{
+  text-align:left;font-size:10px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--text-3);
+  padding:11px 18px;border-bottom:1px solid var(--edge-2);white-space:nowrap;
+}
+table.grid td{padding:13px 18px;border-bottom:1px solid var(--edge-2);font-size:13px;vertical-align:middle}
+table.grid tbody tr:last-child td{border-bottom:0}
+table.grid tbody tr:hover{background:#FBFAF6}
+table.grid tbody tr.is-open{background:#F7EFD6}
+.who-cell{display:flex;align-items:center;gap:11px;min-width:0}
+.who-cell .sq{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;font-size:11px;font-weight:800;color:#fff;flex:none;font-family:var(--font-mono)}
+.who-cell b{display:block;font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.who-cell span{display:block;font-size:11px;color:var(--text-3);margin-top:2px}
+td.mono{font-family:var(--font-mono);font-size:12px;color:var(--text-2);font-variant-numeric:tabular-nums;white-space:nowrap}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;white-space:nowrap}
+.pill.ok{background:var(--good-bg);color:var(--good)}
+.pill.run{background:var(--warn-bg);color:var(--warn)}
+.pill.due{background:var(--info-bg);color:var(--info)}
+.pill.err{background:var(--bad-bg);color:var(--bad)}
+.row-acts{display:flex;gap:4px;justify-content:flex-end}
+.row-acts button{width:28px;height:28px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--text-3);cursor:pointer}
+.row-acts button:hover{background:var(--canvas);color:var(--text);border-color:var(--edge)}
+/* ---------- switcher ---------- */
+.switcher{position:sticky;bottom:0;display:flex;justify-content:center;margin-top:24px;padding-bottom:calc(6px + env(safe-area-inset-bottom,0px));grid-column:1/-1}
+.switcher .group{display:flex;gap:4px;background:var(--ink-2);border:1px solid rgba(247,247,245,.12);border-radius:999px;padding:5px;flex-wrap:wrap;justify-content:center;max-width:100%}
+.switcher a{font-size:12px;font-weight:700;color:#A1A1A8;text-decoration:none;padding:8px 15px;border-radius:999px;white-space:nowrap}
+.switcher a:hover{color:#F7F7F5}
+.switcher a[aria-current="page"]{background:var(--gold-grad);color:#161309}
+.stamp{text-align:center;color:var(--text-3);font-size:10.5px;font-family:var(--font-mono);margin:10px 0 0;grid-column:1/-1;padding-bottom:16px}
+@media (max-width:1040px){
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:860px){
+  .shell{grid-template-columns:1fr}
+  .side{position:static;min-height:0;flex-direction:column}
+  .side nav{flex-direction:row;flex-wrap:wrap}
+  .side nav a .count{display:none}
+}
+@media (max-width:480px){
+  .content{padding:18px 14px 22px}
+  .bar-in{padding:10px 14px}
+  .kpis{grid-template-columns:1fr}
+  .crumb h1{font-size:21px}
+  .crumb .acts{margin-left:0;width:100%}
+  .crumb .acts button{flex:1}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="bar-in">
+    <div class="brand"><span class="mark" aria-hidden="true">D</span>DASH <em>CONSOLE</em></div>
+    <label class="search">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.2-3.2"/></svg>
+      <input id="c4-search" type="search" placeholder="Search workspaces, seats, runs, logs…" aria-label="Search the console">
+    </label>
+    <div class="bar-right">
+      <button class="ghost" aria-label="Notifications"><svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 10-12 0c0 7-3 8-3 8h18s-3-1-3-8"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg><span class="dot"></span></button>
+      <button class="ghost" aria-label="Help"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.2 9a3 3 0 015.6 1.2c0 2-3 2.6-3 2.6"/><path d="M12 17h.01"/></svg></button>
+      <button class="ghost" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-2.9 1.2V21a2 2 0 11-4 0v-.1A1.7 1.7 0 007 19.4l-.1.1a2 2 0 11-2.8-2.8l.1-.1A1.7 1.7 0 003 13.7a2 2 0 110-4 1.7 1.7 0 001.6-1.7l-.1-.1a2 2 0 112.8-2.8l.1.1A1.7 1.7 0 0010.3 4V3a2 2 0 114 0v.1A1.7 1.7 0 0017 4.6l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00.3 1.9"/></svg></button>
+      <span class="acct"><span class="av" aria-hidden="true">D</span>Dash World</span>
+    </div>
+  </div>
+</header>
+
+<div class="shell">
+  <aside class="side">
+    <button class="new" type="button"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New workspace</button>
+    <nav aria-label="Console sections">
+      <a href="#" aria-current="page"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>Overview</a>
+      <a href="#"><svg viewBox="0 0 24 24"><path d="M21 15l-5-5-4 4-5-5"/><path d="M3 21h18"/></svg>Analytics</a>
+      <a href="#"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 00-3-3.9"/></svg>Seats &amp; access<span class="count">12</span></a>
+      <a href="#"><svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 01-8 8H7l-4 3v-5a8 8 0 018-11h2a8 8 0 018 5z"/></svg>Conversations<span class="count">1.4k</span></a>
+      <a href="#"><svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8z"/><path d="M14 3v5h5"/></svg>Documents<span class="count">86</span></a>
+      <a href="#"><svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20"/></svg>Usage &amp; billing</a>
+      <a href="#"><svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.4 8.3-8 9-4.6-.7-8-4-8-9V6z"/></svg>Security &amp; logs<span class="count">3</span></a>
+      <a href="#"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg>Configurations</a>
+    </nav>
+    <div class="cap">
+      <h3>Capacity</h3>
+      <div class="item">
+        <div class="l">Monthly token pool <b>68%</b></div>
+        <div class="track"><i style="width:68%"></i></div>
+      </div>
+      <div class="item">
+        <div class="l">Provider rate limit <b>91%</b></div>
+        <div class="track"><i class="warm" style="width:91%"></i></div>
+      </div>
+      <div class="item">
+        <div class="l">Document storage <b>10.7 / 32 GB</b></div>
+        <div class="track"><i style="width:33%"></i></div>
+      </div>
+      <a class="tel" href="#">Provider status ↗</a>
+    </div>
+  </aside>
+
+  <main class="content">
+    <div class="crumb">
+      <h1>Workspace overview</h1>
+      <span class="tag">PRO · 12 SEATS</span>
+      <div class="acts">
+        <button type="button">Export CSV</button>
+        <button type="button">Invite seat</button>
+      </div>
+    </div>
+
+    <p class="eyebrow">Key performance metrics</p>
+    <section class="kpis" aria-label="Key performance metrics">
+      <article class="kpi is-primary">
+        <h3>Monthly run rate</h3>
+        <div class="stack" aria-hidden="true">
+          <i style="background:#D4AF37;color:#161309">AO</i><i style="background:#5FD4A0;color:#0A0A0B">NK</i>
+          <i style="background:#7FA8FF;color:#0A0A0B">TB</i><i style="background:#232328">+9</i>
+        </div>
+        <p class="lab">Committed spend</p>
+        <p class="val">$1,284.50 <small>+16.4%</small></p>
+      </article>
+      <article class="kpi">
+        <h3>Seats in use</h3>
+        <div class="stack" aria-hidden="true">
+          <i style="background:#8A6E14">EI</i><i style="background:#177A54">CU</i><i style="background:#2F5BC4">MA</i>
+        </div>
+        <p class="lab">Active this week</p>
+        <p class="val">11 of 12</p>
+      </article>
+      <article class="kpi">
+        <h3>Stream success</h3>
+        <div class="stack" aria-hidden="true">
+          <i style="background:#177A54">✓</i><i style="background:#9A5B12">↻</i>
+        </div>
+        <p class="lab">Completed exchanges</p>
+        <p class="val">1,420 <small>99.4%</small></p>
+      </article>
+      <article class="kpi is-dispatch">
+        <h3>System dispatch</h3>
+        <h4>Provider rate limit at 91% — Compare mode throttled until 12:00</h4>
+        <time>Sep 29, 2026 · 09:20</time>
+      </article>
+    </section>
+
+    <p class="eyebrow">Recent activity across workspaces</p>
+    <section class="table-card">
+      <div class="table-head">
+        <h2>Runs, uploads and access changes</h2>
+        <div class="chips" role="group" aria-label="Filter activity">
+          <button type="button" aria-pressed="true">All</button>
+          <button type="button">Runs</button>
+          <button type="button">Access</button>
+          <button type="button">Failures</button>
+        </div>
+      </div>
+      <div class="t-scroll">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th scope="col">Activity</th>
+              <th scope="col">Seat</th>
+              <th scope="col">Route</th>
+              <th scope="col">Time</th>
+              <th scope="col">Tokens / status</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><div class="who-cell"><span class="sq" style="background:#8A6E14">DA</span><div><b>Contract clause extraction</b><span>42-page master services agreement</span></div></div></td>
+              <td class="mono">A. Okonkwo</td>
+              <td class="mono">Claude</td>
+              <td class="mono">Today · 09:41</td>
+              <td class="mono">31.7k · <span class="pill run">Running</span></td>
+              <td><div class="row-acts"><button aria-label="Open run">↗</button><button aria-label="More">···</button></div></td>
+            </tr>
+            <tr class="is-open">
+              <td><div class="who-cell"><span class="sq" style="background:#B3342B">RS</span><div><b>Overnight research sweep</b><span>Provider returned 429 twice</span></div></div></td>
+              <td class="mono">Automation</td>
+              <td class="mono">Dash Smart</td>
+              <td class="mono">Today · 06:00</td>
+              <td class="mono">0 · <span class="pill err">Failed</span></td>
+              <td><div class="row-acts"><button aria-label="Retry run">↻</button><button aria-label="More">···</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="who-cell"><span class="sq" style="background:#2F5BC4">PW</span><div><b>Board note rewrite</b><span>Professional writing mode</span></div></div></td>
+              <td class="mono">N. Kalu</td>
+              <td class="mono">OpenAI</td>
+              <td class="mono">Today · 08:12</td>
+              <td class="mono">3.1k · <span class="pill ok">Delivered</span></td>
+              <td><div class="row-acts"><button aria-label="Open run">↗</button><button aria-label="More">···</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="who-cell"><span class="sq" style="background:#177A54">SA</span><div><b>Seat access granted</b><span>Finance group · read and run</span></div></div></td>
+              <td class="mono">T. Bello</td>
+              <td class="mono">—</td>
+              <td class="mono">Yesterday · 17:40</td>
+              <td class="mono">— · <span class="pill ok">Applied</span></td>
+              <td><div class="row-acts"><button aria-label="Open audit entry">↗</button><button aria-label="More">···</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="who-cell"><span class="sq" style="background:#5C5C63">UD</span><div><b>Q3 financials uploaded</b><span>4 files · 28 MB</span></div></div></td>
+              <td class="mono">M. Adeyemi</td>
+              <td class="mono">Claude</td>
+              <td class="mono">Yesterday · 15:05</td>
+              <td class="mono">18.9k · <span class="pill ok">Analysed</span></td>
+              <td><div class="row-acts"><button aria-label="Open documents">↗</button><button aria-label="More">···</button></div></td>
+            </tr>
+            <tr>
+              <td><div class="who-cell"><span class="sq" style="background:#9A5B12">CR</span><div><b>Model cost review</b><span>Compares spend against the pool</span></div></div></td>
+              <td class="mono">Automation</td>
+              <td class="mono">Compare</td>
+              <td class="mono">Tomorrow · 08:00</td>
+              <td class="mono">est. 12k · <span class="pill due">Scheduled</span></td>
+              <td><div class="row-acts"><button aria-label="Edit routine">↗</button><button aria-label="More">···</button></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <nav class="switcher" aria-label="Concepts">
+    <div class="group">
+      <a href="01-aurora-glass.html">01 Aurora Glass</a>
+      <a href="02-signal-board.html">02 Signal Board</a>
+      <a href="03-ops-timeline.html">03 Ops Timeline</a>
+      <a href="04-console-light.html" aria-current="page">04 Console Light</a>
+    </div>
+  </nav>
+  <p class="stamp">Dash AI · UI concept 04 · figures are sample data</p>
+</div>
+</body>
+</html>

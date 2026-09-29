@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dash Dashboard Concepts</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+/* Layout: a contents page — title block, four concept cards each with a drawn miniature of its own layout, token strip at the foot. */
+:root{
+  color-scheme: dark;
+  --ink:#0A0A0B; --surface:#121214; --surface-2:#1A1A1E; --surface-3:#232328;
+  --gold:#D4AF37; --gold-lite:#F3D98A; --gold-deep:#9C7A1F;
+  --gold-grad:linear-gradient(135deg,#F3D98A 0%,#D4AF37 45%,#9C7A1F 100%);
+  --paper:#F7F7F5; --grey:#A1A1A8; --grey-2:#7A7A82;
+  --good:#5FD4A0; --info:#7FA8FF; --bad:#FF7A70;
+  --line:rgba(247,247,245,.09); --line-2:rgba(247,247,245,.05);
+  --font-ui:'Manrope',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:var(--font-ui);background:var(--ink);color:var(--paper);-webkit-font-smoothing:antialiased}
+body::before{
+  content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:radial-gradient(900px 560px at 15% -10%,rgba(212,175,55,.16),transparent 60%),
+             radial-gradient(800px 520px at 88% 6%,rgba(127,168,255,.08),transparent 58%),var(--ink);
+}
+.wrap{position:relative;z-index:1;max-width:1120px;margin:0 auto;padding:0 20px;padding-block:44px 30px}
+header.hero{max-width:640px;margin-bottom:34px}
+.kicker{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+.kicker .mark{width:34px;height:34px;border-radius:11px;background:var(--gold-grad);display:grid;place-items:center;color:#161309;font-weight:800;font-size:16px}
+.kicker span{font-family:var(--font-mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--grey-2)}
+h1{margin:0;font-size:38px;font-weight:300;letter-spacing:-.035em;line-height:1.08;text-wrap:balance}
+h1 b{font-weight:800;background:var(--gold-grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+header.hero p{margin:14px 0 0;font-size:14.5px;line-height:1.65;color:var(--grey)}
+header.hero p em{color:var(--paper);font-style:normal;font-weight:600}
+.cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.concept{
+  display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:20px;
+  overflow:hidden;text-decoration:none;color:inherit;transition:transform .18s,border-color .18s;
+}
+.concept:hover{transform:translateY(-3px);border-color:rgba(212,175,55,.42)}
+.concept:focus-visible{outline:2px solid var(--gold);outline-offset:3px}
+/* drawn miniature */
+.thumb{aspect-ratio:16/9;padding:12px;display:flex;gap:7px;background:#0D0D0F;border-bottom:1px solid var(--line)}
+.thumb.light{background:#F6F5F1}
+.thumb .col{display:flex;flex-direction:column;gap:6px;min-width:0}
+.thumb .blk{border-radius:5px;background:var(--surface-3)}
+.thumb.light .blk{background:#E6E4DC}
+.thumb .blk.gold{background:var(--gold-grad)}
+.thumb .blk.paper{background:#D8D6CE}
+.thumb .blk.ink{background:#17171A}
+.thumb .blk.line{background:rgba(212,175,55,.35)}
+.thumb .row{display:flex;gap:6px}
+.body{padding:18px 19px 19px;display:flex;flex-direction:column;gap:9px;flex:1}
+.body .no{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.14em;color:var(--gold);text-transform:uppercase}
+.body h2{margin:0;font-size:18px;font-weight:800;letter-spacing:-.02em}
+.body p{margin:0;font-size:12.5px;line-height:1.6;color:var(--grey)}
+.body ul{margin:4px 0 0;padding:0;list-style:none;display:flex;flex-wrap:wrap;gap:6px}
+.body li{font-family:var(--font-mono);font-size:10px;color:var(--grey-2);background:var(--surface-2);border:1px solid var(--line-2);border-radius:6px;padding:4px 8px}
+.body .open{margin-top:auto;padding-top:12px;font-size:12px;font-weight:700;color:var(--gold-lite);display:inline-flex;align-items:center;gap:6px}
+.pick{position:relative}
+.pick::after{
+  content:"Your pick";position:absolute;top:12px;right:12px;z-index:2;
+  font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;
+  background:var(--gold-grad);color:#161309;border-radius:999px;padding:4px 10px;
+}
+/* tokens */
+.tokens{margin-top:30px;background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:22px}
+.tokens h2{margin:0 0 4px;font-size:15px;font-weight:800}
+.tokens p.sub{margin:0 0 18px;font-size:12.5px;color:var(--grey-2)}
+.sw-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(122px,1fr));gap:10px}
+.sw{background:var(--surface-2);border:1px solid var(--line-2);border-radius:12px;padding:11px}
+.sw .chip{height:34px;border-radius:8px;margin-bottom:9px}
+.sw b{display:block;font-size:11.5px;font-weight:700}
+.sw code{display:block;font-family:var(--font-mono);font-size:10.5px;color:var(--grey-2);margin-top:3px}
+.note{margin:18px 0 0;font-size:12px;line-height:1.65;color:var(--grey-2);border-top:1px solid var(--line-2);padding-top:15px}
+.note b{color:var(--paper)}
+footer{margin-top:22px;text-align:center;font-family:var(--font-mono);font-size:10.5px;color:var(--grey-2)}
+@media (max-width:760px){.cards{grid-template-columns:1fr}h1{font-size:30px}}
+@media (max-width:480px){.wrap{padding:28px 14px 22px}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="kicker"><span class="mark" aria-hidden="true">D</span><span>Dash AI · UI concepts</span></div>
+    <h1>Four ways the Dash <b>dashboard</b> could look</h1>
+    <p>Layout studies drawn from the reference reel, rebuilt in Dash's own palette — <em>gold on black</em> — with Dash's own content: conversations, tokens, routing between OpenAI and Claude, scheduled automations. Sample figures throughout; nothing here is wired to the API yet.</p>
+  </header>
+
+  <div class="cards">
+
+    <a class="concept pick" href="01-aurora-glass.html">
+      <div class="thumb" aria-hidden="true">
+        <div class="col" style="flex:0 0 12px"><div class="blk gold" style="height:12px"></div><div class="blk" style="flex:1"></div></div>
+        <div class="col" style="flex:1">
+          <div class="blk" style="height:14px"></div>
+          <div class="row"><div class="blk paper" style="flex:1;height:26px"></div><div class="blk paper" style="flex:1;height:26px"></div><div class="blk paper" style="flex:1;height:26px"></div><div class="blk paper" style="flex:1;height:26px"></div></div>
+          <div class="row" style="flex:1"><div class="blk paper" style="flex:1.6"></div><div class="blk paper" style="flex:1"></div></div>
+          <div class="row"><div class="blk paper" style="flex:1;height:22px"></div><div class="blk gold" style="flex:1;height:22px"></div><div class="blk paper" style="flex:1;height:22px"></div></div>
+        </div>
+        <div class="col" style="flex:0 0 46px"><div class="blk" style="height:22px"></div><div class="blk line" style="height:46px"></div><div class="blk" style="flex:1"></div></div>
+      </div>
+      <div class="body">
+        <span class="no">Concept 01</span>
+        <h2>Aurora Glass</h2>
+        <p>The closest to the reel. Frosted panels over an ambient gold wash, white metric cards that pop off the dark, and the calendar plus scheduled list living in a right-hand rail.</p>
+        <ul><li>icon rail + tooltips</li><li>calendar rail</li><li>white-on-dark KPIs</li><li>routing donut</li></ul>
+        <span class="open">Open concept →</span>
+      </div>
+    </a>
+
+    <a class="concept" href="02-signal-board.html">
+      <div class="thumb" aria-hidden="true">
+        <div class="col" style="flex:1">
+          <div class="blk ink" style="height:13px;background:#1A1A1E"></div>
+          <div class="row"><div class="blk" style="flex:1;height:30px;border-bottom:2px solid #D4AF37"></div><div class="blk" style="flex:1;height:30px;border-bottom:2px solid #7FA8FF"></div><div class="blk" style="flex:1;height:30px;border-bottom:2px solid #5FD4A0"></div><div class="blk" style="flex:1;height:30px;border-bottom:2px solid #FF7A70"></div></div>
+          <div class="row" style="flex:1"><div class="blk" style="flex:1.6"></div><div class="col" style="flex:1"><div class="blk line" style="height:8px"></div><div class="blk" style="height:8px"></div><div class="blk" style="height:8px"></div><div class="blk" style="flex:1"></div></div></div>
+          <div class="blk" style="height:30px"></div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="no">Concept 02</span>
+        <h2>Signal Board</h2>
+        <p>A control room. Horizontal nav, four hard-edged metric tiles with a colour rule under each, throughput charted against latency, and a live feed of which provider took which prompt.</p>
+        <ul><li>top nav</li><li>dual-axis chart</li><li>routing zones</li><li>live feed</li></ul>
+        <span class="open">Open concept →</span>
+      </div>
+    </a>
+
+    <a class="concept" href="03-ops-timeline.html">
+      <div class="thumb" aria-hidden="true">
+        <div class="col" style="flex:1">
+          <div class="row"><div class="blk" style="flex:1;height:18px"></div><div class="blk" style="flex:1;height:18px"></div><div class="blk gold" style="flex:1;height:18px"></div><div class="blk" style="flex:1;height:18px"></div><div class="blk" style="flex:1;height:18px"></div><div class="blk" style="flex:1;height:18px"></div><div class="blk" style="flex:1;height:18px"></div></div>
+          <div class="row" style="flex:1">
+            <div class="col" style="flex:1.8">
+              <div class="blk" style="height:15px;border-left:3px solid #5FD4A0"></div>
+              <div class="blk" style="height:15px;border-left:3px solid #5FD4A0"></div>
+              <div class="blk" style="height:15px;border-left:3px solid #D4AF37"></div>
+              <div class="blk" style="height:15px;border-left:3px solid #FF7A70"></div>
+              <div class="blk" style="flex:1;border-left:3px solid #7FA8FF"></div>
+            </div>
+            <div class="col" style="flex:1"><div class="blk line" style="height:32px"></div><div class="blk" style="height:26px"></div><div class="blk" style="flex:1"></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="no">Concept 03</span>
+        <h2>Ops Timeline</h2>
+        <p>Built around the schedule view. A week strip on top, then every automation as a row with a status stripe — completed, running, failed, scheduled — and a summary rail counting them.</p>
+        <ul><li>week strip</li><li>status stripes</li><li>progress rows</li><li>spend split</li></ul>
+        <span class="open">Open concept →</span>
+      </div>
+    </a>
+
+    <a class="concept" href="04-console-light.html">
+      <div class="thumb light" aria-hidden="true">
+        <div class="col" style="flex:0 0 40px"><div class="blk gold" style="height:12px"></div><div class="blk ink" style="flex:1"></div></div>
+        <div class="col" style="flex:1">
+          <div class="blk" style="height:12px"></div>
+          <div class="row"><div class="blk ink" style="flex:1;height:26px"></div><div class="blk" style="flex:1;height:26px"></div><div class="blk" style="flex:1;height:26px"></div><div class="blk" style="flex:1;height:26px;border-left:3px solid #D4AF37"></div></div>
+          <div class="col" style="flex:1"><div class="blk" style="height:9px"></div><div class="blk" style="height:9px"></div><div class="blk" style="height:9px"></div><div class="blk" style="height:9px"></div><div class="blk" style="flex:1"></div></div>
+        </div>
+      </div>
+      <div class="body">
+        <span class="no">Concept 04</span>
+        <h2>Console Light</h2>
+        <p>The administrative face. Black labelled sidebar with a live capacity footer, a light working canvas, and a dense activity table where every row carries a route and a status pill.</p>
+        <ul><li>labelled sidebar</li><li>capacity meters</li><li>activity table</li><li>light canvas</li></ul>
+        <span class="open">Open concept →</span>
+      </div>
+    </a>
+  </div>
+
+  <section class="tokens">
+    <h2>Shared tokens</h2>
+    <p class="sub">All four concepts draw from the palette already written into docs/design.md.</p>
+    <div class="sw-grid">
+      <div class="sw"><div class="chip" style="background:#0A0A0B;border:1px solid rgba(247,247,245,.12)"></div><b>Black</b><code>#0A0A0B</code></div>
+      <div class="sw"><div class="chip" style="background:#121214"></div><b>Surface</b><code>#121214</code></div>
+      <div class="sw"><div class="chip" style="background:#232328"></div><b>Surface high</b><code>#232328</code></div>
+      <div class="sw"><div class="chip" style="background:linear-gradient(135deg,#F3D98A,#D4AF37 45%,#9C7A1F)"></div><b>Gold</b><code>#D4AF37</code></div>
+      <div class="sw"><div class="chip" style="background:#F7F7F5"></div><b>White</b><code>#F7F7F5</code></div>
+      <div class="sw"><div class="chip" style="background:#A1A1A8"></div><b>Grey</b><code>#A1A1A8</code></div>
+      <div class="sw"><div class="chip" style="background:#5FD4A0"></div><b>Done</b><code>#5FD4A0</code></div>
+      <div class="sw"><div class="chip" style="background:#7FA8FF"></div><b>Scheduled</b><code>#7FA8FF</code></div>
+      <div class="sw"><div class="chip" style="background:#FF7A70"></div><b>Failed</b><code>#FF7A70</code></div>
+    </div>
+    <p class="note"><b>How state reads.</b> Gold is the accent and also means <i>running now</i>. Green is finished, blue is scheduled, coral is failed, grey is idle. Green, blue and coral never carry brand meaning, so they stay free to signal status anywhere in the product.</p>
+  </section>
+
+  <footer>Reference study · 29 September 2026 · sample data throughout</footer>
+</div>
+</body>
+</html>

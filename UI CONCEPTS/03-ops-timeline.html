@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ops Timeline — Dash Dashboard Concept 03</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;800&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+/* Layout: week strip across the top, one tall run-list down the middle, a narrow summary rail on the right. */
+:root{
+  color-scheme: dark;
+  --ink:#0A0A0B; --surface:#121214; --surface-2:#1A1A1E; --surface-3:#232328;
+  --gold:#D4AF37; --gold-lite:#F3D98A; --gold-deep:#9C7A1F;
+  --gold-grad:linear-gradient(135deg,#F3D98A 0%,#D4AF37 45%,#9C7A1F 100%);
+  --paper:#F7F7F5; --grey:#A1A1A8; --grey-2:#7A7A82;
+  --good:#5FD4A0; --info:#7FA8FF; --bad:#FF7A70;
+  --line:rgba(247,247,245,.09); --line-2:rgba(247,247,245,.05);
+  --font-ui:'Manrope',ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:var(--font-ui);background:var(--ink);color:var(--paper);-webkit-font-smoothing:antialiased}
+body::before{
+  content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:radial-gradient(1000px 540px at 78% -12%,rgba(212,175,55,.13),transparent 62%),var(--ink);
+}
+.wrap{position:relative;z-index:1;max-width:1180px;margin:0 auto;padding:0 20px;padding-block:26px 24px}
+/* ---------- head ---------- */
+.head{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+.head .mark{width:36px;height:36px;border-radius:11px;background:var(--gold-grad);display:grid;place-items:center;color:#161309;font-weight:800;font-size:17px;flex:none}
+.head h1{margin:0;font-size:25px;font-weight:300;letter-spacing:-.025em}
+.head h1 b{font-weight:800}
+.head p{margin:4px 0 0;font-size:13px;color:var(--grey)}
+.btn{
+  margin-left:auto;font:inherit;font-size:12.5px;font-weight:700;color:#161309;background:var(--gold-grad);
+  border:0;border-radius:999px;padding:11px 19px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;
+}
+.btn svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round}
+.btn:focus-visible{outline:2px solid var(--gold-lite);outline-offset:3px}
+/* ---------- week strip ---------- */
+.week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;margin-bottom:20px}
+.day{
+  background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:11px 8px;text-align:center;
+}
+.day.is-today{border-color:rgba(212,175,55,.55);background:rgba(212,175,55,.08)}
+.day span{display:block;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--grey-2)}
+.day b{display:block;font-family:var(--font-mono);font-size:17px;font-weight:700;margin:5px 0 7px;font-variant-numeric:tabular-nums}
+.day.is-today b{color:var(--gold-lite)}
+.day .dots{display:flex;gap:3px;justify-content:center;min-height:6px}
+.day .dots i{width:5px;height:5px;border-radius:50%;display:block}
+/* ---------- layout ---------- */
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 296px;gap:16px;align-items:start}
+.list{background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:8px;min-width:0}
+.list-head{display:flex;align-items:center;gap:12px;padding:14px 14px 12px}
+.list-head h2{margin:0;font-size:15px;font-weight:800;letter-spacing:-.01em}
+.list-head p{margin:3px 0 0;font-size:11.5px;color:var(--grey-2)}
+.filter{margin-left:auto;display:flex;gap:3px;background:var(--surface-2);border-radius:9px;padding:3px}
+.filter button{font:inherit;font-size:11px;font-weight:600;color:var(--grey-2);background:transparent;border:0;padding:6px 10px;border-radius:7px;cursor:pointer}
+.filter button[aria-pressed="true"]{background:var(--surface-3);color:var(--paper)}
+/* ---------- run rows ---------- */
+.run{
+  display:grid;grid-template-columns:110px minmax(0,1fr) auto;gap:14px;align-items:center;
+  background:var(--surface-2);border:1px solid var(--line-2);border-radius:15px;
+  padding:15px 17px 15px 19px;margin:7px 0;overflow:hidden;position:relative;transition:transform .16s,border-color .16s;
+}
+.run:hover{transform:translateY(-2px);border-color:rgba(247,247,245,.16)}
+.run .stripe{position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--s,var(--grey-2))}
+.run .when span{display:block;font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--s,var(--grey-2))}
+.run .when time{display:block;font-family:var(--font-mono);font-size:12.5px;color:var(--grey);margin-top:3px;font-variant-numeric:tabular-nums}
+.run .body{min-width:0}
+.run .body h3{margin:0;font-size:13.5px;font-weight:700;letter-spacing:-.005em}
+.run .body p{margin:4px 0 0;font-size:11.5px;color:var(--grey-2);line-height:1.45}
+.run .meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.run .meta span{
+  font-family:var(--font-mono);font-size:10px;color:var(--grey-2);
+  background:var(--surface-3);border-radius:6px;padding:3px 7px;
+}
+.status{
+  display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:.04em;
+  text-transform:uppercase;padding:6px 12px;border-radius:999px;white-space:nowrap;
+  background:var(--s-bg,rgba(247,247,245,.06));color:var(--s,var(--grey));border:1px solid var(--s-br,transparent);
+}
+.status i{width:6px;height:6px;border-radius:50%;background:currentColor;display:block}
+.run.done{--s:#5FD4A0;--s-bg:rgba(95,212,160,.10);--s-br:rgba(95,212,160,.26)}
+.run.running{--s:#D4AF37;--s-bg:rgba(212,175,55,.12);--s-br:rgba(212,175,55,.32)}
+.run.queued{--s:#7FA8FF;--s-bg:rgba(127,168,255,.10);--s-br:rgba(127,168,255,.24)}
+.run.idle{--s:#7A7A82;--s-bg:rgba(247,247,245,.05);--s-br:rgba(247,247,245,.10)}
+.run.failed{--s:#FF7A70;--s-bg:rgba(255,122,112,.10);--s-br:rgba(255,122,112,.28)}
+.run.running .status i{animation:blink 1.6s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+.run .prog{grid-column:2/-1;margin-top:10px;height:4px;border-radius:999px;background:var(--surface-3);overflow:hidden}
+.run .prog i{display:block;height:100%;width:64%;border-radius:999px;background:var(--gold-grad)}
+/* ---------- rail ---------- */
+.rail{display:flex;flex-direction:column;gap:14px;min-width:0}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:17px 18px}
+.card h2{margin:0 0 3px;font-size:13.5px;font-weight:800}
+.card p.sub{margin:0 0 14px;font-size:11.5px;color:var(--grey-2)}
+.ring{display:flex;align-items:center;gap:15px}
+.ring dl{margin:0;display:flex;flex-direction:column;gap:8px;flex:1;min-width:0}
+.ring dl div{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--grey)}
+.ring dt{display:flex;align-items:center;gap:7px}
+.ring dd{margin:0 0 0 auto;font-family:var(--font-mono);font-size:12px;color:var(--paper);font-variant-numeric:tabular-nums}
+.ring .sw{width:8px;height:8px;border-radius:2px;display:block}
+.next li{display:flex;gap:11px;align-items:flex-start;padding:11px 0;border-top:1px solid var(--line-2)}
+.next li:first-child{border-top:0;padding-top:0}
+.next .tick{width:44px;height:30px;border-radius:9px;background:var(--surface-3);display:grid;place-items:center;flex:none;color:var(--gold);font-family:var(--font-mono);font-size:10.5px}
+.next h4{margin:0;font-size:12.5px;font-weight:700}
+.next p{margin:3px 0 0;font-size:11px;color:var(--grey-2)}
+.cost{display:flex;align-items:baseline;gap:8px;margin:2px 0 12px}
+.cost b{font-family:var(--font-mono);font-size:26px;font-weight:700;letter-spacing:-.03em;color:var(--gold-lite)}
+.cost span{font-size:11.5px;color:var(--grey-2)}
+.bar-split{display:flex;height:8px;border-radius:999px;overflow:hidden;gap:2px}
+.bar-split i{display:block;height:100%}
+.bar-key{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px;font-size:10.5px;color:var(--grey-2)}
+.bar-key span{display:flex;align-items:center;gap:5px}
+.bar-key em{width:7px;height:7px;border-radius:2px;display:block}
+/* ---------- switcher ---------- */
+.switcher{position:sticky;bottom:0;display:flex;justify-content:center;margin-top:24px;padding-bottom:calc(6px + env(safe-area-inset-bottom,0px))}
+.switcher .group{display:flex;gap:4px;background:rgba(26,26,30,.9);backdrop-filter:blur(18px);border:1px solid var(--line);border-radius:999px;padding:5px;flex-wrap:wrap;justify-content:center;max-width:100%}
+.switcher a{font-size:12px;font-weight:700;color:var(--grey);text-decoration:none;padding:8px 15px;border-radius:999px;white-space:nowrap}
+.switcher a:hover{color:var(--paper)}
+.switcher a[aria-current="page"]{background:var(--gold-grad);color:#161309}
+.stamp{text-align:center;color:var(--grey-2);font-size:10.5px;font-family:var(--font-mono);margin-top:10px}
+@media (max-width:920px){
+  .cols{grid-template-columns:1fr}
+  .run{grid-template-columns:1fr;row-gap:11px}
+  .run .when{display:flex;align-items:baseline;gap:9px}
+  .run .when time{margin-top:0}
+  .run .status{justify-self:start}
+  .run .prog{grid-column:1}
+}
+@media (max-width:560px){
+  .wrap{padding:18px 14px}
+  .week{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .btn{margin-left:0;width:100%;justify-content:center}
+  .head h1{font-size:22px}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="head">
+    <span class="mark" aria-hidden="true">D</span>
+    <div>
+      <h1>Automations <b>this week</b></h1>
+      <p>Recurring Dash runs — digests, audits and scheduled analyses.</p>
+    </div>
+    <button class="btn" type="button"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New routine</button>
+  </header>
+
+  <section class="week" aria-label="Week of 27 September 2026">
+    <div class="day"><span>Sun</span><b>27</b><div class="dots"><i style="background:#5FD4A0"></i></div></div>
+    <div class="day"><span>Mon</span><b>28</b><div class="dots"><i style="background:#5FD4A0"></i><i style="background:#5FD4A0"></i></div></div>
+    <div class="day is-today"><span>Tue</span><b>29</b><div class="dots"><i style="background:#D4AF37"></i><i style="background:#5FD4A0"></i></div></div>
+    <div class="day"><span>Wed</span><b>30</b><div class="dots"><i style="background:#7FA8FF"></i></div></div>
+    <div class="day"><span>Thu</span><b>1</b><div class="dots"><i style="background:#7FA8FF"></i></div></div>
+    <div class="day"><span>Fri</span><b>2</b><div class="dots"><i style="background:#7FA8FF"></i><i style="background:#7FA8FF"></i></div></div>
+    <div class="day"><span>Sat</span><b>3</b><div class="dots"></div></div>
+  </section>
+
+  <div class="cols">
+    <section class="list">
+      <div class="list-head">
+        <div>
+          <h2>Run schedule</h2>
+          <p>Six routines across the working week</p>
+        </div>
+        <div class="filter" role="group" aria-label="Filter runs">
+          <button type="button" aria-pressed="true">All</button>
+          <button type="button">Mine</button>
+          <button type="button">Failed</button>
+        </div>
+      </div>
+
+      <article class="run done">
+        <span class="stripe" aria-hidden="true"></span>
+        <div class="when"><span>Monday</span><time>08:00</time></div>
+        <div class="body">
+          <h3>Weekly usage digest</h3>
+          <p>Token spend, routing split and top prompts, mailed to all 12 seats.</p>
+          <div class="meta"><span>CLAUDE</span><span>18.2k tokens</span><span>4.1s</span></div>
+        </div>
+        <span class="status"><i aria-hidden="true"></i>Completed</span>
+      </article>
+
+      <article class="run done">
+        <span class="stripe" aria-hidden="true"></span>
+        <div class="when"><span>Monday</span><time>19:30</time></div>
+        <div class="body">
+          <h3>Support thread summary</h3>
+          <p>Groups yesterday's conversations by theme and flags anything unresolved.</p>
+          <div class="meta"><span>OPENAI</span><span>9.7k tokens</span><span>2.3s</span></div>
+        </div>
+        <span class="status"><i aria-hidden="true"></i>Completed</span>
+      </article>
+
+      <article class="run running">
+        <span class="stripe" aria-hidden="true"></span>
+        <div class="when"><span>Today</span><time>09:41</time></div>
+        <div class="body">
+          <h3>Contract clause extraction</h3>
+          <p>Reading the 42-page master services agreement uploaded this morning.</p>
+          <div class="meta"><span>CLAUDE</span><span>31.7k tokens</span><span>page 27 of 42</span></div>
+        </div>
+        <span class="status"><i aria-hidden="true"></i>Running</span>
+        <div class="prog"><i></i></div>
+      </article>
+
+      <article class="run failed">
+        <span class="stripe" aria-hidden="true"></span>
+        <div class="when"><span>Today</span><time>06:00</time></div>
+        <div class="body">
+          <h3>Overnight research sweep</h3>
+          <p>Provider returned 429 twice. Retry is scheduled for 12:00.</p>
+          <div class="meta"><span>DASH SMART</span><span>rate limited</span><span>2 attempts</span></div>
+        </div>
+        <span class="status"><i aria-hidden="true"></i>Failed</span>
+      </article>
+
+      <article class="run queued">
+        <span class="stripe" aria-hidden="true"></span>
+        <div class="when"><span>Tomorrow</span><time>08:00</time></div>
+        <div class="body">
+          <h3>Model cost review</h3>
+          <p>Compares provider spend against the 3.5M monthly pool and flags overrun.</p>
+          <div class="meta"><span>COMPARE</span><span>est. 12k tokens</span></div>
+        </div>
+        <span class="status"><i aria-hidden="true"></i>Scheduled</span>
+      </article>
+
+      <article class="run idle">
+        <span class="stripe" aria-hidden="true"></span>
+        <div class="when"><span>Friday</span><time>17:00</time></div>
+        <div class="body">
+          <h3>Prompt library audit</h3>
+          <p>Retires prompts unused for 60 days and reports what changed.</p>
+          <div class="meta"><span>OPENAI</span><span>est. 5k tokens</span></div>
+        </div>
+        <span class="status"><i aria-hidden="true"></i>Scheduled</span>
+      </article>
+    </section>
+
+    <aside class="rail">
+      <section class="card">
+        <h2>This week</h2>
+        <p class="sub">Six runs, one needs attention</p>
+        <div class="ring">
+          <svg viewBox="0 0 100 100" width="84" height="84" role="img" aria-label="Three completed, one running, one failed, one scheduled">
+            <circle cx="50" cy="50" r="38" fill="none" stroke="#232328" stroke-width="13"/>
+            <circle cx="50" cy="50" r="38" fill="none" stroke="#5FD4A0" stroke-width="13" stroke-dasharray="119.4 119.4" transform="rotate(-90 50 50)"/>
+            <circle cx="50" cy="50" r="38" fill="none" stroke="#D4AF37" stroke-width="13" stroke-dasharray="39.8 199" transform="rotate(90 50 50)"/>
+            <circle cx="50" cy="50" r="38" fill="none" stroke="#FF7A70" stroke-width="13" stroke-dasharray="39.8 199" transform="rotate(150 50 50)"/>
+            <circle cx="50" cy="50" r="38" fill="none" stroke="#7FA8FF" stroke-width="13" stroke-dasharray="39.8 199" transform="rotate(210 50 50)"/>
+            <text x="50" y="55" text-anchor="middle" font-family="'JetBrains Mono',monospace" font-size="19" font-weight="700" fill="#F7F7F5">6</text>
+          </svg>
+          <dl>
+            <div><dt><span class="sw" style="background:#5FD4A0"></span>Completed</dt><dd>3</dd></div>
+            <div><dt><span class="sw" style="background:#D4AF37"></span>Running</dt><dd>1</dd></div>
+            <div><dt><span class="sw" style="background:#FF7A70"></span>Failed</dt><dd>1</dd></div>
+            <div><dt><span class="sw" style="background:#7FA8FF"></span>Scheduled</dt><dd>1</dd></div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Token spend</h2>
+        <p class="sub">Automations only, week to date</p>
+        <div class="cost"><b>71.3k</b><span>of 240k budgeted</span></div>
+        <div class="bar-split">
+          <i style="background:#5FD4A0;width:44%"></i>
+          <i style="background:#7FA8FF;width:18%"></i>
+          <i style="background:#D4AF37;width:14%"></i>
+          <i style="background:#232328;flex:1"></i>
+        </div>
+        <div class="bar-key">
+          <span><em style="background:#5FD4A0"></em>Claude 31.4k</span>
+          <span><em style="background:#7FA8FF"></em>OpenAI 12.8k</span>
+          <span><em style="background:#D4AF37"></em>Smart 9.9k</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Up next</h2>
+        <p class="sub">Queued in the next 48 hours</p>
+        <ul class="next" style="list-style:none;margin:0;padding:0">
+          <li><span class="tick">12:00</span><div><h4>Research sweep retry</h4><p>After the rate limit clears</p></div></li>
+          <li><span class="tick">08:00</span><div><h4>Model cost review</h4><p>Wednesday · Compare mode</p></div></li>
+          <li><span class="tick">17:00</span><div><h4>Prompt library audit</h4><p>Friday · OpenAI</p></div></li>
+        </ul>
+      </section>
+    </aside>
+  </div>
+
+  <nav class="switcher" aria-label="Concepts">
+    <div class="group">
+      <a href="01-aurora-glass.html">01 Aurora Glass</a>
+      <a href="02-signal-board.html">02 Signal Board</a>
+      <a href="03-ops-timeline.html" aria-current="page">03 Ops Timeline</a>
+      <a href="04-console-light.html">04 Console Light</a>
+    </div>
+  </nav>
+  <p class="stamp">Dash AI · UI concept 03 · figures are sample data</p>
+</div>
+</body>
+</html>
