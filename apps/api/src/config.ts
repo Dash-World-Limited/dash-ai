@@ -26,6 +26,10 @@ const EnvSchema = z.object({
   ANTHROPIC_MODEL: optionalString,
   PROVIDER_TIMEOUT_MS: int(120_000, 1_000, 600_000),
   PROVIDER_IDLE_TIMEOUT_MS: int(45_000, 500, 300_000),
+  /** Extra attempts after a retryable provider failure that happened before any output (0 = none). */
+  PROVIDER_MAX_RETRIES: int(2, 0, 4),
+  /** First retry delay; doubles each attempt (with jitter), longer after rate limiting. */
+  PROVIDER_RETRY_BASE_MS: int(500, 0, 10_000),
   /** Includes any reasoning/thinking tokens on models that think, so it must leave room for both. */
   MAX_OUTPUT_TOKENS: int(16_000, 16, 128_000),
   FAKE_STREAM_DELAY_MS: int(25, 0, 5_000),
@@ -36,6 +40,15 @@ const EnvSchema = z.object({
   RATE_LIMIT_AUTH_PER_MINUTE: int(10, 1, 10_000),
   RATE_LIMIT_UPLOAD_PER_MINUTE: int(10, 1, 10_000),
   RATE_LIMIT_API_PER_MINUTE: int(240, 1, 100_000),
+  /** Sign-in attempts per account (email) per 15 minutes, from any number of IPs. */
+  RATE_LIMIT_LOGIN_PER_ACCOUNT: int(20, 1, 1_000),
+  /**
+   * memory — limits are per API process (one instance, development, tests).
+   * redis — limits are shared by every instance through REDIS_URL (required when running more than one).
+   */
+  RATE_LIMIT_BACKEND: z.preprocess(emptyToUndefined, z.enum(["memory", "redis"]).default("memory")),
+  /** redis:// or rediss:// (TLS). Secret: it usually contains a password. */
+  REDIS_URL: optionalString,
   MAX_CONCURRENT_STREAMS_PER_USER: int(3, 1, 50),
   SESSION_TTL_DAYS: int(30, 1, 365),
   /** Set to "true" only behind a trusted reverse proxy so client IPs come from X-Forwarded-For. */
@@ -58,6 +71,8 @@ const EnvSchema = z.object({
   TOOL_TIMEOUT_MS: int(10_000, 100, 120_000),
   TOOL_MAX_ROUNDS: int(4, 1, 8),
   TOOL_MAX_RESULT_CHARS: int(20_000, 100, 200_000),
+  /** Bearer token for GET /metrics. Unset = the metrics endpoint does not exist. Secret. */
+  METRICS_TOKEN: z.preprocess(emptyToUndefined, z.string().trim().min(24).optional()),
   /** Production refuses to start on the in-memory store unless this is "true". */
   ALLOW_MEMORY_STORE: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("false")),
 });
@@ -82,10 +97,21 @@ export interface AppConfig {
   anthropic: ProviderConfig;
   providerTimeoutMs: number;
   providerIdleTimeoutMs: number;
+  providerRetry: { maxRetries: number; baseMs: number };
   maxOutputTokens: number;
   fakeStreamDelayMs: number;
   documentExtractionTimeoutMs: number;
-  rateLimits: { chatPerMinute: number; authPerMinute: number; uploadPerMinute: number; apiPerMinute: number; syncPerMinute: number };
+  rateLimits: {
+    chatPerMinute: number;
+    authPerMinute: number;
+    uploadPerMinute: number;
+    apiPerMinute: number;
+    syncPerMinute: number;
+    loginPerAccountPer15Min: number;
+    backend: "memory" | "redis";
+    redisUrl: string | undefined;
+  };
+  metricsToken: string | undefined;
   maxConcurrentStreamsPerUser: number;
   sessionTtlDays: number;
   trustProxy: boolean;
@@ -111,6 +137,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new ConfigError(`Invalid configuration: ${problems}`);
   }
   const e = parsed.data;
+  if (e.RATE_LIMIT_BACKEND === "redis" && !e.REDIS_URL) {
+    throw new ConfigError("Invalid configuration: REDIS_URL is required when RATE_LIMIT_BACKEND=redis.");
+  }
   return {
     nodeEnv: e.NODE_ENV,
     host: e.HOST,
@@ -121,6 +150,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     anthropic: { apiKey: e.ANTHROPIC_API_KEY, model: e.ANTHROPIC_MODEL },
     providerTimeoutMs: e.PROVIDER_TIMEOUT_MS,
     providerIdleTimeoutMs: e.PROVIDER_IDLE_TIMEOUT_MS,
+    providerRetry: { maxRetries: e.PROVIDER_MAX_RETRIES, baseMs: e.PROVIDER_RETRY_BASE_MS },
     maxOutputTokens: e.MAX_OUTPUT_TOKENS,
     fakeStreamDelayMs: e.FAKE_STREAM_DELAY_MS,
     documentExtractionTimeoutMs: e.DOCUMENT_EXTRACTION_TIMEOUT_MS,
@@ -130,7 +160,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       authPerMinute: e.RATE_LIMIT_AUTH_PER_MINUTE,
       uploadPerMinute: e.RATE_LIMIT_UPLOAD_PER_MINUTE,
       apiPerMinute: e.RATE_LIMIT_API_PER_MINUTE,
+      loginPerAccountPer15Min: e.RATE_LIMIT_LOGIN_PER_ACCOUNT,
+      backend: e.RATE_LIMIT_BACKEND,
+      redisUrl: e.REDIS_URL,
     },
+    metricsToken: e.METRICS_TOKEN,
     maxConcurrentStreamsPerUser: e.MAX_CONCURRENT_STREAMS_PER_USER,
     sessionTtlDays: e.SESSION_TTL_DAYS,
     trustProxy: e.TRUST_PROXY === "true",
@@ -172,6 +206,12 @@ export function configWarnings(config: AppConfig): string[] {
   }
   if (config.logLevel === "debug" || config.logLevel === "trace") {
     warnings.push(`LOG_LEVEL=${config.logLevel} in production: verbose logs are larger and record more request detail. Use info.`);
+  }
+  if (config.rateLimits.backend === "memory") {
+    warnings.push("RATE_LIMIT_BACKEND=memory in production: rate limits are per instance. With more than one API instance, set RATE_LIMIT_BACKEND=redis and REDIS_URL.");
+  }
+  if (config.rateLimits.redisUrl?.startsWith("redis://") && config.rateLimits.backend === "redis") {
+    warnings.push("REDIS_URL uses redis:// in production: traffic to Redis is not encrypted in transit. Use rediss:// unless Redis is on a private network.");
   }
   if (config.providerMode === "fake") {
     warnings.push("PROVIDER_MODE=fake in production: every answer is a labelled demonstration, not a real model.");

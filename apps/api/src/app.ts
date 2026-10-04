@@ -16,7 +16,8 @@ import { documentRoutes } from "./routes/documents.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { syncRoutes } from "./routes/sync.js";
 import { systemRoutes } from "./routes/system.js";
-import { RateLimiter } from "./security/rateLimiter.js";
+import { Metrics } from "./observability/metrics.js";
+import { MemoryRateLimitStore, RateLimitService, type RateLimitStore } from "./security/rateLimit.js";
 import { MemoryStore } from "./store/memoryStore.js";
 import type { Store } from "./store/store.js";
 import { ToolRuntime } from "./tools/runtime.js";
@@ -30,6 +31,9 @@ export interface AppDependencies {
   plugins?: PluginRegistry;
   logStream?: LogStream;
   now?: () => Date;
+  /** Where rate-limit buckets live. Defaults to per-process memory; index.ts passes Redis when configured. */
+  rateLimitStore?: RateLimitStore;
+  metrics?: Metrics;
 }
 
 export interface DashApp {
@@ -83,13 +87,24 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   app.decorateRequest("authUser", null);
   app.decorateRequest("authTokenHash", null);
 
-  const limiters = {
-    api: new RateLimiter(config.rateLimits.apiPerMinute),
-    auth: new RateLimiter(config.rateLimits.authPerMinute),
-    chat: new RateLimiter(config.rateLimits.chatPerMinute),
-    sync: new RateLimiter(config.rateLimits.syncPerMinute),
-    upload: new RateLimiter(config.rateLimits.uploadPerMinute),
-  };
+  const metrics = deps.metrics ?? new Metrics();
+  const minute = 60_000;
+  const rateLimits = new RateLimitService(
+    deps.rateLimitStore ?? new MemoryRateLimitStore(),
+    {
+      api: { capacity: config.rateLimits.apiPerMinute, windowMs: minute },
+      auth: { capacity: config.rateLimits.authPerMinute, windowMs: minute },
+      login: { capacity: config.rateLimits.loginPerAccountPer15Min, windowMs: 15 * minute },
+      chat: { capacity: config.rateLimits.chatPerMinute, windowMs: minute },
+      sync: { capacity: config.rateLimits.syncPerMinute, windowMs: minute },
+      upload: { capacity: config.rateLimits.uploadPerMinute, windowMs: minute },
+    },
+    { onRejected: (name) => metrics.rateLimitRejections.inc({ limit: name }) },
+  );
+  const tooMany = (retryAfterMs: number) =>
+    new AppError("rate_limited", "Too many requests. Please wait a moment and try again.", {
+      retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000)),
+    });
 
   const context: RouteContext = {
     config,
@@ -97,16 +112,12 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
     providers,
     tools: ToolRuntime.fromConfig(config, store, deps.plugins),
     streams: new StreamRegistry(),
-    limiters,
+    rateLimits,
+    metrics,
     requireAuth: makeRequireAuth(store, now),
     rateLimit: (name, key) => async (request: FastifyRequest) => {
-      const decision = limiters[name].consume(key(request));
-      if (!decision.allowed) {
-        const seconds = Math.max(1, Math.ceil(decision.retryAfterMs / 1000));
-        throw new AppError("rate_limited", "Too many requests. Please wait a moment and try again.", {
-          retryAfterSeconds: seconds,
-        });
-      }
+      const decision = await rateLimits.consume(name, key(request));
+      if (!decision.allowed) throw tooMany(decision.retryAfterMs);
     },
     now,
     startedAt: Date.now(),
@@ -115,12 +126,8 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   // Broad abuse protection for every route, keyed by client IP.
   app.addHook("onRequest", async (request) => {
     if (request.url === "/health") return;
-    const decision = limiters.api.consume(`api:${request.ip}`);
-    if (!decision.allowed) {
-      throw new AppError("rate_limited", "Too many requests. Please wait a moment and try again.", {
-        retryAfterSeconds: Math.max(1, Math.ceil(decision.retryAfterMs / 1000)),
-      });
-    }
+    const decision = await rateLimits.consume("api", `api:${request.ip}`);
+    if (!decision.allowed) throw tooMany(decision.retryAfterMs);
   });
 
   app.addHook("onSend", async (_request, reply, payload) => {

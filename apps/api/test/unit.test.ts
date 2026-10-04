@@ -79,7 +79,7 @@ describe("config", () => {
     });
 
     it("holds no credentials, and parses as a valid configuration", () => {
-      for (const secret of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "DATA_ENCRYPTION_PREVIOUS_KEYS"]) {
+      for (const secret of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "DATA_ENCRYPTION_PREVIOUS_KEYS", "REDIS_URL", "METRICS_TOKEN"]) {
         expect(entries.get(secret), secret).toBe("");
       }
       expect(() => loadConfig(Object.fromEntries(entries))).not.toThrow();
@@ -87,9 +87,13 @@ describe("config", () => {
   });
 
   it("warns about deliberate insecure choices in production only", () => {
+    const shared = { RATE_LIMIT_BACKEND: "redis", REDIS_URL: "rediss://placeholder" };
     const prod = (env: Record<string, string>) =>
-      configWarnings(loadConfig({ NODE_ENV: "production", DATABASE_URL: "postgres://placeholder", ...env })).join(" ");
+      configWarnings(loadConfig({ NODE_ENV: "production", DATABASE_URL: "postgres://placeholder", ...shared, ...env })).join(" ");
     expect(prod({})).toBe("");
+    expect(prod({ RATE_LIMIT_BACKEND: "memory" })).toMatch(/per instance/);
+    expect(prod({ REDIS_URL: "redis://placeholder" })).toMatch(/not encrypted in transit/);
+    expect(() => loadConfig({ RATE_LIMIT_BACKEND: "redis" })).toThrow(/REDIS_URL is required/);
     expect(prod({ DATABASE_SSL: "disable" })).toMatch(/not encrypted in transit/);
     expect(prod({ DATABASE_SSL: "no-verify" })).toMatch(/not verified/);
     expect(prod({ LOG_LEVEL: "debug" })).toMatch(/LOG_LEVEL=debug/);

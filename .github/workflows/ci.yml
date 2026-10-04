@@ -74,10 +74,20 @@ jobs:
         run: pnpm smoke:live
 
   postgres:
-    name: PostgreSQL integration (store contract, encryption, whole API suite, migrations from zero)
+    name: PostgreSQL + Redis integration (store contract, encryption, shared rate limits, whole API suite, migrations from zero)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
+      # Throwaway Redis for the shared rate-limit tests. No password: it only exists for this job.
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
       # Throwaway database for this job only. Trust auth: no password exists anywhere.
       postgres:
         image: postgres:16
@@ -95,6 +105,8 @@ jobs:
       TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/dash_test
       # A missing database must fail the job, not silently skip the PostgreSQL tests.
       REQUIRE_DB_TESTS: "1"
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+      REQUIRE_REDIS_TESTS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -104,7 +116,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - name: Whole API suite on PostgreSQL (includes store contract, encryption and restart tests)
+      - name: Whole API suite on PostgreSQL and Redis (store contract, encryption, restart and shared rate-limit tests)
         run: pnpm --filter @dash-ai/api test:pg
       - name: Migrations from zero, twice, then encryption maintenance, through the built CLIs
         run: |

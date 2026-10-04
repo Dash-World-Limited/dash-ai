@@ -26,6 +26,7 @@
     "@dash-ai/contracts": "workspace:*",
     "@fastify/multipart": "^10.1.2",
     "fastify": "^5.12.5",
+    "ioredis": "^6.0.0",
     "mammoth": "^1.13.0",
     "openai": "^7.23.0",
     "pg": "^8.23.1",

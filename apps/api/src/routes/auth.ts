@@ -39,6 +39,14 @@ export function authRoutes(app: FastifyInstance, ctx: RouteContext): void {
 
   app.post("/v1/auth/login", { preHandler: byIp }, async (request: FastifyRequest) => {
     const body = parseOrThrow(LoginRequest, request.body);
+    // Per account as well as per IP: guessing one account's password from many IPs is limited too.
+    // Counted whether or not the account exists, so the limit itself reveals nothing.
+    const perAccount = await ctx.rateLimits.consume("login", `login:${body.email.trim().toLowerCase()}`);
+    if (!perAccount.allowed) {
+      throw new AppError("rate_limited", "Too many sign-in attempts for this account. Please wait and try again.", {
+        retryAfterSeconds: Math.max(1, Math.ceil(perAccount.retryAfterMs / 1000)),
+      });
+    }
     const user = await ctx.store.findUserByEmail(body.email);
     const ok = user
       ? await verifyPassword(body.password, user.passwordHash)
