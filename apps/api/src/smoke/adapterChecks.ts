@@ -141,7 +141,7 @@ export async function runAdapterChecks(adapter: ProviderAdapter, options: Adapte
         const call = first.calls[0]!;
         check(call.name === "dash-demo__text_stats", "the model called an unexpected tool");
         const execution = await executor.execute(call, offered, {
-          userId: "smoke", conversationId: "smoke-conversation", messageId: "smoke-message", provider: adapter.id,
+          userId: "smoke", conversationId: "smoke-conversation", messageId: "smoke-message", turnId: "smoke-turn", provider: adapter.id,
           signal: AbortSignal.timeout(10_000), now: () => new Date(),
           log: { warn: () => undefined, info: () => undefined, error: () => undefined } as never,
         });

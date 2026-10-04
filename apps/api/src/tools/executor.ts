@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { z } from "zod";
 import type { ToolCallStatus } from "@dash-ai/contracts";
 import { MAX_TOOL_TIMEOUT_MS, PluginRegistry, type OfferedTools } from "./registry.js";
@@ -12,7 +13,18 @@ export interface ExecutorOptions {
 
 export type ExecutionContext = Omit<ToolContext, "callId">;
 
-const FAILURE_TEXT: Record<Exclude<ToolCallStatus, "ok">, string> = {
+/** Where at-most-once executions are claimed (the Store in production). */
+export interface ExecutionLedger {
+  claimToolExecution(claim: { keyHash: string; userId: string; createdAt: string }): Promise<boolean>;
+  finishToolExecution(keyHash: string, status: string, finishedAt: string): Promise<void>;
+}
+
+export const DUPLICATE_TEXT = {
+  callId: "This tool call repeats one already answered in this response, so it was not run again. Use the earlier result.",
+  action: "This action was already carried out for this message, so it was not repeated.",
+} as const;
+
+const FAILURE_TEXT: Record<Exclude<ToolCallStatus, "ok" | "duplicate">, string> = {
   invalid_arguments: "The tool call was rejected because its arguments were invalid.",
   denied: "That tool is not available in this conversation.",
   unknown_tool: "That tool does not exist.",
@@ -34,6 +46,7 @@ export class ToolExecutor {
   constructor(
     private readonly registry: PluginRegistry,
     private readonly options: ExecutorOptions,
+    private readonly ledger?: ExecutionLedger,
   ) {}
 
   async execute(call: ModelToolCall, offered: OfferedTools, ctx: ExecutionContext): Promise<ToolExecution> {
@@ -47,11 +60,11 @@ export class ToolExecutor {
       tool,
       status,
       content,
-      isError: status !== "ok",
+      isError: status !== "ok" && status !== "duplicate",
       durationMs: Date.now() - started,
       argBytes,
     });
-    const fail = (status: Exclude<ToolCallStatus, "ok">, detail?: string) =>
+    const fail = (status: Exclude<ToolCallStatus, "ok" | "duplicate">, detail?: string) =>
       done(status, detail ? `${FAILURE_TEXT[status]} ${detail}` : FAILURE_TEXT[status]);
 
     if (ctx.signal.aborted) return fail("cancelled");
@@ -75,6 +88,26 @@ export class ToolExecutor {
     const parsed = entry.tool.input.strict().safeParse(raw);
     if (!parsed.success) return fail("invalid_arguments", describeIssues(parsed.error));
 
+    // At-most-once tools: claim the action before running it. A failed claim means it already ran
+    // (or started and its outcome is unknown, e.g. the server restarted): never run it again.
+    let claimed: string | undefined;
+    if (entry.tool.idempotency === "per-message") {
+      if (!this.ledger) return fail("denied", "This action cannot be run safely on this server.");
+      const keyHash = executionKey(ctx, entry.qualifiedName, parsed.data);
+      let first: boolean;
+      try {
+        first = await this.ledger.claimToolExecution({ keyHash, userId: ctx.userId, createdAt: ctx.now().toISOString() });
+      } catch {
+        return fail("error", "The action could not be recorded, so it was not run.");
+      }
+      if (!first) return done("duplicate", DUPLICATE_TEXT.action);
+      claimed = keyHash;
+    }
+    const finish = (execution: ToolExecution): ToolExecution => {
+      if (claimed) void this.ledger!.finishToolExecution(claimed, execution.status, ctx.now().toISOString()).catch(() => undefined);
+      return execution;
+    };
+
     const timeoutMs = Math.min(entry.tool.timeoutMs ?? this.options.defaultTimeoutMs, MAX_TOOL_TIMEOUT_MS);
     const controller = new AbortController();
     const onParentAbort = () => controller.abort("cancelled");
@@ -94,15 +127,15 @@ export class ToolExecutor {
         .then((value) => ({ ok: true as const, value }), (error: unknown) => ({ ok: false as const, error }));
       // A handler that ignores its signal still cannot hold the response past the timeout.
       const outcome = await Promise.race([running, interrupted]);
-      if (outcome === "timeout") return fail("timeout");
-      if (outcome === "cancelled") return fail("cancelled");
+      if (outcome === "timeout") return finish(fail("timeout"));
+      if (outcome === "cancelled") return finish(fail("cancelled"));
       if (!outcome.ok) {
-        if (outcome.error instanceof ToolUserError) return fail("error", outcome.error.message.slice(0, 300));
+        if (outcome.error instanceof ToolUserError) return finish(fail("error", outcome.error.message.slice(0, 300)));
         ctx.log.warn({ plugin, tool, errorName: outcome.error instanceof Error ? outcome.error.name : "unknown" }, "tool handler failed");
-        return fail("error");
+        return finish(fail("error"));
       }
       const text = typeof outcome.value === "string" ? outcome.value : safeStringify(outcome.value);
-      return done("ok", this.bound(text));
+      return finish(done("ok", this.bound(text)));
     } finally {
       clearTimeout(timer);
       ctx.signal.removeEventListener("abort", onParentAbort);
@@ -113,6 +146,23 @@ export class ToolExecutor {
     const max = this.options.maxResultChars;
     return text.length > max ? `${text.slice(0, max)}\n[output truncated: ${text.length - max} more characters]` : text;
   }
+}
+
+/** JSON with object keys sorted, so equivalent arguments always produce the same key. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).filter(([, v]) => v !== undefined).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/** The at-most-once key: who, where, which user message, which tool, which (validated) arguments. */
+export function executionKey(ctx: Pick<ExecutionContext, "userId" | "conversationId" | "turnId">, qualifiedName: string, args: unknown): string {
+  return createHash("sha256")
+    .update(JSON.stringify([ctx.userId, ctx.conversationId, ctx.turnId, qualifiedName, canonicalJson(args)]))
+    .digest("hex");
 }
 
 /** Audit labels for a model-supplied name: never store arbitrary model text. */

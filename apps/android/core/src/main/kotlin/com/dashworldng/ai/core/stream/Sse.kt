@@ -84,7 +84,12 @@ object StreamEventDecoder {
             ChatStreamEvent.MessageEnded(it.messageId, FinishReason.fromWire(it.finishReason), it.usage.inputTokens, it.usage.outputTokens)
         }
         "message.error" -> json.decodeFromString<MessageErrorDto>(raw.data).let {
-            ChatStreamEvent.MessageFailed(it.messageId, ApiError(it.error.code, it.error.message, it.error.retryable))
+            ChatStreamEvent.MessageFailed(
+                it.messageId,
+                ApiError(it.error.code, it.error.message, it.error.retryable),
+                attempts = it.recovery?.attempts ?: 1,
+                alternatives = it.recovery?.alternatives.orEmpty().mapNotNull { id -> ProviderId.fromWire(id) },
+            )
         }
         "conversation.title" -> json.decodeFromString<ConversationTitleDto>(raw.data).let {
             ChatStreamEvent.TitleChanged(it.conversationId, it.title)

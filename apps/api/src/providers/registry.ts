@@ -27,11 +27,13 @@ export class ProviderRegistry {
     const warnings: string[] = [];
     const { openai, anthropic } = config;
     if (openai.apiKey && openai.model) {
-      adapters.openai = new OpenAIAdapter(openai.apiKey, openai.model, { encryptedReasoning: openai.encryptedReasoning });
+      // maxRetries 0: retries happen in one place, the orchestrator (bounded, cancellable, counted),
+      // instead of multiplying SDK retries by orchestrator retries.
+      adapters.openai = new OpenAIAdapter(openai.apiKey, openai.model, { encryptedReasoning: openai.encryptedReasoning, maxRetries: 0 });
     }
     if (!(openai.apiKey && openai.model) && (openai.apiKey || openai.model)) warnings.push("OpenAI needs both OPENAI_API_KEY and OPENAI_MODEL.");
     if (anthropic.apiKey && anthropic.model) {
-      adapters.anthropic = new AnthropicAdapter(anthropic.apiKey, anthropic.model);
+      adapters.anthropic = new AnthropicAdapter(anthropic.apiKey, anthropic.model, { maxRetries: 0 });
     } else if (anthropic.apiKey || anthropic.model) {
       warnings.push("Claude needs both ANTHROPIC_API_KEY and ANTHROPIC_MODEL.");
     }

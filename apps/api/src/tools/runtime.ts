@@ -14,7 +14,7 @@ export class ToolRuntime {
     options: { defaultTimeoutMs: number; maxResultChars: number; maxRounds: number },
     private readonly store: Store,
   ) {
-    this.executor = new ToolExecutor(registry, options);
+    this.executor = new ToolExecutor(registry, options, store);
     this.maxRounds = options.maxRounds;
   }
 

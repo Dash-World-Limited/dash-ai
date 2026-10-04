@@ -76,7 +76,7 @@ function harness() {
   const { lines, log } = capturingLog();
   const run = (name: string, argumentsJson = "{}", id = "call_1") =>
     executor.execute({ id, name, argumentsJson }, offered, {
-      userId: "user-1", conversationId: "conv-0001", messageId: "msg-00001", provider: "openai",
+      userId: "user-1", conversationId: "conv-0001", messageId: "msg-00001", turnId: "turn-0001", provider: "openai",
       signal: new AbortController().signal, now: () => new Date("2026-03-04T05:06:07.000Z"), log,
     });
   return { run, probe: mock.probe, lines };

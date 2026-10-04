@@ -7,6 +7,8 @@ export interface ToolContext {
   userId: string;
   conversationId: string;
   messageId: string;
+  /** The user message that started this response (stable across retries and re-sends of it). */
+  turnId: string;
   callId: string;
   provider: ProviderId;
   /** Aborted on timeout or when the user stops the response. Handlers should honour it. */
@@ -39,6 +41,13 @@ export interface ToolDefinition<S extends z.ZodObject = z.ZodObject> {
   input: S;
   /** Overrides the server default (TOOL_TIMEOUT_MS), never exceeds the hard cap. */
   timeoutMs?: number;
+  /**
+   * "per-message": the same action (same tool and arguments) runs at most once per user message,
+   * whatever the call id, however often the stream is retried or the message re-sent, across
+   * instances and restarts (a database ledger is claimed before the handler runs). Required for
+   * every "write" tool. Read-only tools leave it unset: repeating a lookup is intended.
+   */
+  idempotency?: "per-message";
   execute(args: z.infer<S>, ctx: ToolContext): Promise<string | Record<string, unknown>>;
 }
 

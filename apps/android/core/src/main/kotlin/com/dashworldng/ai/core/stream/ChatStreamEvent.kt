@@ -40,7 +40,16 @@ sealed interface ChatStreamEvent {
         val outputTokens: Int?,
     ) : ChatStreamEvent
 
-    data class MessageFailed(val messageId: String, val error: ApiError) : ChatStreamEvent
+    /**
+     * @property alternatives other providers the user may choose explicitly to retry this answer
+     *   (the server never switches provider by itself). Unknown provider ids are dropped.
+     */
+    data class MessageFailed(
+        val messageId: String,
+        val error: ApiError,
+        val attempts: Int = 1,
+        val alternatives: List<ProviderId> = emptyList(),
+    ) : ChatStreamEvent
 
     data class TitleChanged(val conversationId: String, val title: String) : ChatStreamEvent
 

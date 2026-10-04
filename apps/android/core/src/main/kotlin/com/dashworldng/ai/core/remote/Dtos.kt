@@ -225,8 +225,12 @@ data class UsageDto(val inputTokens: Int?, val outputTokens: Int?)
 @Serializable
 data class MessageEndDto(val messageId: String, val finishReason: String, val usage: UsageDto)
 
+/** How a failed answer can be recovered: attempts made, and other providers the user may pick. */
 @Serializable
-data class MessageErrorDto(val messageId: String, val error: ApiErrorDto)
+data class MessageRecoveryDto(val attempts: Int, val alternatives: List<String> = emptyList())
+
+@Serializable
+data class MessageErrorDto(val messageId: String, val error: ApiErrorDto, val recovery: MessageRecoveryDto? = null)
 
 @Serializable
 data class ConversationTitleDto(val conversationId: String, val title: String)

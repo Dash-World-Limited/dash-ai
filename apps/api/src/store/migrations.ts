@@ -157,4 +157,22 @@ ALTER TABLE messages ALTER COLUMN content DROP NOT NULL;
 ALTER TABLE messages ADD COLUMN content_enc bytea, ADD COLUMN content_key_id text;
 `,
   },
+  {
+    id: 5,
+    name: "tool_execution_ledger",
+    sql: `
+-- At-most-once ledger for tools that change things (declared idempotency "per-message"). The key is
+-- a SHA-256 of user, conversation, user message, tool and canonical arguments: no arguments,
+-- results or content are stored. A row is claimed before the tool runs and is never re-claimed, so
+-- a retried stream, a reconnecting client or a server restart cannot run the same action twice.
+CREATE TABLE tool_executions (
+  key_hash    text PRIMARY KEY,
+  user_id     text NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  status      text NOT NULL,
+  created_at  timestamptz NOT NULL,
+  finished_at timestamptz
+);
+CREATE INDEX tool_executions_user_idx ON tool_executions (user_id);
+`,
+  },
 ];

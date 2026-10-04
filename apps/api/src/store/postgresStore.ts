@@ -199,12 +199,18 @@ export class PostgresStore implements Store {
    * Bumps the owner's change counter and stamps the conversation with it. The user row lock is
    * held until commit, so one user's sequence numbers become visible in order and a sync cursor
    * can never skip a change.
+   *
+   * Lock order (every transaction in this store): the conversation row first, then the user row.
+   * Taking them the other way round here once deadlocked against saveConversation when the same
+   * message was sent twice at once (a reconnecting client). `FOR NO KEY UPDATE` is enough (keys never
+   * change) and does not conflict with the key-share locks that message inserts take.
    */
   private async touch(q: Queryable, conversationId: string): Promise<void> {
     await q.query(
-      `WITH u AS (
+      `WITH c AS (SELECT user_id FROM conversations WHERE id = $1 FOR NO KEY UPDATE),
+       u AS (
          UPDATE users SET sync_counter = sync_counter + 1
-         WHERE id = (SELECT user_id FROM conversations WHERE id = $1)
+         WHERE id = (SELECT user_id FROM c)
          RETURNING sync_counter)
        UPDATE conversations SET sync_seq = (SELECT sync_counter FROM u) WHERE id = $1`,
       [conversationId],
@@ -303,7 +309,7 @@ export class PostgresStore implements Store {
   }
 
   private async lockConversation(client: pg.PoolClient, id: string): Promise<ConversationRow | undefined> {
-    const { rows } = await client.query<ConversationRow>("SELECT * FROM conversations WHERE id = $1 FOR UPDATE", [id]);
+    const { rows } = await client.query<ConversationRow>("SELECT * FROM conversations WHERE id = $1 FOR NO KEY UPDATE", [id]);
     return rows[0];
   }
 
@@ -665,6 +671,18 @@ export class PostgresStore implements Store {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
       [t.userId, t.conversationId, t.messageId, t.callId, t.provider, t.plugin, t.tool, t.status, t.durationMs, t.argBytes, t.resultChars, t.createdAt],
     );
+  }
+
+  async claimToolExecution(claim: { keyHash: string; userId: string; createdAt: string }): Promise<boolean> {
+    const res = await this.pool.query(
+      "INSERT INTO tool_executions (key_hash, user_id, status, created_at) VALUES ($1,$2,'started',$3) ON CONFLICT (key_hash) DO NOTHING",
+      [claim.keyHash, claim.userId, claim.createdAt],
+    );
+    return res.rowCount === 1;
+  }
+
+  async finishToolExecution(keyHash: string, status: string, finishedAt: string): Promise<void> {
+    await this.pool.query("UPDATE tool_executions SET status = $2, finished_at = $3 WHERE key_hash = $1", [keyHash, status, finishedAt]);
   }
 
   async listToolInvocations(userId: string, limit: number): Promise<ToolInvocationRow[]> {

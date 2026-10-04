@@ -39,6 +39,7 @@ export class MemoryStore implements Store {
   private usage: UsageRow[] = [];
   private readonly pluginSettings = new Map<string, Map<string, PluginSettingRecord>>();
   private toolInvocations: ToolInvocationRow[] = [];
+  private readonly toolExecutions = new Map<string, { userId: string; status: string }>();
 
   private bump(conversation: StoredConversation): void {
     const next = (this.syncCounters.get(conversation.record.userId) ?? 0) + 1;
@@ -91,6 +92,7 @@ export class MemoryStore implements Store {
     this.usage = this.usage.filter((u) => u.userId !== userId);
     this.pluginSettings.delete(userId);
     this.toolInvocations = this.toolInvocations.filter((t) => t.userId !== userId);
+    for (const [key, e] of this.toolExecutions) if (e.userId === userId) this.toolExecutions.delete(key);
   }
 
   async createSession(session: SessionRecord): Promise<void> {
@@ -301,6 +303,17 @@ export class MemoryStore implements Store {
 
   async recordToolInvocation(row: ToolInvocationRow): Promise<void> {
     this.toolInvocations.push({ ...row });
+  }
+
+  async claimToolExecution(claim: { keyHash: string; userId: string; createdAt: string }): Promise<boolean> {
+    if (this.toolExecutions.has(claim.keyHash)) return false;
+    this.toolExecutions.set(claim.keyHash, { userId: claim.userId, status: "started" });
+    return true;
+  }
+
+  async finishToolExecution(keyHash: string, status: string): Promise<void> {
+    const e = this.toolExecutions.get(keyHash);
+    if (e) e.status = status;
   }
 
   async listToolInvocations(userId: string, limit: number): Promise<ToolInvocationRow[]> {

@@ -21,8 +21,10 @@ import {
 import { newId } from "../security/crypto.js";
 import type { ConversationRecord, DocumentRecord, Store } from "../store/store.js";
 import { OfferedTools } from "../tools/registry.js";
+import { DUPLICATE_TEXT } from "../tools/executor.js";
 import type { ToolRuntime } from "../tools/runtime.js";
 import type { ModelToolCall } from "../tools/types.js";
+import type { Metrics } from "../observability/metrics.js";
 import { withIdleTimeout } from "./timeouts.js";
 import { DEFAULT_TITLE, generateTitle } from "./titles.js";
 
@@ -39,6 +41,7 @@ export interface ChatContext {
   config: AppConfig;
   log: FastifyBaseLogger;
   now: () => Date;
+  metrics?: Metrics;
 }
 
 /** A model may ask for many calls in one step; beyond this they are refused, not run. */
@@ -204,6 +207,9 @@ async function runTarget(
   else parentSignal.addEventListener("abort", onParentAbort, { once: true });
   const overall = setTimeout(() => controller.abort("timeout"), ctx.config.providerTimeoutMs);
 
+  const started = Date.now();
+  const seenCallIds = new Set<string>();
+  let attempts = 0;
   let content = "";
   let status: MessageStatus = "complete";
   let usage: Usage = { inputTokens: null, outputTokens: null };
@@ -231,31 +237,63 @@ async function runTarget(
       let calls: ModelToolCall[] = [];
       let continuation: unknown;
       let roundFinish: "stop" | "length" | "refusal" = "stop";
-      const source = adapter.stream({
-        system,
-        messages: turns,
-        ...(tools ? { tools, toolChoice: toolUse ? ("auto" as const) : ("none" as const) } : {}),
-        maxOutputTokens: ctx.config.maxOutputTokens,
-        signal: controller.signal,
-      });
-      for await (const chunk of withIdleTimeout(source, ctx.config.providerIdleTimeoutMs, () =>
-        controller.abort("timeout"),
-      )) {
-        if (chunk.type === "text") {
-          if (roundText === "" && content !== "" && !/\s$/.test(content)) {
-            content += "\n\n";
-            sink.send({ event: "message.delta", data: { messageId, text: "\n\n" } });
+      // One provider request per attempt. A retryable failure before this attempt produced anything
+      // is retried with backoff (see retryDelayMs); once output has reached the client, or a tool
+      // has been requested, the failure is final: retrying would duplicate text or tool calls.
+      // Tools from earlier rounds already ran and their results are in `turns`, so a retried
+      // request never runs them again.
+      for (let attempt = 0; ; attempt++) {
+        attempts += 1;
+        const attemptController = new AbortController();
+        const onTargetAbort = () => attemptController.abort(controller.signal.reason);
+        if (controller.signal.aborted) onTargetAbort();
+        else controller.signal.addEventListener("abort", onTargetAbort, { once: true });
+        let produced = false;
+        try {
+          const source = adapter.stream({
+            system,
+            messages: turns,
+            ...(tools ? { tools, toolChoice: toolUse ? ("auto" as const) : ("none" as const) } : {}),
+            maxOutputTokens: ctx.config.maxOutputTokens,
+            signal: attemptController.signal,
+          });
+          for await (const chunk of withIdleTimeout(source, ctx.config.providerIdleTimeoutMs, () =>
+            attemptController.abort("timeout"),
+          )) {
+            produced = true;
+            if (chunk.type === "text") {
+              if (roundText === "" && content !== "" && !/\s$/.test(content)) {
+                content += "\n\n";
+                sink.send({ event: "message.delta", data: { messageId, text: "\n\n" } });
+              }
+              content += chunk.text;
+              roundText += chunk.text;
+              sink.send({ event: "message.delta", data: { messageId, text: chunk.text } });
+            } else if (chunk.type === "tool_calls") {
+              calls = chunk.calls;
+              continuation = chunk.continuation;
+            } else {
+              roundFinish = chunk.finishReason;
+              usage = addUsage(usage, chunk.usage);
+              servedModel = chunk.servedModel ?? servedModel;
+            }
           }
-          content += chunk.text;
-          roundText += chunk.text;
-          sink.send({ event: "message.delta", data: { messageId, text: chunk.text } });
-        } else if (chunk.type === "tool_calls") {
-          calls = chunk.calls;
-          continuation = chunk.continuation;
-        } else {
-          roundFinish = chunk.finishReason;
-          usage = addUsage(usage, chunk.usage);
-          servedModel = chunk.servedModel ?? servedModel;
+          break;
+        } catch (err) {
+          // The target's own abort (user cancel, overall timeout) is never retried.
+          if (controller.signal.aborted) throw err;
+          const error = toProviderError(adapter.displayName, err, attemptController.signal);
+          ctx.metrics?.providerFailures.inc({ provider: adapter.id, code: error.code, retryable: error.retryable });
+          const delay = retryDelayMs(ctx.config.providerRetry, attempt, error);
+          const remaining = ctx.config.providerTimeoutMs - (Date.now() - started);
+          if (produced || !error.retryable || attempt >= ctx.config.providerRetry.maxRetries || delay >= remaining) {
+            throw error;
+          }
+          ctx.metrics?.providerRetries.inc({ provider: adapter.id, code: error.code });
+          ctx.log.info({ provider: adapter.id, code: error.code, attempt: attempt + 1, delayMs: delay }, "retrying provider request");
+          await sleep(delay, controller.signal);
+        } finally {
+          controller.signal.removeEventListener("abort", onTargetAbort);
         }
       }
       finishReason = roundFinish;
@@ -266,7 +304,7 @@ async function runTarget(
         break;
       }
 
-      const results = await runToolCalls(ctx, prepared, target, calls, controller.signal, sink);
+      const results = await runToolCalls(ctx, prepared, target, calls, controller.signal, sink, seenCallIds);
       // `turns` belongs to this target alone, so a continuation only ever goes back to its own provider.
       turns.push(
         { role: "assistant", content: roundText, toolCalls: calls, ...(continuation !== undefined ? { continuation } : {}) },
@@ -287,13 +325,21 @@ async function runTarget(
       });
     } else {
       status = "failed";
+      // Metadata only: never the prompt, the partial answer, tool payloads or provider error text.
       ctx.log.warn(
-        { provider: adapter.id, code: error.code, httpStatus: error.httpStatus, demo: adapter.demo },
+        { provider: adapter.id, code: error.code, httpStatus: error.httpStatus, demo: adapter.demo, attempts, partial: content.length > 0 },
         "provider stream failed",
       );
+      // The server never switches provider on its own: that would answer with a model the user did
+      // not choose. It says which other providers the user could pick explicitly.
+      const alternatives = [...ctx.providers.configured()].filter((p) => p !== adapter.id);
       sink.send({
         event: "message.error",
-        data: { messageId, error: { code: error.code, message: error.message, retryable: error.retryable } },
+        data: {
+          messageId,
+          error: { code: error.code, message: error.message, retryable: error.retryable },
+          recovery: { attempts: Math.max(1, attempts), alternatives },
+        },
       });
     }
   } finally {
@@ -329,6 +375,32 @@ async function runTarget(
   return { provider: adapter.id, status, usage };
 }
 
+/**
+ * Backoff before retry number `attempt + 1`: base × 2^attempt, four times longer after rate
+ * limiting, ±20 % jitter so instances do not retry in lockstep, capped at 8 s.
+ */
+export function retryDelayMs(policy: { baseMs: number }, attempt: number, error: { code: string }, random: () => number = Math.random): number {
+  const factor = error.code === "rate_limited" ? 4 : 1;
+  const raw = policy.baseMs * factor * 2 ** attempt;
+  return Math.min(8_000, Math.round(raw * (0.8 + 0.4 * random())));
+}
+
+/** Resolves after `ms`, or rejects as soon as `signal` aborts (a cancel during backoff is immediate). */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new Error("aborted"));
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error("aborted"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 const addUsage = (a: Usage, b: Usage): Usage => ({
   inputTokens: a.inputTokens === null && b.inputTokens === null ? null : (a.inputTokens ?? 0) + (b.inputTokens ?? 0),
   outputTokens: a.outputTokens === null && b.outputTokens === null ? null : (a.outputTokens ?? 0) + (b.outputTokens ?? 0),
@@ -345,6 +417,8 @@ async function runToolCalls(
   calls: readonly ModelToolCall[],
   signal: AbortSignal,
   sink: SseSink,
+  /** Call ids already handled in this response (any round). A repeated id is never run again. */
+  seenCallIds: Set<string>,
 ): Promise<ProviderToolResult[]> {
   const { adapter, messageId } = target;
   const results: ProviderToolResult[] = [];
@@ -367,16 +441,21 @@ async function runToolCalls(
     const plugin = label?.[1] ?? "unknown";
     const tool = label?.[2] ?? "unknown";
     sink.send({ event: "tool.call", data: { messageId, callId, plugin, tool } });
-    const execution = overLimit
-      ? {
-          callId: call.id, name: call.name, plugin, tool, status: "denied" as const, isError: true, durationMs: 0,
-          argBytes: Buffer.byteLength(call.argumentsJson, "utf8"),
-          content: "Too many tool calls were requested in one step; this one was not run.",
-        }
+    const repeated = seenCallIds.has(call.id);
+    seenCallIds.add(call.id);
+    const notRun = (status: "denied" | "duplicate", content: string) => ({
+      callId: call.id, name: call.name, plugin, tool, status, isError: status !== "duplicate", durationMs: 0,
+      argBytes: Buffer.byteLength(call.argumentsJson, "utf8"), content,
+    });
+    const execution = repeated
+      ? notRun("duplicate", DUPLICATE_TEXT.callId)
+      : overLimit
+      ? notRun("denied", "Too many tool calls were requested in one step; this one was not run.")
       : await ctx.tools.executor.execute(call, allowed, {
           userId: prepared.userId,
           conversationId: prepared.conversation.id,
           messageId,
+          turnId: prepared.request.message.id,
           provider: adapter.id,
           signal,
           now: ctx.now,
@@ -386,6 +465,7 @@ async function runToolCalls(
       event: "tool.result",
       data: { messageId, callId, plugin: execution.plugin, tool: execution.tool, status: execution.status, durationMs: execution.durationMs },
     });
+    ctx.metrics?.toolInvocations.inc({ plugin: execution.plugin, tool: execution.tool, status: execution.status });
     // Metadata only (no arguments, no results), for the user's own tool-activity view and export.
     ctx.log.info(
       { provider: adapter.id, plugin: execution.plugin, tool: execution.tool, status: execution.status, durationMs: execution.durationMs },

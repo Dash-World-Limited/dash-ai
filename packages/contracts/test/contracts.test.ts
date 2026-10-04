@@ -86,6 +86,8 @@ describe("SSE transcripts", () => {
       "openai",
       "anthropic",
     ]);
+    const failure = events[5];
+    expect(failure?.event === "message.error" && failure.data.recovery).toEqual({ attempts: 3, alternatives: ["openai"] });
     const third = events[3];
     expect(third?.event === "message.delta" && third.data.text).toBe(' — ünïcödé ✓ "quoted"');
   });

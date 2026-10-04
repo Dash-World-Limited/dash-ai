@@ -87,6 +87,9 @@ export class PluginRegistry {
         throw new PluginRegistrationError(`Tool "${qualifiedName}" writes but its scope "${tool.scope}" is read-only.`);
       }
       if (tool.description.trim().length === 0) throw new PluginRegistrationError(`Tool "${qualifiedName}" needs a description.`);
+      if (tool.risk === "write" && tool.idempotency !== "per-message") {
+        throw new PluginRegistrationError(`Tool "${qualifiedName}" writes, so it must declare idempotency "per-message".`);
+      }
       if (tool.timeoutMs !== undefined && (tool.timeoutMs < 1 || tool.timeoutMs > MAX_TOOL_TIMEOUT_MS)) {
         throw new PluginRegistrationError(`Tool "${qualifiedName}" has an invalid timeout.`);
       }

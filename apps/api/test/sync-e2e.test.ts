@@ -130,3 +130,24 @@ describe("no lost or duplicated messages under concurrency and failures", () => 
     expect(detail.conversation.title).toBe("Renamed");
   });
 });
+
+describe("the same message sent twice at once (a reconnecting client)", () => {
+  // Regression: on PostgreSQL this deadlocked (40P01) and one request failed with an internal
+  // error, because two code paths took the conversation and user row locks in opposite orders.
+  it("both requests succeed, nothing fails, and the conversation ends consistent", async () => {
+    const { app } = await setup();
+    const { auth } = await register(app);
+    for (let round = 0; round < 8; round++) {
+      const conversationId = testId("conv");
+      const message = { id: testId("msg"), content: `round ${round}` };
+      const results = await Promise.all([send(app, auth, conversationId, message, "openai"), send(app, auth, conversationId, message, "openai")]);
+      for (const events of results) expect(events.filter((e) => e.event === "stream.error" || e.event === "message.error")).toEqual([]);
+      const detail = ConversationDetailResponse.parse((await app.inject({ method: "GET", url: `/v1/conversations/${conversationId}`, headers: auth })).json());
+      expect(detail.messages.filter((m) => m.role === "user").map((m) => m.id)).toEqual([message.id]);
+    }
+    // Sync still sees each conversation exactly once.
+    const ids = (await pull(app, auth)).changes.map((c) => c.conversation.id);
+    expect(ids).toHaveLength(8);
+    expect(new Set(ids).size).toBe(8);
+  });
+});

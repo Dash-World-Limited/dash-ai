@@ -101,6 +101,8 @@ class ContractFixturesTest {
         val failure = assertIs<ChatStreamEvent.MessageFailed>(events[5])
         assertEquals("provider_timeout", failure.error.code)
         assertTrue(failure.error.retryable)
+        assertEquals(3, failure.attempts)
+        assertEquals(listOf(ProviderId.OPENAI), failure.alternatives)
         assertEquals("Premium coffee kiosk plan", assertIs<ChatStreamEvent.TitleChanged>(events[6]).title)
         assertIs<ChatStreamEvent.Ended>(events[7])
     }

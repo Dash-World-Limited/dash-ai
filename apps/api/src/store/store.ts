@@ -199,6 +199,13 @@ export interface Store {
 
   /** Audit metadata for tool calls (never arguments or results). */
   recordToolInvocation(row: ToolInvocationRow): Promise<void>;
+  /**
+   * Claims an at-most-once tool execution. True only for the first claim of `keyHash`; every later
+   * claim (another call id, a retried stream, another instance, after a restart) gets false.
+   */
+  claimToolExecution(claim: { keyHash: string; userId: string; createdAt: string }): Promise<boolean>;
+  /** Records how a claimed execution ended. The claim itself is never released. */
+  finishToolExecution(keyHash: string, status: string, finishedAt: string): Promise<void>;
   /** Most recent first. */
   listToolInvocations(userId: string, limit: number): Promise<ToolInvocationRow[]>;
 

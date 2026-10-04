@@ -16,7 +16,7 @@ const setting = (pluginId: string, enabled: boolean, grantedScopes: string[]): P
   pluginId, enabled, grantedScopes, updatedAt: "2026-01-01T00:00:00.000Z",
 });
 const ctxFor = (signal = new AbortController().signal) => ({
-  userId: "user-1", conversationId: "conv-0001", messageId: "msg-00001", provider: "openai" as const,
+  userId: "user-1", conversationId: "conv-0001", messageId: "msg-00001", turnId: "turn-0001", provider: "openai" as const,
   signal, now: () => new Date("2026-03-04T05:06:07.000Z"), log: silentLog,
 });
 

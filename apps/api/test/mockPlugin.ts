@@ -47,6 +47,7 @@ export function makeMockGithubPlugin(): { plugin: ToolPlugin; probe: MockPluginP
         description: "Creates an issue in a repository.",
         scope: "issues:write",
         risk: "write",
+        idempotency: "per-message",
         input: z.object({ repo: z.string(), title: z.string() }),
         async execute(args) {
           seen("create_issue", args);
@@ -64,6 +65,18 @@ export function makeMockGithubPlugin(): { plugin: ToolPlugin; probe: MockPluginP
           seen("slow_lookup", args);
           ctx.signal.addEventListener("abort", () => (probe.aborted += 1), { once: true });
           return new Promise<string>(() => undefined); // never settles, even when aborted
+        },
+      }),
+      defineTool({
+        name: "add_label",
+        description: "Adds a label to an issue (mocked). Stands in for a side-effecting tool: it runs at most once per user message.",
+        scope: "issues:read",
+        risk: "read",
+        idempotency: "per-message",
+        input: z.object({ issue: z.number().int().min(1), label: z.string().min(1).max(40) }),
+        async execute(args) {
+          seen("add_label", args);
+          return { labelled: args.issue, label: args.label };
         },
       }),
       defineTool({

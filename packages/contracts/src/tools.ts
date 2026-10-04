@@ -12,9 +12,14 @@ export const ScopeId = z.string().regex(/^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*$/, "In
 export const ToolRisk = z.enum(["read", "write"]);
 export type ToolRisk = z.infer<typeof ToolRisk>;
 
-/** Outcome of one tool call. Anything other than "ok" is reported to the model as an error. */
+/**
+ * Outcome of one tool call. Anything other than "ok" and "duplicate" is reported to the model as an
+ * error. "duplicate": the call was not run because it repeats one already handled (same call id in
+ * this response, or the same action for the same user message on a tool that runs at most once).
+ */
 export const ToolCallStatus = z.enum([
   "ok",
+  "duplicate",
   "invalid_arguments",
   "denied",
   "unknown_tool",

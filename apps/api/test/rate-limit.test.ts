@@ -45,7 +45,9 @@ afterEach(() => {
 });
 
 function redisStore(options: { prefix: string; now?: () => number; url?: string; degradedMs?: number; onBackendError?: (e: string) => void }) {
-  const store = new RedisRateLimitStore({ url: options.url ?? redisUrl, prefix: options.prefix, now: options.now, degradedMs: options.degradedMs, onBackendError: options.onBackendError });
+  // A generous command timeout: the full test suite loads the CPU, and a slow command would
+  // (correctly) fall back to local limits. Production keeps the 250 ms default.
+  const store = new RedisRateLimitStore({ url: options.url ?? redisUrl, prefix: options.prefix, now: options.now, degradedMs: options.degradedMs, onBackendError: options.onBackendError, commandTimeoutMs: 2_000 });
   stores.push(store);
   return store;
 }
@@ -204,12 +206,13 @@ describe("when the shared backend fails", () => {
       const errors: string[] = [];
       const prefix = freshPrefix();
       const a = redisStore({ prefix, url: redis.url, now: () => now, degradedMs: 1_000, onBackendError: (e) => errors.push(e) });
-      const b = redisStore({ prefix, url: redis.url, now: () => now, degradedMs: 1_000 });
+      const b = redisStore({ prefix, url: redis.url, now: () => now, degradedMs: 1_000, onBackendError: (e) => errors.push(`b:${e}`) });
       expect(await a.ready()).toBe(true);
       expect(await b.ready()).toBe(true);
       expect((await a.consume("login", rule, "k")).allowed).toBe(true);
       expect(errors).toEqual([]);
       await redis.stop();
+      await new Promise((r) => setTimeout(r, 100)); // let both clients notice the closed connection
       // During the outage requests still get answers (from the fallback).
       expect((await a.consume("login", rule, "k")).allowed).toBe(true);
       expect(errors.length).toBeGreaterThanOrEqual(1);
