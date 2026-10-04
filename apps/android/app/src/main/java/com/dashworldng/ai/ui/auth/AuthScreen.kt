@@ -106,6 +106,8 @@ class AuthViewModel(private val services: AppServices) : ViewModel() {
         viewModelScope.launch {
             try {
                 val session = if (s.creating) auth.register(s.email, s.password, s.name) else auth.login(s.email, s.password)
+                // Before anything of the new account is stored: remove another account's data left on this device.
+                services.accountGuard.onSignedIn(session.user.id)
                 services.tokens.set(session.token)
                 services.settings.update {
                     it.copy(

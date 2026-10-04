@@ -78,11 +78,15 @@ class AccountViewModel(private val services: AppServices) : ViewModel() {
         }
     }
 
+    /**
+     * Signs out and removes this account's conversations, documents, prompts and sync state from the
+     * device, online or offline (see LocalAccountGuard). The server session is revoked when reachable.
+     */
     fun signOut(onDone: () -> Unit) {
         viewModelScope.launch {
             val account = settings.value.account
-            if (account != null && !account.isDemo) runCatching { services.authService()?.logout() }
-            services.tokens.set(null)
+            val signedIn = account != null && !account.isDemo
+            services.accountGuard.signOut(revokeServerSession = { if (signedIn) services.authService()?.logout() })
             services.settings.update { it.copy(account = null, demoMode = true) }
             onDone()
         }
@@ -95,10 +99,8 @@ class AccountViewModel(private val services: AppServices) : ViewModel() {
         viewModelScope.launch {
             try {
                 auth.deleteAccount()
-                services.tokens.set(null)
-                services.conversations.deleteAll()
-                services.prompts.deleteAll()
-                services.documents.deleteAll()
+                // The server already ended every session; this removes the account's local data too.
+                services.accountGuard.signOut(revokeServerSession = {})
                 services.settings.update { it.copy(account = null, demoMode = true) }
                 onDone()
             } catch (e: ApiException) {

@@ -1,5 +1,7 @@
 package com.dashworldng.ai.core.contract
 
+import com.dashworldng.ai.core.account.InMemoryLocalOwnerStore
+import com.dashworldng.ai.core.account.LocalAccountGuard
 import com.dashworldng.ai.core.auth.AuthService
 import com.dashworldng.ai.core.chat.ChatSession
 import com.dashworldng.ai.core.chat.ChatRequest
@@ -229,6 +231,51 @@ class LiveApiContractTest {
             val error = assertFailsWith<ApiException> { DashApiSyncRemote(device).changes("0", 10) }
             assertEquals(401, error.httpStatus)
         }
+    }
+
+    @Test
+    fun `one device, two accounts - signing out removes the first account's data and the second sees none of it`() = runBlocking<Unit> {
+        // Alice is this test's account (client/token). She chats, syncs, then signs out.
+        RemoteChatGateway(client).stream(request(ModelChoice.OPENAI, "Alice's private plan")).toList()
+        val repo = InMemoryConversationRepository()
+        val documents = com.dashworldng.ai.core.data.InMemoryDocumentRepository()
+        val prompts = com.dashworldng.ai.core.data.InMemoryPromptRepository()
+        val syncState = InMemorySyncStateStore()
+        var deviceToken: String? = token
+        val device = DashApiClient(baseUrl!!, tokenProvider = { deviceToken })
+        lateinit var guard: LocalAccountGuard
+        var sync = ConversationSyncService(DashApiSyncRemote(device), repo, syncState, isOwner = { guard.isOwner(it) })
+        guard = LocalAccountGuard(InMemoryLocalOwnerStore(), repo, documents, prompts, syncState, clearCredentials = { deviceToken = null }, exclusive = { block -> sync.exclusive(block) })
+        val alice = AuthService { device }.login(email, "correct horse battery")
+        deviceToken = alice.token
+        guard.onSignedIn(alice.user.id)
+        sync.sync(alice.user.id)
+        val alicesIds = repo.allConversations().map { it.id }
+        assertTrue(alicesIds.isNotEmpty())
+
+        val out = guard.signOut { AuthService { device }.logout() }
+        assertTrue(out.serverSessionRevoked)
+        assertEquals(null, deviceToken)
+        assertTrue(repo.allConversations().isEmpty())
+        // The revoked token no longer works on the server.
+        val revoked = assertFailsWith<ApiException> { DashApiSyncRemote(DashApiClient(baseUrl, tokenProvider = { alice.token })).changes("0", 10) }
+        assertEquals(401, revoked.httpStatus)
+
+        // Bob signs in on the same device.
+        val bob = AuthService { device }.register("bob-${UUID.randomUUID()}@example.com", "correct horse battery", "Bob")
+        deviceToken = bob.token
+        guard.onSignedIn(bob.user.id)
+        sync = ConversationSyncService(DashApiSyncRemote(device), repo, syncState, isOwner = { guard.isOwner(it) })
+        sync.sync(bob.user.id)
+        assertTrue(repo.allConversations().none { it.id in alicesIds })
+        for (id in alicesIds) assertEquals(null, repo.getConversation(id))
+
+        // Alice comes back: Bob's data is removed, hers is synced again from the server.
+        val again = AuthService { device }.login(email, "correct horse battery")
+        deviceToken = again.token
+        assertTrue(guard.onSignedIn(again.user.id))
+        sync.sync(again.user.id)
+        assertEquals(alicesIds.sorted(), repo.allConversations().map { it.id }.sorted())
     }
 
     @Test

@@ -91,6 +91,7 @@ data class SyncResult(
  *     choice, error text) are kept, and messages only on the device are never deleted by a pull.
  * 13. Nothing syncs while a response is being generated.
  * 14. Another account starts from scratch: cursor, revisions and pending work are dropped.
+ * 15. A sync for an account that is no longer the device's owner (signed out meanwhile) writes nothing.
  *
  * The cursor advances only after a whole page has been applied. A change that cannot be understood is
  * skipped and counted (otherwise one bad record would block sync forever); a page that does not move
@@ -103,12 +104,21 @@ class ConversationSyncService(
     private val canSync: () -> Boolean = { true },
     private val pageSize: Int = 20,
     private val ids: IdGenerator = IdGenerator.Uuid,
+    /**
+     * Whether [userId]'s data is still the data on this device (see LocalAccountGuard). Checked before
+     * a sync starts and before each change is written, so a sync that was running when the account
+     * signed out writes nothing more.
+     */
+    private val isOwner: suspend (userId: String) -> Boolean = { true },
 ) {
     private val lock = Mutex()
 
+    /** Runs [block] while no sync is running (and none can start): used to wipe data safely. */
+    suspend fun exclusive(block: suspend () -> Unit) = lock.withLock { block() }
+
     /** Pushes pending local work, then pulls every change after the saved cursor. */
     suspend fun sync(userId: String): SyncResult = lock.withLock {
-        if (!canSync()) return SyncResult(cursor = state.load().cursor, deferred = true)
+        if (!canSync() || !isOwner(userId)) return SyncResult(cursor = state.load().cursor, deferred = true)
         var result = SyncResult()
         var current = loadFor(userId)
         state.save(current)
@@ -134,10 +144,13 @@ class ConversationSyncService(
                 throw ApiException(ApiError("bad_response", "The server sent an invalid sync position.", retryable = true))
             }
             for (change in page.changes) {
+                // The account signed out while this page was downloading: write nothing, keep no state.
+                if (!isOwner(userId)) return SyncResult(cursor = "0", deferred = true)
                 val applied = applyChange(change, current, result)
                 current = applied.first
                 result = applied.second
             }
+            if (!isOwner(userId)) return SyncResult(cursor = "0", deferred = true)
             current = current.copy(cursor = page.cursor)
             state.save(current)
             result = result.copy(cursor = current.cursor)
@@ -148,6 +161,7 @@ class ConversationSyncService(
 
     /** A conversation was created or extended on this device: upload it at the next sync. */
     suspend fun onLocalConversationChanged(userId: String, id: String) = lock.withLock {
+        if (!isOwner(userId)) return@withLock
         val current = loadFor(userId)
         if (id in current.pendingDeletes) return@withLock
         state.save(current.copy(pendingUploads = current.pendingUploads + id))
@@ -155,6 +169,7 @@ class ConversationSyncService(
 
     /** The user deleted a conversation on this device. Sends it now if possible; otherwise remembers it. */
     suspend fun onLocalDelete(userId: String, id: String) = lock.withLock {
+        if (!isOwner(userId)) return@withLock
         val current = loadFor(userId)
         val next = current.forget(id).copy(pendingDeletes = current.pendingDeletes + id, titleRevs = current.titleRevs)
         state.save(next)
@@ -163,6 +178,7 @@ class ConversationSyncService(
 
     /** The user renamed a conversation on this device. Sends it now if possible; otherwise remembers it. */
     suspend fun onLocalRename(userId: String, id: String, title: String) = lock.withLock {
+        if (!isOwner(userId)) return@withLock
         val current = loadFor(userId)
         if (id in current.pendingDeletes) return@withLock
         val base = current.titleRevs[id]

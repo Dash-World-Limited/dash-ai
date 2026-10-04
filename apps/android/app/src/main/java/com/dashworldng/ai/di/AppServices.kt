@@ -2,6 +2,9 @@ package com.dashworldng.ai.di
 
 import android.content.Context
 import com.dashworldng.ai.BuildConfig
+import com.dashworldng.ai.core.account.InMemoryLocalOwnerStore
+import com.dashworldng.ai.core.account.LocalAccountGuard
+import com.dashworldng.ai.core.account.LocalOwnerStore
 import com.dashworldng.ai.core.auth.AuthService
 import com.dashworldng.ai.core.chat.ChatGateway
 import com.dashworldng.ai.core.chat.ChatRequest
@@ -34,6 +37,7 @@ import com.dashworldng.ai.data.local.DashDatabase
 import com.dashworldng.ai.data.local.RoomConversationRepository
 import com.dashworldng.ai.data.local.RoomDocumentRepository
 import com.dashworldng.ai.data.local.RoomPromptRepository
+import com.dashworldng.ai.data.sync.PrefsLocalOwnerStore
 import com.dashworldng.ai.data.sync.PrefsSyncStateStore
 import com.dashworldng.ai.data.security.InMemoryTokenStore
 import com.dashworldng.ai.data.security.KeystoreTokenStore
@@ -49,8 +53,10 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.getAndUpdate
+import kotlinx.coroutines.launch
 
 /** Text, mode and documents handed to the chat composer from another screen. */
 data class ComposerPrefill(
@@ -84,6 +90,12 @@ interface AppServices {
     val clock: Clock
     val syncState: SyncStateStore
 
+    /**
+     * Keeps one account's data on the device at a time: sign-out removes it, signing in as another
+     * account removes the previous one's first. `conversations` and `documents` above are fenced by it.
+     */
+    val accountGuard: LocalAccountGuard
+
     /** Sync is skipped while this returns false (for example while a response is being generated). */
     var syncGuard: () -> Boolean
 
@@ -109,6 +121,25 @@ private object UnconfiguredGateway : ChatGateway {
 }
 
 abstract class BaseServices : AppServices {
+    /** The unfenced stores: sync writes here; screens and chat sessions use the fenced views. */
+    protected abstract val localConversations: ConversationRepository
+    protected abstract val localDocuments: DocumentRepository
+    protected abstract val ownerStore: LocalOwnerStore
+
+    override val accountGuard: LocalAccountGuard by lazy {
+        LocalAccountGuard(
+            owner = ownerStore,
+            conversations = localConversations,
+            documents = localDocuments,
+            prompts = prompts,
+            syncState = syncState,
+            clearCredentials = { tokens.set(null) },
+            exclusive = { block -> syncService()?.exclusive(block) ?: block() },
+        )
+    }
+    override val conversations: ConversationRepository by lazy { accountGuard.fence(localConversations) }
+    override val documents: DocumentRepository by lazy { accountGuard.fence(localDocuments) }
+
     private var cachedUrl: String? = null
     private var cachedClient: DashApiClient? = null
 
@@ -149,7 +180,13 @@ abstract class BaseServices : AppServices {
         val client = apiClient() ?: return null
         if (client !== syncClient) {
             syncClient = client
-            cachedSync = ConversationSyncService(DashApiSyncRemote(client), conversations, syncState, canSync = { syncGuard() })
+            cachedSync = ConversationSyncService(
+                DashApiSyncRemote(client),
+                localConversations,
+                syncState,
+                canSync = { syncGuard() },
+                isOwner = { accountGuard.isOwner(it) },
+            )
         }
         return cachedSync
     }
@@ -161,14 +198,25 @@ class AppContainer(context: Context) : BaseServices() {
     private val database = DashDatabase.create(context)
 
     override val settings: SettingsRepository = DataStoreSettingsRepository(context, appScope, BuildConfig.DEFAULT_SERVER_URL)
-    override val conversations: ConversationRepository = RoomConversationRepository(database)
+    override val localConversations: ConversationRepository = RoomConversationRepository(database)
     override val prompts: PromptRepository = RoomPromptRepository(database)
-    override val documents: DocumentRepository = RoomDocumentRepository(database)
+    override val localDocuments: DocumentRepository = RoomDocumentRepository(database)
+    override val ownerStore: LocalOwnerStore = PrefsLocalOwnerStore(context)
     override val tokens: TokenStore = KeystoreTokenStore(context)
     override val connectivity: ConnectivityMonitor = AndroidConnectivityMonitor(context)
     override val prefill: PrefillBus = PrefillBus()
     override val clock: Clock = Clock.System
     override val syncState: SyncStateStore = PrefsSyncStateStore(context)
+
+    init {
+        appScope.launch {
+            // Finish a sign-out the app was killed in the middle of, before screens read any data.
+            accountGuard.recover()
+            // An account signed in with an older app version has no ownership record yet: adopt it.
+            val account = settings.settings.first { it.loaded }.account
+            if (account != null && !account.isDemo && tokens.get() != null) accountGuard.adoptExisting(account.userId)
+        }
+    }
 }
 
 /** In-memory wiring for UI tests and previews. */
@@ -179,9 +227,10 @@ class InMemoryServices(
     val fixedConnectivity: FixedConnectivity = FixedConnectivity(true),
 ) : BaseServices() {
     override val settings: SettingsRepository = InMemorySettingsRepository(initialSettings)
-    override val conversations: ConversationRepository = InMemoryConversationRepository()
+    override val localConversations: ConversationRepository = InMemoryConversationRepository()
     override val prompts: PromptRepository = InMemoryPromptRepository()
-    override val documents: DocumentRepository = InMemoryDocumentRepository()
+    override val localDocuments: DocumentRepository = InMemoryDocumentRepository()
+    override val ownerStore: LocalOwnerStore = InMemoryLocalOwnerStore()
     override val tokens: TokenStore = InMemoryTokenStore()
     override val connectivity: ConnectivityMonitor = fixedConnectivity
     override val prefill: PrefillBus = PrefillBus()
