@@ -29,6 +29,8 @@ const EnvSchema = z.object({
   /** Includes any reasoning/thinking tokens on models that think, so it must leave room for both. */
   MAX_OUTPUT_TOKENS: int(16_000, 16, 128_000),
   FAKE_STREAM_DELAY_MS: int(25, 0, 5_000),
+  /** Wall-clock limit for parsing one PDF or DOCX in the isolated extraction process. */
+  DOCUMENT_EXTRACTION_TIMEOUT_MS: int(20_000, 1_000, 120_000),
   RATE_LIMIT_CHAT_PER_MINUTE: int(20, 1, 10_000),
   RATE_LIMIT_SYNC_PER_MINUTE: int(60, 1, 10_000),
   RATE_LIMIT_AUTH_PER_MINUTE: int(10, 1, 10_000),
@@ -82,6 +84,7 @@ export interface AppConfig {
   providerIdleTimeoutMs: number;
   maxOutputTokens: number;
   fakeStreamDelayMs: number;
+  documentExtractionTimeoutMs: number;
   rateLimits: { chatPerMinute: number; authPerMinute: number; uploadPerMinute: number; apiPerMinute: number; syncPerMinute: number };
   maxConcurrentStreamsPerUser: number;
   sessionTtlDays: number;
@@ -120,6 +123,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     providerIdleTimeoutMs: e.PROVIDER_IDLE_TIMEOUT_MS,
     maxOutputTokens: e.MAX_OUTPUT_TOKENS,
     fakeStreamDelayMs: e.FAKE_STREAM_DELAY_MS,
+    documentExtractionTimeoutMs: e.DOCUMENT_EXTRACTION_TIMEOUT_MS,
     rateLimits: {
       chatPerMinute: e.RATE_LIMIT_CHAT_PER_MINUTE,
       syncPerMinute: e.RATE_LIMIT_SYNC_PER_MINUTE,

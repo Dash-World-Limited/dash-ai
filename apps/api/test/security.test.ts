@@ -11,7 +11,7 @@ import { startupErrorText } from "../src/startupError.js";
 import { MemoryStore } from "../src/store/memoryStore.js";
 import { PostgresStore } from "../src/store/postgresStore.js";
 import type { MessageRecord } from "../src/store/store.js";
-import { LogCapture, chatBody, makeApp, register, sse, testConfig, testId } from "./helpers.js";
+import { LogCapture, chatBody, makeApp, multipart, register, spyRegistry, sse, testConfig, testId } from "./helpers.js";
 import { TEST_DATABASE_URL } from "./pgTestStore.js";
 
 const apps: FastifyInstance[] = [];
@@ -98,6 +98,43 @@ describe("cross-user access and sessions", () => {
     expect(res.statusCode).toBe(404);
     const after = ConversationDetailResponse.parse((await app.inject({ method: "GET", url: `/v1/conversations/${body.conversationId}`, headers: alice.auth })).json());
     expect(after).toEqual(before);
+  });
+
+  it("every user-scoped route refuses another user's ids and reveals nothing", async () => {
+    const { registry, spies } = spyRegistry();
+    const { app } = await setup({ providers: registry });
+    const alice = await register(app);
+    const bob = await register(app);
+    const canary = `ALICECANARY_${randomBytes(6).toString("hex")}`;
+
+    // Alice: a conversation, a document and a chat that used it.
+    const { payload, headers } = multipart("notes.txt", "text/plain", Buffer.from(`Private notes ${canary}`));
+    const doc = (await app.inject({ method: "POST", url: "/v1/documents", headers: { ...alice.auth, ...headers }, payload })).json() as { id: string };
+    const chat = chatBody({ modelChoice: "openai", message: { id: testId("msg"), content: `Summarise ${canary}`, attachmentIds: [doc.id] } });
+    expect((await app.inject({ method: "POST", url: "/v1/chat/stream", headers: alice.auth, payload: chat })).statusCode).toBe(200);
+    const conversationId = chat.conversationId as string;
+    const seenBefore = spies.openai!.requests.length;
+
+    const asBob = (method: "GET" | "DELETE" | "POST", url: string, body?: unknown) =>
+      app.inject({ method, url, headers: bob.auth, ...(body === undefined ? {} : { payload: body as Record<string, unknown> }) });
+    expect((await asBob("GET", `/v1/conversations/${conversationId}`)).statusCode).toBe(404);
+    expect((await asBob("DELETE", `/v1/conversations/${conversationId}`)).statusCode).toBe(404);
+    expect((await asBob("DELETE", `/v1/documents/${doc.id}`)).statusCode).toBe(404);
+    // Attaching Alice's document to Bob's own chat: refused before any provider is called.
+    const borrow = await asBob("POST", "/v1/chat/stream", chatBody({ message: { id: testId("msg"), content: "What does it say?", attachmentIds: [doc.id] } }));
+    expect(borrow.statusCode).toBe(404);
+    expect(spies.openai!.requests.length).toBe(seenBefore);
+    // Bob's own views contain none of Alice's data.
+    for (const url of ["/v1/conversations", "/v1/documents", "/v1/tools/activity", "/v1/sync/conversations", "/v1/me/export", "/v1/usage"]) {
+      const res = await asBob("GET", url);
+      expect(res.statusCode, url).toBe(200);
+      expect(res.body, url).not.toContain(canary);
+      expect(res.body, url).not.toContain(conversationId);
+      expect(res.body, url).not.toContain(doc.id);
+    }
+    // And Alice's data is untouched.
+    expect((await app.inject({ method: "GET", url: `/v1/conversations/${conversationId}`, headers: alice.auth })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/v1/documents", headers: alice.auth })).body).toContain(doc.id);
   });
 
   it("deleting an account revokes every session, on every device", async () => {

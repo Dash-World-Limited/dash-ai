@@ -34,7 +34,7 @@ export function documentRoutes(app: FastifyInstance, ctx: RouteContext): void {
       if (!signatureMatches(check.kind, buffer)) {
         throw new AppError("unsupported_media_type", "The file contents do not match its type.");
       }
-      const extraction = await extractText(check.kind, buffer);
+      const extraction = await extractText(check.kind, buffer, { timeoutMs: ctx.config.documentExtractionTimeoutMs });
       const record = {
         id: newId(),
         userId: user.id,
