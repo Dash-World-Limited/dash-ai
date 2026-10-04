@@ -366,7 +366,23 @@ export class PostgresStore implements Store {
   }
 
   async listConversationChanges(userId: string, afterSeq: number, limit: number): Promise<ConversationChangePage> {
-    const { rows } = await this.pool.query<ConversationRow>(
+    // One snapshot for the conversations and their messages, so a page never mixes two moments in time.
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      const page = await this.readChanges(client, userId, afterSeq, limit);
+      await client.query("COMMIT");
+      return page;
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async readChanges(q: Queryable, userId: string, afterSeq: number, limit: number): Promise<ConversationChangePage> {
+    const { rows } = await q.query<ConversationRow>(
       "SELECT * FROM conversations WHERE user_id = $1 AND sync_seq > $2 ORDER BY sync_seq LIMIT $3",
       [userId, afterSeq, limit + 1],
     );
@@ -374,7 +390,7 @@ export class PostgresStore implements Store {
     const ids = page.filter((r) => r.deleted_at === null).map((r) => r.id);
     const byConversation = new Map<string, MessageRecord[]>();
     if (ids.length > 0) {
-      const messages = await this.pool.query<MessageRow>(
+      const messages = await q.query<MessageRow>(
         "SELECT * FROM messages WHERE conversation_id = ANY($1) ORDER BY conversation_id, position",
         [ids],
       );

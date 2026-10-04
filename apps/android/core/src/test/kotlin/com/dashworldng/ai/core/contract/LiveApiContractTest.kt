@@ -1,6 +1,7 @@
 package com.dashworldng.ai.core.contract
 
 import com.dashworldng.ai.core.auth.AuthService
+import com.dashworldng.ai.core.chat.ChatSession
 import com.dashworldng.ai.core.chat.ChatRequest
 import com.dashworldng.ai.core.documents.UploadSource
 import com.dashworldng.ai.core.data.InMemoryConversationRepository
@@ -21,6 +22,7 @@ import com.dashworldng.ai.core.sync.DashApiSyncRemote
 import com.dashworldng.ai.core.sync.InMemorySyncStateStore
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -174,6 +176,44 @@ class LiveApiContractTest {
         assertTrue(offlineId in laptopResult.deletedIds)
         assertEquals(null, laptopRepo.getConversation(offlineId))
         assertEquals(null, phoneRepo.getConversation(offlineId))
+    }
+
+    @Test
+    fun `switching provider inside one conversation never forks or duplicates it on either device`() = runBlocking<Unit> {
+        val phoneRepo = InMemoryConversationRepository()
+        val session = ChatSession(scope = this, repository = phoneRepo, gatewayProvider = { RemoteChatGateway(client) })
+        suspend fun idle() {
+            while (session.state.value.isGenerating) delay(20)
+        }
+        assertTrue(session.send("First question", ModelChoice.OPENAI, AssistantMode.GENERAL))
+        idle()
+        assertTrue(session.send("Second question", ModelChoice.CLAUDE, AssistantMode.GENERAL))
+        idle()
+        assertTrue(session.send("Third question", ModelChoice.COMPARE, AssistantMode.GENERAL))
+        idle()
+        val claudeAnswer = session.state.value.messages.first { it.provider == ProviderId.ANTHROPIC && it.compareGroupId == null }
+        assertTrue(session.retryWithOtherProvider(claudeAnswer.id))
+        idle()
+        val conversationId = session.state.value.conversation!!.id
+        val local = phoneRepo.getMessages(conversationId)
+
+        // The phone syncs: nothing new appears, nothing is duplicated.
+        val userId = "live-switch"
+        ConversationSyncService(DashApiSyncRemote(client), phoneRepo, InMemorySyncStateStore()).sync(userId)
+        val afterSync = phoneRepo.getMessages(conversationId)
+        assertEquals(afterSync.map { it.id }.toSet().size, afterSync.size)
+        assertEquals(local.map { it.id }, afterSync.map { it.id })
+
+        // A second device pulls exactly the same single conversation.
+        val laptopRepo = InMemoryConversationRepository()
+        ConversationSyncService(DashApiSyncRemote(client), laptopRepo, InMemorySyncStateStore()).sync(userId)
+        assertEquals(listOf(conversationId), laptopRepo.allConversations().map { it.id })
+        val laptop = laptopRepo.getMessages(conversationId)
+        assertEquals(afterSync.map { it.id }, laptop.map { it.id })
+        assertEquals(afterSync.map { it.provider }, laptop.map { it.provider })
+        // Retrying the Claude answer with OpenAI replaced it: the second question's answer now comes from OpenAI.
+        val secondAnswer = laptop[laptop.indexOfFirst { it.content == "Second question" } + 1]
+        assertEquals(ProviderId.OPENAI, secondAnswer.provider)
     }
 
     @Test
