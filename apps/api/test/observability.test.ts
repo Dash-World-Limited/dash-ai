@@ -5,11 +5,11 @@ import { buildApp } from "../src/app.js";
 import { Counter, Metrics } from "../src/observability/metrics.js";
 import { FAKE_TRIGGERS, FakeAdapter } from "../src/providers/fake.js";
 import { ProviderRegistry } from "../src/providers/registry.js";
-import { MemoryRateLimitStore, RedisRateLimitStore } from "../src/security/rateLimit.js";
+import { RedisRateLimitStore, type MemoryRateLimitStore } from "../src/security/rateLimit.js";
 import { MemoryStore } from "../src/store/memoryStore.js";
 import { builtinPlugin } from "../src/tools/builtin.js";
 import { PluginRegistry } from "../src/tools/registry.js";
-import { LogCapture, chatBody, makeDocx, multipart, register, testConfig, testId } from "./helpers.js";
+import { LogCapture, chatBody, makeDocx, multipart, testConfig, testId } from "./helpers.js";
 import { freePort } from "./redisTestServer.js";
 
 /**
