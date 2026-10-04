@@ -53,6 +53,11 @@ class ChatSession(
     private val gatewayProvider: () -> ChatGateway,
     clock: Clock = Clock.System,
     private val ids: IdGenerator = IdGenerator.Uuid,
+    /**
+     * Called after a live (non-demo) user message is saved locally, so sync can upload it if the request
+     * never reaches the server. Failures are the callback's own business and never affect the chat.
+     */
+    private val onUserMessageSaved: suspend (conversationId: String) -> Unit = {},
 ) {
     private val time = MonotonicClock(clock)
     private val _state = MutableStateFlow(ChatSessionState())
@@ -239,6 +244,15 @@ class ChatSession(
                 if (deleteIds.isNotEmpty()) repository.deleteMessages(deleteIds)
                 repository.upsertConversation(conversation)
                 repository.upsertMessage(user)
+                if (!gateway.isDemo && !conversation.isDemo) {
+                    try {
+                        onUserMessageSaved(conversation.id)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Sync bookkeeping must never break sending.
+                    }
+                }
                 gateway.stream(request).collect { event -> handle(generation, event) }
                 // A well-behaved stream ends every answer; anything still streaming ended unexpectedly.
                 finish(generation, MessageStatus.FAILED, "The response ended unexpectedly.")

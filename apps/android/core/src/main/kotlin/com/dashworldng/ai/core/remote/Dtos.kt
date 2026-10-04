@@ -133,6 +133,7 @@ data class SyncConversationDto(
     val createdAt: String,
     val updatedAt: String,
     val titleIsCustom: Boolean,
+    val titleRev: Long,
 )
 
 @Serializable
@@ -150,6 +151,40 @@ data class SyncPageDto(
     val latest: String,
     val hasMore: Boolean,
 )
+
+@Serializable
+data class PushConversationDto(
+    val id: String,
+    val title: String,
+    val titleIsCustom: Boolean,
+    val mode: String,
+    val createdAt: String,
+)
+
+/** A user message written on this device. Devices never upload assistant messages. */
+@Serializable
+data class PushMessageDto(val id: String, val content: String, val createdAt: String)
+
+/** One device → server operation. `type` is "upload", "rename" or "delete"; unused fields are null. */
+@Serializable
+data class SyncOperationDto(
+    val opId: String,
+    val type: String,
+    val conversation: PushConversationDto? = null,
+    val messages: List<PushMessageDto>? = null,
+    val conversationId: String? = null,
+    val title: String? = null,
+    val baseTitleRev: Long? = null,
+)
+
+@Serializable
+data class SyncPushRequestDto(val operations: List<SyncOperationDto>)
+
+@Serializable
+data class SyncOperationResultDto(val opId: String, val status: String, val appended: Int? = null, val skipped: Int? = null)
+
+@Serializable
+data class SyncPushResponseDto(val results: List<SyncOperationResultDto>)
 
 // ---- Chat ---------------------------------------------------------------------------------------
 

@@ -5,6 +5,8 @@ import com.dashworldng.ai.core.chat.ChatRequest
 import com.dashworldng.ai.core.documents.UploadSource
 import com.dashworldng.ai.core.data.InMemoryConversationRepository
 import com.dashworldng.ai.core.model.AssistantMode
+import com.dashworldng.ai.core.model.ChatMessage
+import com.dashworldng.ai.core.model.Conversation
 import com.dashworldng.ai.core.model.MessageRole
 import com.dashworldng.ai.core.model.DocumentStatus
 import com.dashworldng.ai.core.model.ModelChoice
@@ -134,6 +136,44 @@ class LiveApiContractTest {
         // Nothing new: a third sync is a no-op.
         val third = sync.sync(userId)
         assertEquals(0, third.inserted + third.updated + third.deleted)
+    }
+
+    @Test
+    fun `two devices sync both ways through the real API`() = runBlocking<Unit> {
+        val userId = "live-two-way"
+        val phoneRepo = InMemoryConversationRepository()
+        val laptopRepo = InMemoryConversationRepository()
+        val phone = ConversationSyncService(DashApiSyncRemote(client), phoneRepo, InMemorySyncStateStore())
+        val laptop = ConversationSyncService(DashApiSyncRemote(client), laptopRepo, InMemorySyncStateStore())
+
+        // The phone writes a conversation while offline, then comes back online and syncs.
+        val offlineId = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        phoneRepo.upsertConversation(Conversation(offlineId, "Written offline", AssistantMode.WRITING, now - 60_000, now - 60_000))
+        phoneRepo.upsertMessage(ChatMessage(UUID.randomUUID().toString(), offlineId, MessageRole.USER, "Draft my speech", now - 60_000))
+        phone.onLocalConversationChanged(userId, offlineId)
+        assertEquals(1, phone.sync(userId).pushed)
+        assertEquals(0, phone.sync(userId).pushed) // nothing left to push
+
+        // The laptop pulls it, renames it; the phone's stale offline rename then loses.
+        assertEquals(1, laptop.sync(userId).inserted)
+        assertEquals("Draft my speech", laptopRepo.getMessages(offlineId).single().content)
+        laptopRepo.renameConversation(offlineId, "Speech (laptop)")
+        laptop.onLocalRename(userId, offlineId, "Speech (laptop)")
+        phoneRepo.renameConversation(offlineId, "Speech (phone)")
+        phone.onLocalRename(userId, offlineId, "Speech (phone)")
+        phone.sync(userId)
+        assertEquals("Speech (laptop)", phoneRepo.getConversation(offlineId)!!.title)
+
+        // The phone deletes it; the laptop's later upload cannot bring it back, and its copy goes away.
+        phoneRepo.deleteConversation(offlineId)
+        phone.onLocalDelete(userId, offlineId)
+        laptopRepo.upsertMessage(ChatMessage(UUID.randomUUID().toString(), offlineId, MessageRole.USER, "late", System.currentTimeMillis()))
+        laptop.onLocalConversationChanged(userId, offlineId)
+        val laptopResult = laptop.sync(userId)
+        assertTrue(offlineId in laptopResult.deletedIds)
+        assertEquals(null, laptopRepo.getConversation(offlineId))
+        assertEquals(null, phoneRepo.getConversation(offlineId))
     }
 
     @Test

@@ -343,4 +343,30 @@ class ChatSessionTest {
         advanceUntilIdle()
         assertTrue(session.state.value.conversation!!.isDemo)
     }
+
+    @Test
+    fun `live user messages are reported for sync even when the request fails and demo messages never are`() = runTest {
+        val reported = mutableListOf<String>()
+        val offline = ScriptedGateway { throw ApiException(ApiError.network()) }
+        val live = ChatSession(this, repository, { offline }, { time++ }, SequentialIds(), onUserMessageSaved = { reported += it })
+        assertTrue(live.send("written while offline", ModelChoice.OPENAI, AssistantMode.GENERAL))
+        advanceUntilIdle()
+        val id = live.state.value.conversation!!.id
+        assertEquals(listOf(id), reported)
+        assertEquals(listOf("written while offline"), repository.getMessages(id).map { it.content })
+
+        val demo = ChatSession(this, repository, { DemoChatGateway(chunkDelayMillis = 0) }, { time++ }, SequentialIds("d"), onUserMessageSaved = { reported += it })
+        demo.send("demo only", ModelChoice.SMART, AssistantMode.GENERAL)
+        advanceUntilIdle()
+        assertEquals(listOf(id), reported)
+    }
+
+    @Test
+    fun `a failing sync callback never breaks sending`() = runTest {
+        val session = ChatSession(this, repository, { ScriptedGateway() }, { time++ }, SequentialIds(), onUserMessageSaved = { error("sync storage is broken") })
+        session.send("hello", ModelChoice.OPENAI, AssistantMode.GENERAL)
+        advanceUntilIdle()
+        assertEquals(MessageStatus.COMPLETE, session.state.value.messages.last().status)
+        assertNull(session.state.value.error)
+    }
 }

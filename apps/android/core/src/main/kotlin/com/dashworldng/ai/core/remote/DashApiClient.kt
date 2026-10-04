@@ -58,6 +58,8 @@ interface DashApiService {
         @retrofit2.http.Query("limit") limit: Int,
     ): SyncPageDto
 
+    @POST("v1/sync/push") suspend fun syncPush(@Body body: SyncPushRequestDto): SyncPushResponseDto
+
     @GET("v1/conversations/{id}") suspend fun conversation(@Path("id") id: String): ConversationDetailDto
 
     @PATCH("v1/conversations/{id}") suspend fun renameConversation(

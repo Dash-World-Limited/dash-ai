@@ -114,6 +114,11 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
         repository = services.conversations,
         gatewayProvider = { services.chatGateway() },
         clock = services.clock,
+        // Marks live conversations for upload, so messages written while offline reach the server later.
+        onUserMessageSaved = { conversationId ->
+            val userId = signedInUserId()
+            if (userId != null) services.syncService()?.onLocalConversationChanged(userId, conversationId)
+        },
     )
 
     private val initialSettings = services.settings.settings.value
@@ -161,6 +166,11 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
             services.settings.settings.map { s -> if (s.demoMode) null else s.account?.takeUnless { it.isDemo }?.userId }.distinctUntilChanged().collect { userId ->
                 if (userId != null) syncNow()
             }
+        }
+        // Coming back online: deliver anything written or changed while offline.
+        viewModelScope.launch {
+            // A StateFlow already emits only distinct values.
+            services.connectivity.isOnline.collect { online -> if (online) syncNow() }
         }
         viewModelScope.launch {
             services.prefill.pending.filterNotNull().collect {
