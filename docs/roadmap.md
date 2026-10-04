@@ -1,8 +1,25 @@
 # Roadmap
 
-## Current state (production-hardening milestone)
+## Current state (verification and release-readiness milestone)
 
-Nothing here is deployed. Nothing paid has been provisioned. Demo Mode is unchanged.
+Nothing here is deployed. Nothing paid has been provisioned. Demo Mode is unchanged. Gate-by-gate
+status, evidence and what each remaining gate needs: [release-readiness.md](release-readiness.md).
+
+### Added in this milestone
+- **Provider contract fixes** found by stricter scripted servers ([provider-verification.md](provider-verification.md)):
+  Claude tool-use turns are replayed with their thinking blocks; the last tool round keeps the tool set
+  with tool choice "none"; prompt-cache tokens counted; opt-in OpenAI encrypted-reasoning replay;
+  malformed-response, outage and stall tests through the real SDKs.
+- **Tool invocation boundary** re-checks permissions when a tool runs (fail closed), with an adversarial
+  suite ([plugins.md](plugins.md)).
+- **Sync** end-to-end tests: provider switching inside one conversation, pulls during a stream, partial
+  batch failures, concurrent devices; PostgreSQL pulls read one consistent snapshot ([sync.md](sync.md)).
+- **Hostile documents** are measured and parsed in an isolated, resource-limited process (a 357 KB file
+  could previously cost the server gigabytes).
+- **Credentials**: OWASP scrypt cost with upgrade at sign-in; sign out everywhere (API + Kotlin core).
+- **Configuration**: `.env.example` kept in sync by a test; strict encryption-key parsing; production
+  warnings for deliberate opt-outs; pinned migration checksums.
+- **CI**: manual, credential-gated live-smoke workflow; actionlint job; release gates and APK checksums.
 
 ### Real and verified in the authoring environment
 - **Two-way conversation sync** ([sync.md](sync.md)): push (uploads of offline conversations, renames with
@@ -33,12 +50,13 @@ Nothing here is deployed. Nothing paid has been provisioned. Demo Mode is unchan
 ### Mocked, simulated, unverified or unfinished (be explicit)
 | Capability | Status |
 | --- | --- |
-| **Live provider answers** | **Never exercised against OpenAI or Anthropic by us.** Adapters are tested against scripted wire formats only. Run `DASH_LIVE_SMOKE=1 pnpm smoke:live` with real keys (see [provider-verification.md](provider-verification.md)). |
-| **Live tool calling** | Same: the round trip (including OpenAI reasoning-model replay and Anthropic `tool_result` handling) is unverified against the live services until the smoke test is run. |
+| **Live provider answers** | **Never exercised against OpenAI or Anthropic by us.** Adapters are tested against scripted wire formats only (which now enforce Claude's thinking-replay and tool-set rules). Run `DASH_LIVE_SMOKE=1 pnpm smoke:live` or the manual *Live provider smoke* workflow with real keys (see [provider-verification.md](provider-verification.md)). |
+| **Live tool calling** | Same: the round trip (Claude thinking replay, tool choice "none", OpenAI encrypted reasoning when enabled) is unverified against the live services until the smoke test is run. |
+| **GitHub Actions** | Every job on this branch fails before it starts (no runner is assigned, no logs), which points at an account-level Actions restriction (billing or spending limit). None of the workflows has been observed running; all pass actionlint locally. |
 | External plugins (GitHub, Gmail, Calendar, web search, Dash World services) | **Do not exist.** The only external-style plugin is `mock-github` inside the tests (canned data). No connector framework, OAuth flow or per-user secret store exists. |
 | Write tools | Can be declared but are refused by the executor; needs a per-call confirmation flow. |
 | Android plugin/tool UI | None. The app ignores `tool.*` events; manage plugins via the API. |
-| Android sync wiring | `PrefsSyncStateStore`, `AppServices` and `ChatViewModel` changes (upload hook, sign-in/app-start/reconnect triggers, rename/delete outbox) were written without an Android SDK and **have not been compiled or run**; the pure-Kotlin engine is tested. `android.yml` compiles and tests the app module. No Room-level sync test exists yet. |
+| Android app module build | **Not built.** The Android SDK and Google Maven are unreachable from the authoring environment, so no APK exists and Robolectric/Room/lint have not run on this branch. The sync wiring files (`PrefsSyncStateStore`, `AppServices`, `ChatViewModel`) were type-checked with the real Kotlin compiler against the real core module and stubbed Android types only. `android.yml` compiles, tests, lints and builds the debug APK once Actions runs. No Room-level sync test exists yet. |
 | Document/prompt/settings sync, background sync | Not implemented. Sync runs at sign-in, app start and when connectivity returns. |
 | Production database | A local PostgreSQL 16 was used for tests. No managed database, backups, point-in-time recovery, TLS configuration or key management exists; you must provide them. |
 | Encryption of document names, emails, display names | Not done (plaintext; see [data-inventory.md](data-inventory.md)). Titles, messages and document text are encrypted. |
@@ -54,15 +72,19 @@ Nothing here is deployed. Nothing paid has been provisioned. Demo Mode is unchan
 | Instrumented (on-device) UI tests | Compose UI tests run on the JVM with Robolectric; no emulator job yet. |
 | Release signing, Play Store listing, deployment | Not set up (by instruction: no deployment). |
 
-## Next recommended milestone: "Verify on real infrastructure"
+## Next recommended milestone: "Staging on real infrastructure"
 Everything left unverified needs things this environment does not have:
-1. **Run the live smoke test** (`DASH_LIVE_SMOKE=1 pnpm smoke:live`) with real OpenAI/Anthropic keys and
-   fix what the real providers reveal (tool-call replay for reasoning models, model ids, token limits).
-2. **Watch CI run on GitHub**, especially `android.yml`: it is the first compile of the app-module sync
-   wiring. Add a Room-backed sync test there.
-3. **Stand up a staging deployment** (needs your decisions and infrastructure): managed PostgreSQL with
-   backups and TLS, a secret manager for `DATA_ENCRYPTION_KEY` and provider keys, HTTPS reverse proxy,
-   the deliberate `migrate` + `data:encrypt` deploy steps, and a real phone (Samsung A55) syncing against it.
+1. **Unblock GitHub Actions** (account billing/spending limit), then watch `ci.yml` and `android.yml` go
+   green. `android.yml` is the first real compile of the app module on this branch and produces the first
+   debug APK and its checksum. Add a Room-backed sync test there.
+2. **Run the live smoke** (`live-smoke.yml` with a protected `live-smoke` environment, or locally) for both
+   providers and fix what the real services reveal; enable `OPENAI_ENCRYPTED_REASONING` only if it passes.
+3. **Stand up staging** (needs your decisions and infrastructure): managed PostgreSQL with backups and TLS,
+   a secret manager for `DATA_ENCRYPTION_KEY` and provider keys, HTTPS reverse proxy with `TRUST_PROXY`,
+   the deliberate `migrate` + `data:encrypt` deploy steps, a shared rate limiter if more than one instance
+   runs, and a real phone (Samsung A55) syncing against it.
+4. **Small product decisions** the threat model surfaced: a "sign out everywhere" button, and whether
+   signing out should remove that account's conversations from the device.
 
 ## Later
 - Plugins: a connector/secret/consent design, a first read-only real plugin (web search with citations is
@@ -70,7 +92,7 @@ Everything left unverified needs things this environment does not have:
   confirmation flow for write tools, and an Android screen for plugins and tool activity.
 - Documents: image understanding via provider vision inputs (with explicit consent), OCR, per-document
   retention settings.
-- Field-level encryption of message content; bulk re-encryption job for key rotation.
+- Encryption of document names, emails and display names; dropping the legacy plaintext columns.
 - Quality: emulator-based instrumented tests (API 34/35), screenshot tests, TalkBack accessibility audit on
   the Samsung A55.
 - Brand: replace the temporary mark with the official Dash World asset.

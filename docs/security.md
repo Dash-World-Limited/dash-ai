@@ -8,8 +8,12 @@
 - `.env` files are git-ignored; only `apps/api/.env.example` (empty placeholders) is committed.
   `scripts/scan-secrets.mjs` and gitleaks run in CI on every push.
 - User sessions use opaque random tokens (`dash_…`, 256 bits). Only their SHA-256 hash is stored
-  server-side. Passwords are hashed with scrypt and a per-user salt; login responses do not reveal
-  whether an email exists, and a dummy hash evens out timing.
+  server-side. `POST /v1/auth/logout` ends one session; `POST /v1/auth/logout-all` ends every session of
+  the account (lost phone, leaked token).
+- Passwords are hashed with scrypt at an OWASP-recommended cost (N=2^15, r=8, p=3) and a per-user salt.
+  Verification uses the cost stored with each hash, accepted only within a bounded range, and hashes made
+  with an older cost are replaced at the next successful sign-in. Login responses do not reveal whether an
+  email exists, and a dummy hash evens out timing.
 - On Android the session token is encrypted with an AES-256-GCM key held in the Android Keystore;
   app data is excluded from cloud backup and device transfer (`data_extraction_rules.xml`).
 - Release builds allow HTTPS only; cleartext is permitted in debug builds for a local dev server.
@@ -69,6 +73,13 @@ The focused review of this milestone, with the test behind each mitigation and t
 - Raw bytes are **not stored**: only extracted text and metadata are kept. Images and scanned PDFs
   are accepted but marked `unsupported`; the API refuses to use them as chat context rather than
   pretend to analyse them.
+- **Hostile files are contained.** Before a PDF or DOCX reaches a parser, its decompressed size is
+  measured with native zlib under hard caps (DOCX: every entry by its real size, per-part, whole-archive
+  and entry-count limits; PDF: every stream, with filters the check cannot see through refused). Parsing
+  then runs in a **separate Node process** with an empty environment (no database URL, provider keys or
+  encryption key), a 384 MB heap, a 640 MB resident-memory watchdog, `DOCUMENT_EXTRACTION_TIMEOUT_MS`
+  (default 20 s), a raised OOM score and at most two at a time. Whatever happens there, the API receives a
+  bounded, validated result; a file over any limit is stored as `unsupported` with an explanation.
 
 ## Privacy-safe logging
 - Fastify's logger uses custom serializers: method, path (query strings stripped), status, request
@@ -100,7 +111,8 @@ The focused review of this milestone, with the test behind each mitigation and t
 - Conversation and document deletion are available in the app and API.
 
 ## Known limitations
-See [roadmap.md](roadmap.md#security-follow-ups). Not done: distributed rate limiting (the limiter is
-per-instance memory), email verification and password reset, TLS termination and deployment hardening,
-application-level encryption of message content, bulk re-encryption after key rotation, a secrets/consent
-design for external plugins, and a confirmation flow for write tools.
+See [roadmap.md](roadmap.md#security-follow-ups) and the residual risks in
+[threat-model.md](threat-model.md). Not done: distributed rate limiting (the limiter is per-instance
+memory), email verification and password reset, a session list and an in-app "sign out everywhere"
+button, TLS termination and deployment hardening, a secrets/consent design for external plugins, a
+confirmation flow for write tools, and app-level encryption of on-device data.

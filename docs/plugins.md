@@ -41,6 +41,14 @@ A tool is offered to a model in a request only if **all** of these hold:
 and the server-wide `TOOLS_ENABLED` kill switch is on. The set is built per request from that user's own
 settings; one user's choices never affect another's.
 
+**Permissions are checked again at the moment of invocation.** Before each round of tool calls runs,
+the user's current settings are re-read, and only tools that were both offered to the model at the start
+of the response *and* are still permitted may execute. Disabling a plugin or revoking a scope while an
+answer is streaming takes effect at the next tool call; enabling one mid-response adds nothing to that
+response; if the settings cannot be read, nothing runs (fail closed). The tool list sent to the model is
+deliberately left unchanged for the whole response (Claude ties replayed thinking to it): revoked tools
+are refused at execution instead.
+
 ## Execution path
 
 ```
@@ -49,7 +57,8 @@ model output ──► adapter parses STRUCTURED tool calls only ──► ToolE
 
 `ToolExecutor` (`apps/api/src/tools/executor.ts`) is the only way anything runs. For each call it:
 
-1. rejects tools not in this request's offered set (`denied` if the tool exists but was not offered,
+1. rejects tools not in this request's offered set, intersected with the user's current permissions
+   (`denied` if the tool exists but is not permitted,
    `unknown_tool` otherwise; the model is told neither which plugins exist nor why),
 2. refuses write tools even if something offered them,
 3. bounds the arguments (16 KB), requires valid JSON and validates against the tool's **strict** schema
@@ -68,7 +77,16 @@ handlers never run side effects.
 
 Tool results go back to the model through the provider's tool-result channel, and the system prompt tells
 the model to treat them as untrusted data, not instructions. The loop is bounded (`TOOL_MAX_ROUNDS`, the
-last round offers no tools; at most 8 calls per round, extra calls are refused but still answered).
+last round keeps the same tools with tool use switched off; at most 8 calls per round, extra calls are
+refused but still answered).
+
+`apps/api/test/tool-adversarial.test.ts` attacks this path directly: forged, case-variant, Unicode
+look-alike, NUL-terminated and prototype-named tool names (`__proto__`, `constructor`, …), hostile call
+ids, prototype-pollution keys and deeply nested or non-object arguments, a byte-counted size limit,
+duplicate keys, tools that return circular or throwing values, throw non-Error values carrying secrets,
+or answer after their timeout, permissions revoked or the settings store failing mid-response, a tool
+result steering the model towards a write tool, and a canary proving that tool arguments and results
+reach the model only: never logs, the event stream, audit rows, exports or any database row.
 
 ## Providers: the same definitions, two wire formats
 
@@ -76,7 +94,7 @@ last round offers no tools; at most 8 calls per round, extra calls are refused b
 | --- | --- | --- |
 | Definition | `{type:"function", name, description, parameters, strict:false}` | `{name, description, input_schema}` |
 | Call in stream | `function_call` output item (read from `response.completed`) | `tool_use` content block, arguments assembled from `input_json_delta` fragments |
-| Replayed call | `function_call` input item with `call_id` | assistant `tool_use` block |
+| Replayed call | `function_call` input item with `call_id` (plus encrypted reasoning items when `OPENAI_ENCRYPTED_REASONING=true`) | the assistant turn exactly as produced: `thinking` / `redacted_thinking` blocks, text, `tool_use` |
 | Result | `function_call_output` item | user turn with a `tool_result` block (`is_error` set on failure) |
 
 Each provider's tool turns are only replayed to that same provider. In **Compare** the two providers run

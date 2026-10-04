@@ -1,5 +1,5 @@
 import { ConfigError, loadConfig } from "./config.js";
-import { DataCipher } from "./security/dataCrypto.js";
+import { DataCipher, DataKeyError } from "./security/dataCrypto.js";
 import { PostgresStore } from "./store/postgresStore.js";
 
 /**
@@ -35,7 +35,9 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  // Never print raw driver errors: they can carry connection details.
-  process.stderr.write(`${err instanceof ConfigError ? err.message : `Encryption maintenance failed (${err instanceof Error ? err.name : "unknown"}).`}\n`);
+  // Never print raw driver errors: they can carry connection details. Configuration and key errors
+  // are written to be shown (they name variables and key ids, never values or key material).
+  const safe = err instanceof ConfigError || err instanceof DataKeyError;
+  process.stderr.write(`${safe ? err.message : `Encryption maintenance failed (${err instanceof Error ? err.name : "unknown"}).`}\n`);
   process.exit(1);
 });

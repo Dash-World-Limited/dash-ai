@@ -87,6 +87,21 @@ The same inputs always give the same Room state, whatever the page sizes or retr
 15. The cursor advances only after a whole page has been applied; state is saved after every operation, so an
     app killed mid-sync resumes safely.
 
+## End-to-end guarantees (tested)
+
+`apps/api/test/sync-e2e.test.ts` and the Kotlin live contract tests check:
+
+- **Switching provider never forks a conversation.** OpenAI, Claude, Compare, a retry with the other
+  provider and Dash Smart inside one conversation produce one conversation with unique message ids, and a
+  second device pulls exactly what the first device shows.
+- **Pulls during a stream** return the user message only (never a partial answer); the next pull from
+  that cursor delivers the finished answer, once.
+- **Partial failures:** when storage fails after one operation of a push batch was committed, the request
+  fails; retrying the whole batch applies nothing twice.
+- **Concurrent devices** pushing, renaming and pulling at the same time converge to one state.
+- **Consistent pages on PostgreSQL:** a pull reads its changes and the matching messages in one
+  `REPEATABLE READ` read-only transaction, so a page never mixes two points in time.
+
 ## Known trade-offs
 
 - **Clock skew vs. the append-only tail.** A message written offline is appended only if its device timestamp

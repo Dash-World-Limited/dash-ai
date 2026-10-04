@@ -1,4 +1,4 @@
-# Threat-model review (production-hardening milestone)
+# Threat-model review
 
 Scope: the API (`apps/api`), its PostgreSQL data, and the sync/plugin paths the Android app uses.
 Each row lists the threat, what stops it, and the test that proves it. Items marked **fixed** were
@@ -29,6 +29,28 @@ real problems found during this review; each has a regression test that fails wi
 | Availability | NUL byte in a prompt → whole chat failed on PostgreSQL (reproduced on the previous milestone) | Content stored as ciphertext | `security.test.ts` NUL prompt test |
 | Availability | **Fixed (Android core):** one bad timestamp blocked sync forever; a stalled page could loop forever | Bad changes skipped whole and counted; non-advancing cursors rejected | `ConversationSyncTest` malformed-response tests |
 
+## Release-readiness pass (verification milestone)
+
+Ten scenarios were walked end to end. **Fixed** rows were concrete problems found in this pass; each
+has a regression test that fails without the fix (mutation-checked where noted).
+
+| Scenario | What stops it now | Evidence |
+| --- | --- | --- |
+| Stolen session token | 256-bit opaque tokens, only SHA-256 stored, expiry; **new:** `POST /v1/auth/logout-all` signs the account out on every device (Kotlin core `AuthService.signOutEverywhere()`); account deletion revokes all sessions | `security.test.ts` "sign out everywhere", Kotlin `LiveApiContractTest` |
+| Malicious document | **Fixed:** extraction ran in the API process without bounds: a 357 KB DOCX cost 48 s and 6 GB, a 357 KB PDF 25 s and 1.1 GB (one upload could OOM-kill the server). Now: decompression budgets measured with native zlib under hard caps (real, not declared, sizes; refused filters), then parsing in a separate process with an empty environment, heap cap, RSS watchdog, time limit, raised OOM score and a concurrency limit; output validated | `documents-hostile.test.ts` (zip bombs, lying headers, PDF Flate bombs, filter tricks, timeouts, server responsive during hostile uploads) |
+| Malicious plugin/tool response | Results bounded and returned only through the provider's tool-result channel; unserialisable, throwing and late results contained; thrown values never logged or shown | `tool-adversarial.test.ts` "hostile tool behaviour" |
+| Prompt attempting unauthorized tool execution | Only structured calls reach the executor; offered ∩ **currently permitted** (new: re-checked at invocation, fail closed); strict schemas; write tools never run; forged names never resolve | `tool-adversarial.test.ts` (mutation-checked: removing the re-check fails 3 tests) |
+| Cross-user access | Every query scoped by user; a sweep of every user-scoped route with another user's ids (conversations, documents, attachments in chat, activity, sync, export, usage) | `security.test.ts` "every user-scoped route refuses another user's ids" |
+| Sync replay | Idempotent operations by op id, CAS renames, tombstones refuse resurrection, server-made provenance; provider switching mid-conversation never forks it | `sync-push.test.ts`, `sync-e2e.test.ts`, Kotlin provider-switch test |
+| Database compromise | Content encrypted at rest (AES-256-GCM, row-bound AAD); session hashes only; **fixed:** password hashes moved to OWASP's scrypt cost (N=2^15, r=8, p=3; was N=2^14, p=1), verification honours each hash's own (bounded) cost and old hashes are upgraded at sign-in | `unit.test.ts`, `security.test.ts` "upgrades a password hash" |
+| Provider outage | Retryable errors per target, idle and total timeouts through the real SDKs, Compare keeps the healthy answer, partial text kept on resets | `provider-contract.test.ts` malformed/outage tests |
+| Leaked provider key | Keys only in server env, never logged or returned (401/403 map to a fixed message), redacted from smoke output; rotation = replace the env value and restart | `adapters.test.ts`, smoke redaction tests |
+| Compromised Android device | Token encrypted with an Android Keystore key, backups and device transfer excluded, HTTPS-only release config; server-side sign-out everywhere now exists | manifest/config review; see residuals |
+
+Also fixed in this pass (provider contract, not a threat): the last tool round dropped `tools`, which
+invalidates Claude thinking replayed from earlier rounds; it now keeps the tools with tool choice "none"
+(see [provider-verification.md](provider-verification.md)).
+
 ## Residual risks (not fixed in this milestone)
 
 - **Prompt injection through tool results** is reduced, not eliminated. Safe today because only harmless
@@ -38,5 +60,20 @@ real problems found during this review; each has a regression test that fails wi
   someone else" reveals that an id exists. Ids are random UUIDs in the app; the API also accepts shorter ids.
 - **Rate limits are per process** (in memory). Multiple instances need a shared limiter.
 - **Email and display name** are plaintext personal data (see [data-inventory.md](data-inventory.md)).
-- **No session list or remote sign-out UI**, no password change or reset yet.
+- **No session list**, no "sign out everywhere" button in the app yet (the API and Kotlin core support it),
+  no password change or reset yet.
 - **Whoever runs the server holds the key**: field encryption protects dumps and backups, not a compromised host.
+  An attacker with database *write* access can mint sessions or replace password hashes, and can roll a
+  row back to an older ciphertext of the same row (AAD binds rows, not versions).
+- **Encrypted PDFs** cannot be measured by the decompression budget; they rely on the extraction process's
+  time and memory limits alone. A stream mislabelled as an image gets the larger image allowance (same
+  limits apply). The memory watchdog reads `/proc` and is Linux-only.
+- **No circuit breaker or automatic failover**: during a provider outage each request waits for its own
+  timeout, and Dash Smart does not retry on the other provider once a stream has failed (the app offers
+  "retry with the other provider").
+- **On-device data**: conversations in Room are protected by the app sandbox and Android file-based
+  encryption, not by app-level encryption; a rooted or compromised device can read them. Signing out keeps
+  local conversations on the device (Demo Mode shows them); a shared device should use account deletion or
+  clear data. Consider wiping or partitioning local data per account on sign-out.
+- **Leaked provider key runbook** is manual: revoke the key at the provider, set the new value, restart;
+  there is no in-app key management.
