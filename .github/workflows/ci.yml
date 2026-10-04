@@ -39,6 +39,20 @@ jobs:
           /tmp/gitleaks detect --source . --config .gitleaks.toml --redact --no-banner
           /tmp/gitleaks detect --no-git --source . --config .gitleaks.toml --redact --no-banner
 
+  workflows:
+    name: Workflow lint (actionlint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint (pinned release)
+        env:
+          ACTIONLINT_VERSION: 1.7.7
+        run: |
+          curl -sSfL -o /tmp/actionlint.tgz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
+          /tmp/actionlint -color
+
   backend:
     name: Backend (lint, typecheck, unit + API tests on the in-memory store, build)
     runs-on: ubuntu-latest

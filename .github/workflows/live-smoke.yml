@@ -1,0 +1,124 @@
+# Live provider smoke tests: MANUAL ONLY (Actions → Live provider smoke → Run workflow). Never runs
+# on push or pull request, so ordinary CI never needs paid provider credentials.
+#
+# Credentials live in the protected "live-smoke" environment (Settings → Environments), so a run can
+# require approval: secrets OPENAI_API_KEY / ANTHROPIC_API_KEY, variables OPENAI_MODEL /
+# ANTHROPIC_MODEL. When a provider has no key and model, it is not run, and the summary says so:
+# an unconfigured provider is reported as "not verified", never as passed.
+name: Live provider smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "Which providers to check"
+        type: choice
+        options: [both, openai, anthropic]
+        default: both
+      skip_tools:
+        description: "Skip the tool round trip"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-smoke
+  cancel-in-progress: false
+
+jobs:
+  credentials:
+    name: Which providers have credentials
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: live-smoke
+    outputs:
+      openai: ${{ steps.check.outputs.openai }}
+      anthropic: ${{ steps.check.outputs.anthropic }}
+    steps:
+      - id: check
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
+          WANT: ${{ inputs.provider }}
+        # Prints only true/false, never a value.
+        run: |
+          openai=false; anthropic=false
+          if [ -n "$OPENAI_API_KEY" ] && [ -n "$OPENAI_MODEL" ] && [ "$WANT" != "anthropic" ]; then openai=true; fi
+          if [ -n "$ANTHROPIC_API_KEY" ] && [ -n "$ANTHROPIC_MODEL" ] && [ "$WANT" != "openai" ]; then anthropic=true; fi
+          echo "openai=$openai" >> "$GITHUB_OUTPUT"
+          echo "anthropic=$anthropic" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Live provider smoke: credentials"
+            echo "- OpenAI: $([ "$openai" = true ] && echo "will be verified live" || echo "**not verified** (no key/model in the live-smoke environment, or not selected)")"
+            echo "- Anthropic: $([ "$anthropic" = true ] && echo "will be verified live" || echo "**not verified** (no key/model in the live-smoke environment, or not selected)")"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  smoke-openai:
+    name: Live smoke (OpenAI)
+    needs: credentials
+    # Skipped (not green) when this provider has no credentials or was not selected.
+    if: needs.credentials.outputs.openai == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: live-smoke
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install and build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Run the live smoke checks (output is redacted by the CLI; GitHub also masks secrets)
+        env:
+          DASH_LIVE_SMOKE: "1"
+          PROVIDER_MODE: live
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
+          SKIP_TOOLS: ${{ inputs.skip_tools }}
+        run: |
+          set -o pipefail
+          args=(--provider openai)
+          if [ "$SKIP_TOOLS" = "true" ]; then args+=(--skip-tools); fi
+          node apps/api/dist/smoke/main.js "${args[@]}" | tee smoke.txt
+          { echo "### Live smoke: OpenAI"; echo '```'; cat smoke.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  smoke-anthropic:
+    name: Live smoke (Anthropic)
+    needs: credentials
+    # Skipped (not green) when this provider has no credentials or was not selected.
+    if: needs.credentials.outputs.anthropic == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: live-smoke
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install and build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Run the live smoke checks (output is redacted by the CLI; GitHub also masks secrets)
+        env:
+          DASH_LIVE_SMOKE: "1"
+          PROVIDER_MODE: live
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
+          SKIP_TOOLS: ${{ inputs.skip_tools }}
+        run: |
+          set -o pipefail
+          args=(--provider anthropic)
+          if [ "$SKIP_TOOLS" = "true" ]; then args+=(--skip-tools); fi
+          node apps/api/dist/smoke/main.js "${args[@]}" | tee smoke.txt
+          { echo "### Live smoke: Anthropic"; echo '```'; cat smoke.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

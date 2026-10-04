@@ -57,6 +57,9 @@ jobs:
         run: ./gradlew :app:assembleDebug --no-daemon
       - name: Check the APK contains no provider keys or endpoints
         run: scripts/check-apk.sh apps/android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Record the APK checksum
+        run: |
+          { echo "### Debug APK"; echo '```'; sha256sum apps/android/app/build/outputs/apk/debug/app-debug.apk; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:

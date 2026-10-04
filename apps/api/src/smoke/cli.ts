@@ -1,6 +1,6 @@
 import { loadConfig, type AppConfig } from "../config.js";
 import { ProviderRegistry } from "../providers/registry.js";
-import { runAdapterChecks } from "./adapterChecks.js";
+import { SMOKE_MAX_OUTPUT_TOKENS, runAdapterChecks } from "./adapterChecks.js";
 import { runAppChecks } from "./appChecks.js";
 import { formatResult, makeRedactor, type CheckResult } from "./report.js";
 
@@ -67,7 +67,8 @@ export async function runSmokeCli(
 
   out(
     `Running live smoke checks against ${adapters.map((a) => `${a.displayName} (${a.model})`).join(" and ")}.\n` +
-      `This sends roughly ${adapters.length * 8 + 6} small requests (each limited to ≤ 400 output tokens).\n\n`,
+      `This sends roughly ${adapters.length * 8 + 6} small requests (each limited to ≤ ${SMOKE_MAX_OUTPUT_TOKENS} output tokens,\n` +
+      `thinking/reasoning included; most use far fewer).\n\n`,
   );
 
   const results: CheckResult[] = [];

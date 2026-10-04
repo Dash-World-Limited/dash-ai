@@ -5,7 +5,11 @@ import { ToolRuntime } from "../tools/runtime.js";
 import { CheckFailure, check, skipped, timed, type CheckResult } from "./report.js";
 
 const SYSTEM = "You are a terse test responder. Follow the instruction exactly.";
-const MAX_TOKENS = 400;
+/**
+ * Per request. Current Claude models think by default and OpenAI reasoning models reason, and
+ * both count those tokens against this limit, so it must leave room for them before any text.
+ */
+export const SMOKE_MAX_OUTPUT_TOKENS = 2_048;
 
 interface Collected {
   text: string;
@@ -23,7 +27,7 @@ async function collect(adapter: ProviderAdapter, messages: ProviderTurn[], extra
   for await (const chunk of adapter.stream({
     system: SYSTEM,
     messages,
-    maxOutputTokens: extra.maxOutputTokens ?? 256,
+    maxOutputTokens: extra.maxOutputTokens ?? SMOKE_MAX_OUTPUT_TOKENS,
     signal: AbortSignal.timeout(60_000),
     ...(extra.tools ? { tools: extra.tools, ...(extra.toolChoice ? { toolChoice: extra.toolChoice } : {}) } : {}),
   })) {
@@ -101,7 +105,7 @@ export async function runAdapterChecks(adapter: ProviderAdapter, options: Adapte
         for await (const chunk of adapter.stream({
           system: SYSTEM,
           messages: [{ role: "user", content: "Write the numbers from 1 to 400, one per line." }],
-          maxOutputTokens: MAX_TOKENS,
+          maxOutputTokens: SMOKE_MAX_OUTPUT_TOKENS,
           signal: controller.signal,
         })) {
           if (chunk.type === "text" && !sawText) {
