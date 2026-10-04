@@ -38,8 +38,9 @@ const wellBehaved = (kind: "openai" | "anthropic") => (req: RecordedRequest): Mo
 };
 
 function liveLikeRegistry(only?: "openai" | "anthropic") {
-  const openai = scriptedProvider("openai", wellBehaved("openai"), "served-openai-2026", { chunkDelayMs: 2 });
-  const anthropic = scriptedProvider("anthropic", wellBehaved("anthropic"), "served-claude-2026", { chunkDelayMs: 2 });
+  // Behave like current models: Claude thinks (and enforces replay of thinking blocks), OpenAI reasons.
+  const openai = scriptedProvider("openai", wellBehaved("openai"), "served-openai-2026", { chunkDelayMs: 2, reasoning: true });
+  const anthropic = scriptedProvider("anthropic", wellBehaved("anthropic"), "served-claude-2026", { chunkDelayMs: 2, thinking: true });
   const registry = new ProviderRegistry({
     ...(only !== "anthropic" ? { openai: new OpenAIAdapter("sk-test-not-a-real-key", "cfg-openai", { fetch: openai.fetch, maxRetries: 0 }) } : {}),
     ...(only !== "openai" ? { anthropic: new AnthropicAdapter("sk-ant-test-not-real", "cfg-claude", { fetch: anthropic.fetch, maxRetries: 0 }) } : {}),

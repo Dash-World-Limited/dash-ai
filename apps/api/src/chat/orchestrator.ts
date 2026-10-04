@@ -227,6 +227,7 @@ async function runTarget(
       const tools = offered.size > 0 && round < ctx.tools.maxRounds ? offered.list() : undefined;
       let roundText = "";
       let calls: ModelToolCall[] = [];
+      let continuation: unknown;
       let roundFinish: "stop" | "length" | "refusal" = "stop";
       const source = adapter.stream({
         system,
@@ -248,6 +249,7 @@ async function runTarget(
           sink.send({ event: "message.delta", data: { messageId, text: chunk.text } });
         } else if (chunk.type === "tool_calls") {
           calls = chunk.calls;
+          continuation = chunk.continuation;
         } else {
           roundFinish = chunk.finishReason;
           usage = addUsage(usage, chunk.usage);
@@ -263,7 +265,11 @@ async function runTarget(
       }
 
       const results = await runToolCalls(ctx, prepared, target, calls, controller.signal, sink);
-      turns.push({ role: "assistant", content: roundText, toolCalls: calls }, { role: "tool", results });
+      // `turns` belongs to this target alone, so a continuation only ever goes back to its own provider.
+      turns.push(
+        { role: "assistant", content: roundText, toolCalls: calls, ...(continuation !== undefined ? { continuation } : {}) },
+        { role: "tool", results },
+      );
     }
     if (servedModel && servedModel !== adapter.model) {
       ctx.log.info({ provider: adapter.id, configuredModel: adapter.model, servedModel }, "provider served a different model id");

@@ -34,6 +34,8 @@ export function toOpenAIInput(turns: readonly ProviderTurn[]): ResponseInput {
   for (const turn of turns) {
     if (isToolResultTurn(turn)) {
       for (const r of turn.results) input.push({ type: "function_call_output", call_id: r.callId, output: r.content });
+    } else if (isToolCallTurn(turn) && isOpenAIContinuation(turn.continuation, turn.toolCalls)) {
+      input.push(...turn.continuation.items);
     } else if (isToolCallTurn(turn)) {
       if (turn.content) input.push({ role: "assistant", content: turn.content });
       for (const c of turn.toolCalls) input.push({ type: "function_call", call_id: c.id, name: c.name, arguments: c.argumentsJson });
@@ -44,11 +46,33 @@ export function toOpenAIInput(turns: readonly ProviderTurn[]): ResponseInput {
   return input;
 }
 
+/**
+ * OpenAI's own output items for a tool-use turn (encrypted reasoning, message, function_call), replayed
+ * verbatim so a reasoning model keeps its reasoning between tool rounds while `store` stays false.
+ */
+interface OpenAIContinuation {
+  provider: "openai";
+  items: OpenAI.Responses.ResponseInputItem[];
+}
+
+const isOpenAIContinuation = (value: unknown, calls: readonly ModelToolCall[]): value is OpenAIContinuation => {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Partial<OpenAIContinuation>;
+  if (v.provider !== "openai" || !Array.isArray(v.items)) return false;
+  const ids = v.items.filter((i) => i.type === "function_call").map((i) => (i as OpenAI.Responses.ResponseFunctionToolCall).call_id);
+  return ids.length === calls.length && ids.every((id, n) => id === calls[n]!.id);
+};
+
 export interface SdkAdapterOptions {
   /** Injected fetch, used by tests to replay recorded provider streams without network access. */
   fetch?: typeof fetch;
   maxRetries?: number;
   baseURL?: string;
+  /**
+   * OpenAI only: request encrypted reasoning items in tool rounds and replay them (OPENAI_ENCRYPTED_REASONING).
+   * Off by default until verified against the live API with the configured model.
+   */
+  encryptedReasoning?: boolean;
 }
 
 /** OpenAI adapter using the official SDK and the Responses API. */
@@ -57,12 +81,14 @@ export class OpenAIAdapter implements ProviderAdapter {
   readonly displayName = "OpenAI";
   readonly demo = false;
   private readonly client: OpenAI;
+  private readonly encryptedReasoning: boolean;
 
   constructor(
     apiKey: string,
     readonly model: string,
     options: SdkAdapterOptions = {},
   ) {
+    this.encryptedReasoning = options.encryptedReasoning ?? false;
     this.client = new OpenAI({
       apiKey,
       maxRetries: options.maxRetries ?? 1,
@@ -81,6 +107,7 @@ export class OpenAIAdapter implements ProviderAdapter {
           instructions: request.system,
           input: toOpenAIInput(request.messages),
           ...(request.tools && request.tools.length > 0 ? { tools: toOpenAITools(request.tools), tool_choice: "auto" as const } : {}),
+          ...(request.tools && request.tools.length > 0 && this.encryptedReasoning ? { include: ["reasoning.encrypted_content" as const] } : {}),
           max_output_tokens: request.maxOutputTokens,
           stream: true,
           // Do not ask OpenAI to retain the response for later retrieval.
@@ -100,7 +127,10 @@ export class OpenAIAdapter implements ProviderAdapter {
           case "response.completed": {
             usage = readUsage(event.response.usage);
             const calls = readToolCalls(event.response.output);
-            if (calls.length > 0) yield { type: "tool_calls", calls };
+            if (calls.length > 0) {
+              const continuation = readContinuation(event.response.output);
+              yield { type: "tool_calls", calls, ...(continuation ? { continuation } : {}) };
+            }
             yield {
               type: "finish",
               finishReason: refused ? "refusal" : "stop",
@@ -164,6 +194,18 @@ function readToolCalls(output: OpenAI.Responses.ResponseOutputItem[] | undefined
     if (item.type === "function_call") calls.push({ id: item.call_id, name: item.name, argumentsJson: item.arguments ?? "" });
   }
   return calls;
+}
+
+/**
+ * Only when the response carries encrypted reasoning is an exact replay both possible and useful; without
+ * it (store is false) reasoning items cannot be referenced, so the turn is rebuilt from text + calls.
+ */
+function readContinuation(output: OpenAI.Responses.ResponseOutputItem[] | undefined): OpenAIContinuation | undefined {
+  const items = output ?? [];
+  const hasEncryptedReasoning = items.some((i) => i.type === "reasoning" && typeof i.encrypted_content === "string" && i.encrypted_content !== "");
+  if (!hasEncryptedReasoning) return undefined;
+  const replayable = items.filter((i) => i.type === "reasoning" || i.type === "message" || i.type === "function_call");
+  return { provider: "openai", items: replayable as OpenAI.Responses.ResponseInputItem[] };
 }
 
 function readUsage(u: { input_tokens?: number; output_tokens?: number } | null | undefined): Usage {

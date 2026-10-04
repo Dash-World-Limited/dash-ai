@@ -11,6 +11,14 @@ export interface ProviderToolCallTurn {
   role: "assistant";
   content: string;
   toolCalls: ModelToolCall[];
+  /**
+   * Opaque, provider-owned record of this assistant turn exactly as the provider returned it (for
+   * example Claude's thinking blocks, which must be replayed unmodified and in order, or OpenAI's
+   * encrypted reasoning items). Only the adapter that produced it reads it, and the orchestrator only
+   * ever sends it back to that same provider. Adapters fall back to rebuilding the turn from
+   * `content` + `toolCalls` when it is absent or does not match.
+   */
+  continuation?: unknown;
 }
 
 export interface ProviderToolResult {
@@ -48,7 +56,7 @@ export interface ProviderRequest {
 export type ProviderChunk =
   | { type: "text"; text: string }
   /** Structured tool requests, emitted once before the finish chunk. Only these are ever acted on. */
-  | { type: "tool_calls"; calls: ModelToolCall[] }
+  | { type: "tool_calls"; calls: ModelToolCall[]; continuation?: unknown }
   | {
       type: "finish";
       finishReason: Exclude<FinishReason, "cancelled">;

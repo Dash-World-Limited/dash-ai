@@ -302,9 +302,11 @@ describe("provider adapters translate the same tool definitions", () => {
     const adapter = new AnthropicAdapter("sk-ant-test-not-real", "cfg", { fetch: p.fetch, maxRetries: 0 });
     const chunks = await collect(adapter.stream({ system: "s", messages: [{ role: "user", content: "issues" }], tools, maxOutputTokens: 64, signal: new AbortController().signal }));
     expect(p.requests[0]!.body.tools).toHaveLength(2);
-    expect(chunks.find((c) => c.type === "tool_calls")).toEqual({
+    expect(chunks.find((c) => c.type === "tool_calls")).toMatchObject({
       type: "tool_calls",
       calls: [{ id: "toolu_1", name: "mock-github__list_issues", argumentsJson: '{"repo":"a/b","limit":2}' }],
+      // The exact assistant turn, for replay to Claude only.
+      continuation: { provider: "anthropic", content: [{ type: "text", text: "Looking." }, { type: "tool_use", id: "toolu_1", input: { repo: "a/b", limit: 2 } }] },
     });
     expect(chunks.at(-1)).toMatchObject({ type: "finish", finishReason: "stop", servedModel: "served-anthropic" });
   });

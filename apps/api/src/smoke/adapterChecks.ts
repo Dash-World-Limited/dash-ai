@@ -14,6 +14,7 @@ interface Collected {
   totalMs: number;
   finish: Extract<ProviderChunk, { type: "finish" }> | undefined;
   calls: Extract<ProviderChunk, { type: "tool_calls" }>["calls"];
+  continuation?: unknown;
 }
 
 async function collect(adapter: ProviderAdapter, messages: ProviderTurn[], extra: { tools?: Parameters<ProviderAdapter["stream"]>[0]["tools"]; maxOutputTokens?: number } = {}): Promise<Collected> {
@@ -30,7 +31,10 @@ async function collect(adapter: ProviderAdapter, messages: ProviderTurn[], extra
       out.text += chunk.text;
       out.chunks += 1;
       out.firstTextMs ??= Date.now() - started;
-    } else if (chunk.type === "tool_calls") out.calls = chunk.calls;
+    } else if (chunk.type === "tool_calls") {
+      out.calls = chunk.calls;
+      out.continuation = chunk.continuation;
+    }
     else out.finish = chunk;
   }
   out.totalMs = Date.now() - started;
@@ -142,7 +146,8 @@ export async function runAdapterChecks(adapter: ProviderAdapter, options: Adapte
           adapter,
           [
             user,
-            { role: "assistant", content: first.text, toolCalls: first.calls },
+            // Replayed exactly like the orchestrator does (thinking blocks / encrypted reasoning included).
+            { role: "assistant", content: first.text, toolCalls: first.calls, ...(first.continuation !== undefined ? { continuation: first.continuation } : {}) },
             { role: "tool", results: [{ callId: call.id, name: call.name, content: execution.content, isError: false }] },
           ],
           { tools: offered.list() },

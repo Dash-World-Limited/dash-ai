@@ -26,8 +26,10 @@ export class ProviderRegistry {
     const adapters: Partial<Record<ProviderId, ProviderAdapter>> = {};
     const warnings: string[] = [];
     const { openai, anthropic } = config;
-    if (openai.apiKey && openai.model) adapters.openai = new OpenAIAdapter(openai.apiKey, openai.model);
-    else if (openai.apiKey || openai.model) warnings.push("OpenAI needs both OPENAI_API_KEY and OPENAI_MODEL.");
+    if (openai.apiKey && openai.model) {
+      adapters.openai = new OpenAIAdapter(openai.apiKey, openai.model, { encryptedReasoning: openai.encryptedReasoning });
+    }
+    if (!(openai.apiKey && openai.model) && (openai.apiKey || openai.model)) warnings.push("OpenAI needs both OPENAI_API_KEY and OPENAI_MODEL.");
     if (anthropic.apiKey && anthropic.model) {
       adapters.anthropic = new AnthropicAdapter(anthropic.apiKey, anthropic.model);
     } else if (anthropic.apiKey || anthropic.model) {

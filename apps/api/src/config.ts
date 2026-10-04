@@ -20,11 +20,14 @@ const EnvSchema = z.object({
   PROVIDER_MODE: z.preprocess(emptyToUndefined, z.enum(["live", "fake"]).default("live")),
   OPENAI_API_KEY: optionalString,
   OPENAI_MODEL: optionalString,
+  /** Request and replay encrypted reasoning items in tool rounds (reasoning models). Verify live before enabling. */
+  OPENAI_ENCRYPTED_REASONING: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("false")),
   ANTHROPIC_API_KEY: optionalString,
   ANTHROPIC_MODEL: optionalString,
   PROVIDER_TIMEOUT_MS: int(120_000, 1_000, 600_000),
   PROVIDER_IDLE_TIMEOUT_MS: int(45_000, 500, 300_000),
-  MAX_OUTPUT_TOKENS: int(2_048, 16, 32_000),
+  /** Includes any reasoning/thinking tokens on models that think, so it must leave room for both. */
+  MAX_OUTPUT_TOKENS: int(16_000, 16, 128_000),
   FAKE_STREAM_DELAY_MS: int(25, 0, 5_000),
   RATE_LIMIT_CHAT_PER_MINUTE: int(20, 1, 10_000),
   RATE_LIMIT_SYNC_PER_MINUTE: int(60, 1, 10_000),
@@ -70,7 +73,7 @@ export interface AppConfig {
   port: number;
   logLevel: Env["LOG_LEVEL"];
   providerMode: Env["PROVIDER_MODE"];
-  openai: ProviderConfig;
+  openai: ProviderConfig & { encryptedReasoning: boolean };
   anthropic: ProviderConfig;
   providerTimeoutMs: number;
   providerIdleTimeoutMs: number;
@@ -108,7 +111,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     port: e.PORT,
     logLevel: e.LOG_LEVEL,
     providerMode: e.PROVIDER_MODE,
-    openai: { apiKey: e.OPENAI_API_KEY, model: e.OPENAI_MODEL },
+    openai: { apiKey: e.OPENAI_API_KEY, model: e.OPENAI_MODEL, encryptedReasoning: e.OPENAI_ENCRYPTED_REASONING === "true" },
     anthropic: { apiKey: e.ANTHROPIC_API_KEY, model: e.ANTHROPIC_MODEL },
     providerTimeoutMs: e.PROVIDER_TIMEOUT_MS,
     providerIdleTimeoutMs: e.PROVIDER_IDLE_TIMEOUT_MS,
