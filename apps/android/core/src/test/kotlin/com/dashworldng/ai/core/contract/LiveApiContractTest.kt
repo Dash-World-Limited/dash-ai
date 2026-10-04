@@ -3,7 +3,9 @@ package com.dashworldng.ai.core.contract
 import com.dashworldng.ai.core.auth.AuthService
 import com.dashworldng.ai.core.chat.ChatRequest
 import com.dashworldng.ai.core.documents.UploadSource
+import com.dashworldng.ai.core.data.InMemoryConversationRepository
 import com.dashworldng.ai.core.model.AssistantMode
+import com.dashworldng.ai.core.model.MessageRole
 import com.dashworldng.ai.core.model.DocumentStatus
 import com.dashworldng.ai.core.model.ModelChoice
 import com.dashworldng.ai.core.model.ProviderId
@@ -12,6 +14,9 @@ import com.dashworldng.ai.core.remote.RemoteChatGateway
 import com.dashworldng.ai.core.remote.RemoteDocumentGateway
 import com.dashworldng.ai.core.stream.ApiException
 import com.dashworldng.ai.core.stream.ChatStreamEvent
+import com.dashworldng.ai.core.sync.ConversationSyncService
+import com.dashworldng.ai.core.sync.DashApiSyncRemote
+import com.dashworldng.ai.core.sync.InMemorySyncStateStore
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -91,6 +96,44 @@ class LiveApiContractTest {
         val start = assertIs<ChatStreamEvent.Started>(first)
         // The stream is already closed by first(); an explicit cancel for a finished stream reports false.
         gateway.cancel(start.streamId)
+    }
+
+    @Test
+    fun `a second device pulls the first device's conversations, renames and deletions`() = runBlocking<Unit> {
+        // Device 1 chats against the live API (the server stores the conversation).
+        val kept = request(ModelChoice.OPENAI, "Plan the kiosk menu")
+        val dropped = request(ModelChoice.CLAUDE, "A chat that will be deleted")
+        RemoteChatGateway(client).stream(kept).toList()
+        RemoteChatGateway(client).stream(dropped).toList()
+
+        // Device 2 signs in to the same account with an empty Room cache and syncs.
+        val repo = InMemoryConversationRepository()
+        val state = InMemorySyncStateStore()
+        val sync = ConversationSyncService(DashApiSyncRemote(client), repo, state, pageSize = 1)
+        val userId = "live-user"
+        val first = sync.sync(userId)
+        assertEquals(2, first.inserted)
+        val pulled = repo.getMessages(kept.conversationId)
+        assertEquals(listOf(MessageRole.USER, MessageRole.ASSISTANT), pulled.map { it.role })
+        assertEquals("Plan the kiosk menu", pulled.first().content)
+        assertEquals(ProviderId.OPENAI, pulled.last().provider)
+        assertTrue(pulled.last().isDemo) // the fake server labels its answers as demonstrations
+        assertEquals(pulled.first().id, pulled.last().replyToId)
+
+        // Device 1 renames one and deletes the other through the real endpoints.
+        client.call { renameConversation(kept.conversationId, com.dashworldng.ai.core.remote.UpdateConversationRequestDto("Kiosk menu")) }
+        client.callNoContent { deleteConversation(dropped.conversationId) }
+
+        val second = sync.sync(userId)
+        assertEquals(1, second.updated)
+        assertEquals(1, second.deleted)
+        assertEquals("Kiosk menu", repo.getConversation(kept.conversationId)!!.title)
+        assertTrue(repo.getConversation(kept.conversationId)!!.titleIsCustom)
+        assertEquals(null, repo.getConversation(dropped.conversationId))
+
+        // Nothing new: a third sync is a no-op.
+        val third = sync.sync(userId)
+        assertEquals(0, third.inserted + third.updated + third.deleted)
     }
 
     @Test

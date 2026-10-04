@@ -155,6 +155,10 @@ export class MemoryStore implements Store {
     };
   }
 
+  async latestSyncSeq(userId: string): Promise<number> {
+    return this.syncCounters.get(userId) ?? 0;
+  }
+
   private cloneMessages(conversationId: string): MessageRecord[] {
     return (this.messages.get(conversationId) ?? []).map((m) => ({ ...m, attachmentIds: [...m.attachmentIds] }));
   }

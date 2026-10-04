@@ -275,6 +275,11 @@ export class PostgresStore implements Store {
     return { changes, hasMore: rows.length > limit };
   }
 
+  async latestSyncSeq(userId: string): Promise<number> {
+    const { rows } = await this.pool.query<{ sync_counter: string }>("SELECT sync_counter FROM users WHERE id = $1", [userId]);
+    return rows[0] ? Number(rows[0].sync_counter) : 0;
+  }
+
   async listMessages(conversationId: string): Promise<MessageRecord[]> {
     const { rows } = await this.pool.query<MessageRow>(
       `SELECT m.* FROM messages m JOIN conversations c ON c.id = m.conversation_id

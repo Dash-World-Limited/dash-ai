@@ -123,6 +123,34 @@ data class CreateConversationRequestDto(val id: String? = null, val title: Strin
 @Serializable
 data class UpdateConversationRequestDto(val title: String)
 
+// ---- Sync ---------------------------------------------------------------------------------------
+
+@Serializable
+data class SyncConversationDto(
+    val id: String,
+    val title: String,
+    val mode: String,
+    val createdAt: String,
+    val updatedAt: String,
+    val titleIsCustom: Boolean,
+)
+
+@Serializable
+data class SyncChangeDto(
+    val seq: Long,
+    val deleted: Boolean,
+    val conversation: SyncConversationDto,
+    val messages: List<ConversationMessageDto>,
+)
+
+@Serializable
+data class SyncPageDto(
+    val changes: List<SyncChangeDto>,
+    val cursor: String,
+    val latest: String,
+    val hasMore: Boolean,
+)
+
 // ---- Chat ---------------------------------------------------------------------------------------
 
 @Serializable

@@ -53,6 +53,11 @@ interface DashApiService {
 
     @POST("v1/conversations") suspend fun createConversation(@Body body: CreateConversationRequestDto): ConversationDto
 
+    @GET("v1/sync/conversations") suspend fun syncConversations(
+        @retrofit2.http.Query("cursor") cursor: String,
+        @retrofit2.http.Query("limit") limit: Int,
+    ): SyncPageDto
+
     @GET("v1/conversations/{id}") suspend fun conversation(@Path("id") id: String): ConversationDetailDto
 
     @PATCH("v1/conversations/{id}") suspend fun renameConversation(

@@ -133,6 +133,9 @@ export interface Store {
   /** Conversations (with messages) and tombstones whose seq is greater than afterSeq, oldest first. */
   listConversationChanges(userId: string, afterSeq: number, limit: number): Promise<ConversationChangePage>;
 
+  /** The user's newest change number (0 when nothing has changed yet). */
+  latestSyncSeq(userId: string): Promise<number>;
+
   listMessages(conversationId: string): Promise<MessageRecord[]>;
   /** Creates or replaces by id within the conversation. A no-op if the conversation was deleted. */
   saveMessage(message: MessageRecord): Promise<void>;

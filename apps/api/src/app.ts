@@ -14,6 +14,7 @@ import type { RouteContext } from "./routes/context.js";
 import { conversationRoutes } from "./routes/conversations.js";
 import { documentRoutes } from "./routes/documents.js";
 import { pluginRoutes } from "./routes/plugins.js";
+import { syncRoutes } from "./routes/sync.js";
 import { systemRoutes } from "./routes/system.js";
 import { RateLimiter } from "./security/rateLimiter.js";
 import { MemoryStore } from "./store/memoryStore.js";
@@ -147,6 +148,7 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   chatRoutes(app, context);
   documentRoutes(app, context);
   pluginRoutes(app, context);
+  syncRoutes(app, context);
 
   app.addHook("onClose", async () => {
     context.streams.cancelAll();

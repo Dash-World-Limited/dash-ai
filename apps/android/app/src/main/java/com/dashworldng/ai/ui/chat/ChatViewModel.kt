@@ -14,10 +14,9 @@ import com.dashworldng.ai.core.model.DocumentItem
 import com.dashworldng.ai.core.model.DocumentStatus
 import com.dashworldng.ai.core.model.ModelChoice
 import com.dashworldng.ai.core.model.ProviderId
-import com.dashworldng.ai.core.remote.DashApiClient
-import com.dashworldng.ai.core.remote.UpdateConversationRequestDto
 import com.dashworldng.ai.core.routing.SmartRouting
 import com.dashworldng.ai.core.stream.ApiException
+import com.dashworldng.ai.core.sync.ConversationSyncService
 import com.dashworldng.ai.data.settings.AccountInfo
 import com.dashworldng.ai.di.AppServices
 import com.dashworldng.ai.di.ComposerPrefill
@@ -150,9 +149,17 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatUiState(choice = local.value.choice, mode = local.value.mode))
 
     init {
+        // A pull must never overwrite a response that is still streaming.
+        services.syncGuard = { !session.state.value.isGenerating }
         viewModelScope.launch {
             services.settings.settings.map { it.demoMode to it.serverUrl }.distinctUntilChanged().collect { (demo, _) ->
                 if (!demo) refreshProviders()
+            }
+        }
+        // After sign-in (and whenever the app starts signed in) pull the account's conversations into Room.
+        viewModelScope.launch {
+            services.settings.settings.map { s -> if (s.demoMode) null else s.account?.takeUnless { it.isDemo }?.userId }.distinctUntilChanged().collect { userId ->
+                if (userId != null) syncNow()
             }
         }
         viewModelScope.launch {
@@ -262,7 +269,7 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
         viewModelScope.launch {
             services.conversations.renameConversation(id, clean)
             session.onConversationRenamed(id, clean)
-            remote { call { this.renameConversation(id, UpdateConversationRequestDto(clean)) } }
+            viewModelScope.launch { syncRemote { onLocalRename(it, id, clean) } }
         }
     }
 
@@ -270,7 +277,7 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
         viewModelScope.launch {
             if (session.state.value.conversation?.id == id) newChat()
             services.conversations.deleteConversation(id)
-            remote { callNoContent { this.deleteConversation(id) } }
+            viewModelScope.launch { syncRemote { onLocalDelete(it, id) } }
             notice("Conversation deleted")
         }
     }
@@ -325,10 +332,42 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
         if (prefill.sendNow) send()
     }
 
-    /** Mirrors history changes to the server for signed-in users; failures are ignored (local-first). */
-    private fun remote(block: suspend DashApiClient.() -> Unit) {
-        if (services.settings.settings.value.demoMode) return
-        val client = services.apiClient() ?: return
-        viewModelScope.launch { runCatching { client.block() } }
+    private fun signedInUserId(): String? {
+        val settings = services.settings.settings.value
+        return if (settings.demoMode) null else settings.account?.takeUnless { it.isDemo }?.userId
+    }
+
+    /**
+     * Pulls the account's conversations from the server into Room (see ConversationSyncService for the
+     * merge rules). Offline or failing syncs are silent: Room keeps working as the local cache.
+     */
+    fun syncNow() {
+        val userId = signedInUserId() ?: return
+        val sync = services.syncService() ?: return
+        viewModelScope.launch {
+            try {
+                val result = sync.sync(userId)
+                val open = session.state.value.conversation?.id
+                // The open conversation was deleted on another device: leave it instead of resurrecting it.
+                if (open != null && open in result.deletedIds) newChat()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Offline, server down or an unexpected response: try again at the next sync.
+            }
+        }
+    }
+
+    /** Mirrors a local rename/delete to the server; if that fails it is remembered and retried at the next sync. */
+    private suspend fun syncRemote(block: suspend ConversationSyncService.(String) -> Unit) {
+        val userId = signedInUserId() ?: return
+        val sync = services.syncService() ?: return
+        try {
+            sync.block(userId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Local-first: the change is already applied on this device.
+        }
     }
 }

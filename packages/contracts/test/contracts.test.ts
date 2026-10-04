@@ -15,6 +15,7 @@ import {
   PluginsResponse,
   ProvidersResponse,
   SMART_ROUTING,
+  SyncConversationsResponse,
   ToolActivityResponse,
   UsageSummaryResponse,
   checkFile,
@@ -44,6 +45,7 @@ describe("JSON fixtures match the schemas", () => {
     ["usage-summary.json", UsageSummaryResponse],
     ["plugins-response.json", PluginsResponse],
     ["tool-activity.json", ToolActivityResponse],
+    ["sync-conversations.json", SyncConversationsResponse],
   ] as const)("%s", (name, schema) => {
     const result = schema.safeParse(json(name));
     expect(result.success, JSON.stringify(result.error?.issues)).toBe(true);

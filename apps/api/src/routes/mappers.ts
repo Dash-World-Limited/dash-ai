@@ -3,11 +3,13 @@ import type {
   ConversationMessage,
   DocumentResponse,
   PluginSetting,
+  SyncChange,
   ToolActivity,
   UsageRecord,
   User,
 } from "@dash-ai/contracts";
 import type {
+  ConversationChange,
   ConversationRecord,
   DocumentSummary,
   MessageRecord,
@@ -87,4 +89,11 @@ export const toPluginSetting = (s: PluginSettingRecord): PluginSetting => ({
   enabled: s.enabled,
   grantedScopes: s.grantedScopes,
   updatedAt: s.updatedAt,
+});
+
+export const toSyncChange = (c: ConversationChange): SyncChange => ({
+  seq: c.seq,
+  deleted: c.deleted,
+  conversation: { ...toConversation(c.conversation), titleIsCustom: c.conversation.titleIsCustom },
+  messages: c.messages.map(toMessage),
 });

@@ -22,6 +22,10 @@ import com.dashworldng.ai.core.remote.RemoteDocumentGateway
 import com.dashworldng.ai.core.stream.ApiError
 import com.dashworldng.ai.core.stream.ApiException
 import com.dashworldng.ai.core.stream.ChatStreamEvent
+import com.dashworldng.ai.core.sync.ConversationSyncService
+import com.dashworldng.ai.core.sync.DashApiSyncRemote
+import com.dashworldng.ai.core.sync.InMemorySyncStateStore
+import com.dashworldng.ai.core.sync.SyncStateStore
 import com.dashworldng.ai.core.util.Clock
 import com.dashworldng.ai.data.AndroidConnectivityMonitor
 import com.dashworldng.ai.data.ConnectivityMonitor
@@ -30,6 +34,7 @@ import com.dashworldng.ai.data.local.DashDatabase
 import com.dashworldng.ai.data.local.RoomConversationRepository
 import com.dashworldng.ai.data.local.RoomDocumentRepository
 import com.dashworldng.ai.data.local.RoomPromptRepository
+import com.dashworldng.ai.data.sync.PrefsSyncStateStore
 import com.dashworldng.ai.data.security.InMemoryTokenStore
 import com.dashworldng.ai.data.security.KeystoreTokenStore
 import com.dashworldng.ai.data.security.TokenStore
@@ -77,6 +82,10 @@ interface AppServices {
     val connectivity: ConnectivityMonitor
     val prefill: PrefillBus
     val clock: Clock
+    val syncState: SyncStateStore
+
+    /** Sync is skipped while this returns false (for example while a response is being generated). */
+    var syncGuard: () -> Boolean
 
     /** Demo Mode → on-device simulation; otherwise the configured Dash AI server. */
     fun chatGateway(): ChatGateway
@@ -85,6 +94,9 @@ interface AppServices {
     /** Null when the configured server address is invalid. */
     fun apiClient(): DashApiClient?
     fun authService(): AuthService?
+
+    /** Pulls the signed-in account's conversations into Room. Null when no valid server is configured. */
+    fun syncService(): ConversationSyncService?
 }
 
 /** Returned when no valid server is configured, so the failure is explained instead of crashing. */
@@ -125,6 +137,22 @@ abstract class BaseServices : AppServices {
     }
 
     override fun authService(): AuthService? = apiClient()?.let { client -> AuthService { client } }
+
+    @Volatile
+    override var syncGuard: () -> Boolean = { true }
+    private var syncClient: DashApiClient? = null
+    private var cachedSync: ConversationSyncService? = null
+
+    /** Server → Room conversation sync for the configured server; null when no valid server is set. */
+    @Synchronized
+    override fun syncService(): ConversationSyncService? {
+        val client = apiClient() ?: return null
+        if (client !== syncClient) {
+            syncClient = client
+            cachedSync = ConversationSyncService(DashApiSyncRemote(client), conversations, syncState, canSync = { syncGuard() })
+        }
+        return cachedSync
+    }
 }
 
 /** Production wiring: Room, DataStore, Android Keystore and the platform connectivity service. */
@@ -140,6 +168,7 @@ class AppContainer(context: Context) : BaseServices() {
     override val connectivity: ConnectivityMonitor = AndroidConnectivityMonitor(context)
     override val prefill: PrefillBus = PrefillBus()
     override val clock: Clock = Clock.System
+    override val syncState: SyncStateStore = PrefsSyncStateStore(context)
 }
 
 /** In-memory wiring for UI tests and previews. */
@@ -157,6 +186,7 @@ class InMemoryServices(
     override val connectivity: ConnectivityMonitor = fixedConnectivity
     override val prefill: PrefillBus = PrefillBus()
     override val clock: Clock = Clock.System
+    override val syncState: SyncStateStore = InMemorySyncStateStore()
     override val demoDocuments: DocumentGateway = documentGatewayOverride ?: DemoDocumentGateway(stepDelayMillis = 0)
 
     override fun chatGateway(): ChatGateway = chatGatewayOverride ?: super.chatGateway()
