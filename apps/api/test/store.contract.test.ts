@@ -246,6 +246,41 @@ function storeContract(name: string, make: () => Promise<Store>, teardown?: () =
       expect(rows[0]).toEqual(row);
     });
 
+    it("stores per-user plugin settings and upserts them", async () => {
+      const a = user();
+      const b = user();
+      await store.createUser(a);
+      await store.createUser(b);
+      expect(await store.getPluginSettings(a.id)).toEqual([]);
+      const s1 = { pluginId: "dash-demo", enabled: true, grantedScopes: ["demo:read"], updatedAt: t(1) };
+      await store.savePluginSetting(a.id, s1);
+      await store.savePluginSetting(a.id, { pluginId: "mock-github", enabled: false, grantedScopes: [], updatedAt: t(2) });
+      await store.savePluginSetting(a.id, { ...s1, enabled: false, grantedScopes: [], updatedAt: t(3) });
+      expect(await store.getPluginSettings(a.id)).toEqual([
+        { pluginId: "dash-demo", enabled: false, grantedScopes: [], updatedAt: t(3) },
+        { pluginId: "mock-github", enabled: false, grantedScopes: [], updatedAt: t(2) },
+      ]);
+      expect(await store.getPluginSettings(b.id)).toEqual([]);
+    });
+
+    it("records tool audit rows (metadata only), newest first, per user", async () => {
+      const a = user();
+      const b = user();
+      await store.createUser(a);
+      await store.createUser(b);
+      const row = (callId: string, status: "ok" | "denied") => ({
+        userId: a.id, conversationId: "conv-0000001", messageId: "msg-00000001", callId, provider: "openai" as const,
+        plugin: "dash-demo", tool: "text_stats", status, durationMs: 4, argBytes: 12, resultChars: 30, createdAt: t(),
+      });
+      await store.recordToolInvocation(row("c1", "ok"));
+      await store.recordToolInvocation(row("c2", "denied"));
+      await store.recordToolInvocation({ ...row("c3", "ok"), userId: b.id });
+      expect((await store.listToolInvocations(a.id, 10)).map((r) => r.callId)).toEqual(["c2", "c1"]);
+      expect((await store.listToolInvocations(a.id, 1)).map((r) => r.callId)).toEqual(["c2"]);
+      expect(await store.listToolInvocations(a.id, 10)).toContainEqual(row("c1", "ok"));
+      expect((await store.listToolInvocations(b.id, 10)).map((r) => r.callId)).toEqual(["c3"]);
+    });
+
     it("deletes everything a user owns and nothing else", async () => {
       const a = user();
       const b = user();
@@ -262,8 +297,15 @@ function storeContract(name: string, make: () => Promise<Store>, teardown?: () =
       await store.recordUsage({ userId: a.id, conversationId: ca.id, messageId: "m-1234567", provider: "openai", model: "x", demo: false, inputTokens: 1, outputTokens: 1, createdAt: t() });
       const session = { tokenHash: uid("h"), userId: a.id, createdAt: t(), expiresAt: t(999) };
       await store.createSession(session);
+      await store.savePluginSetting(a.id, { pluginId: "dash-demo", enabled: true, grantedScopes: ["demo:read"], updatedAt: t() });
+      await store.recordToolInvocation({
+        userId: a.id, conversationId: ca.id, messageId: "msg-00000001", callId: "c", provider: "openai", plugin: "dash-demo",
+        tool: "text_stats", status: "ok", durationMs: 1, argBytes: 1, resultChars: 1, createdAt: t(),
+      });
 
       await store.deleteUserData(a.id);
+      expect(await store.getPluginSettings(a.id)).toEqual([]);
+      expect(await store.listToolInvocations(a.id, 10)).toEqual([]);
       expect(await store.findUserById(a.id)).toBeUndefined();
       expect(await store.findUserByEmail(a.email)).toBeUndefined();
       expect(await store.findSession(session.tokenHash)).toBeUndefined();

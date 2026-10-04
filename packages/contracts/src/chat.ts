@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ApiError, AssistantMode, Id, LIMITS, MessageRole, ModelChoice, ProviderId } from "./common.js";
+import { ToolCallStatus } from "./tools.js";
 
 /**
  * A prior turn the client sends as context. Assistant turns must carry the provider that produced
@@ -71,6 +72,16 @@ export const MessageDeltaEvent = z.object({ messageId: Id, text: z.string() });
 export const MessageEndEvent = z.object({ messageId: Id, finishReason: FinishReason, usage: Usage });
 export const MessageErrorEvent = z.object({ messageId: Id, error: ApiError });
 export const ConversationTitleEvent = z.object({ conversationId: Id, title: z.string() });
+/** A model asked to use a tool and the backend started running it. Informational: never carries arguments. */
+export const ToolCallEvent = z.object({ messageId: Id, callId: z.string(), plugin: z.string(), tool: z.string() });
+export const ToolResultEvent = z.object({
+  messageId: Id,
+  callId: z.string(),
+  plugin: z.string(),
+  tool: z.string(),
+  status: ToolCallStatus,
+  durationMs: z.number().int().nonnegative(),
+});
 export const StreamEndEvent = z.object({ streamId: Id });
 export const StreamErrorEvent = z.object({ error: ApiError });
 
@@ -81,6 +92,8 @@ export const STREAM_EVENTS = {
   "message.end": MessageEndEvent,
   "message.error": MessageErrorEvent,
   "conversation.title": ConversationTitleEvent,
+  "tool.call": ToolCallEvent,
+  "tool.result": ToolResultEvent,
   "stream.end": StreamEndEvent,
   "stream.error": StreamErrorEvent,
 } as const;

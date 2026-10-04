@@ -99,4 +99,37 @@ CREATE TABLE usage_records (
 CREATE INDEX usage_user_idx ON usage_records (user_id, id);
 `,
   },
+  {
+    id: 2,
+    name: "plugins_and_tool_audit",
+    sql: `
+-- A user's explicit choices about optional plugins. No row = never configured = disabled.
+CREATE TABLE plugin_settings (
+  user_id        text NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  plugin_id      text NOT NULL,
+  enabled        boolean NOT NULL,
+  granted_scopes text[] NOT NULL DEFAULT '{}',
+  updated_at     timestamptz NOT NULL,
+  PRIMARY KEY (user_id, plugin_id)
+);
+
+-- Audit trail of tool calls: metadata only. Arguments and results are deliberately never stored.
+CREATE TABLE tool_invocations (
+  id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id         text NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  conversation_id text NOT NULL,
+  message_id      text NOT NULL,
+  call_id         text NOT NULL,
+  provider        text NOT NULL,
+  plugin_id       text NOT NULL,
+  tool_name       text NOT NULL,
+  status          text NOT NULL,
+  duration_ms     integer NOT NULL,
+  arg_bytes       integer NOT NULL,
+  result_chars    integer NOT NULL,
+  created_at      timestamptz NOT NULL
+);
+CREATE INDEX tool_invocations_user_idx ON tool_invocations (user_id, id DESC);
+`,
+  },
 ];

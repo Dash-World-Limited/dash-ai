@@ -57,7 +57,7 @@ describe("OpenAI adapter (official SDK, Responses API)", () => {
       ["response.created", { type: "response.created", sequence_number: 0, response: { id: "resp_1", status: "in_progress" } }],
       ["response.output_text.delta", { type: "response.output_text.delta", delta: "Hello", item_id: "i", output_index: 0, content_index: 0, sequence_number: 1, logprobs: [] }],
       ["response.output_text.delta", { type: "response.output_text.delta", delta: " world", item_id: "i", output_index: 0, content_index: 0, sequence_number: 2, logprobs: [] }],
-      ["response.completed", { type: "response.completed", sequence_number: 3, response: { id: "resp_1", status: "completed", usage: { input_tokens: 21, output_tokens: 2, total_tokens: 23 } } }],
+      ["response.completed", { type: "response.completed", sequence_number: 3, response: { id: "resp_1", status: "completed", model: "served-model-x", usage: { input_tokens: 21, output_tokens: 2, total_tokens: 23 } } }],
     ]);
 
   it("streams text, reports usage and sends a privacy-preserving request", async () => {
@@ -70,7 +70,7 @@ describe("OpenAI adapter (official SDK, Responses API)", () => {
     expect(chunks).toEqual([
       { type: "text", text: "Hello" },
       { type: "text", text: " world" },
-      { type: "finish", finishReason: "stop", usage: { inputTokens: 21, outputTokens: 2 } },
+      { type: "finish", finishReason: "stop", usage: { inputTokens: 21, outputTokens: 2 }, servedModel: "served-model-x" },
     ]);
     expect(captured[0]?.url).toMatch(/\/responses$/);
     expect(captured[0]?.body).toMatchObject({
@@ -99,6 +99,7 @@ describe("OpenAI adapter (official SDK, Responses API)", () => {
       type: "finish",
       finishReason: "length",
       usage: { inputTokens: 5, outputTokens: 256 },
+      servedModel: null,
     });
   });
 
@@ -154,7 +155,7 @@ describe("Anthropic adapter (official SDK, Messages API)", () => {
     expect(await run(adapter)).toEqual([
       { type: "text", text: "Bonjour" },
       { type: "text", text: " !" },
-      { type: "finish", finishReason: "stop", usage: { inputTokens: 30, outputTokens: 4 } },
+      { type: "finish", finishReason: "stop", usage: { inputTokens: 30, outputTokens: 4 }, servedModel: "m" },
     ]);
     expect(captured[0]?.url).toMatch(/\/v1\/messages$/);
     expect(captured[0]?.body).toMatchObject({

@@ -1,3 +1,4 @@
+import type { PluginSettingRecord, ToolInvocationRow } from "../tools/types.js";
 import type {
   AssistantMode,
   DocumentKind,
@@ -71,6 +72,8 @@ export const summarizeDocument = (d: DocumentRecord): DocumentSummary => {
   return { ...meta, extractedChars: extractedText.length };
 };
 
+export type { PluginSettingRecord, ToolInvocationRow };
+
 export interface UsageRow {
   userId: string;
   conversationId: string;
@@ -143,6 +146,15 @@ export interface Store {
 
   recordUsage(row: UsageRow): Promise<void>;
   listUsage(userId: string): Promise<UsageRow[]>;
+
+  /** The user's plugin choices (only plugins they have ever configured). */
+  getPluginSettings(userId: string): Promise<PluginSettingRecord[]>;
+  savePluginSetting(userId: string, setting: PluginSettingRecord): Promise<void>;
+
+  /** Audit metadata for tool calls (never arguments or results). */
+  recordToolInvocation(row: ToolInvocationRow): Promise<void>;
+  /** Most recent first. */
+  listToolInvocations(userId: string, limit: number): Promise<ToolInvocationRow[]>;
 
   /** Deletes sessions that expired before `now`. Returns how many were removed. */
   purgeExpiredSessions(now: Date): Promise<number>;

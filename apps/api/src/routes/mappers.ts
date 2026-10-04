@@ -1,5 +1,21 @@
-import type { Conversation, ConversationMessage, DocumentResponse, UsageRecord, User } from "@dash-ai/contracts";
-import type { ConversationRecord, DocumentSummary, MessageRecord, UsageRow, UserRecord } from "../store/store.js";
+import type {
+  Conversation,
+  ConversationMessage,
+  DocumentResponse,
+  PluginSetting,
+  ToolActivity,
+  UsageRecord,
+  User,
+} from "@dash-ai/contracts";
+import type {
+  ConversationRecord,
+  DocumentSummary,
+  MessageRecord,
+  PluginSettingRecord,
+  ToolInvocationRow,
+  UsageRow,
+  UserRecord,
+} from "../store/store.js";
 
 export const toUser = (u: UserRecord): User => ({
   id: u.id,
@@ -50,4 +66,25 @@ export const toUsage = (u: UsageRow): UsageRecord => ({
   inputTokens: u.inputTokens,
   outputTokens: u.outputTokens,
   createdAt: u.createdAt,
+});
+
+export const toToolActivity = (t: ToolInvocationRow): ToolActivity => ({
+  conversationId: t.conversationId,
+  messageId: t.messageId,
+  callId: t.callId,
+  provider: t.provider,
+  plugin: t.plugin,
+  tool: t.tool,
+  status: t.status,
+  durationMs: t.durationMs,
+  argBytes: t.argBytes,
+  resultChars: t.resultChars,
+  createdAt: t.createdAt,
+});
+
+export const toPluginSetting = (s: PluginSettingRecord): PluginSetting => ({
+  pluginId: s.pluginId,
+  enabled: s.enabled,
+  grantedScopes: s.grantedScopes,
+  updatedAt: s.updatedAt,
 });

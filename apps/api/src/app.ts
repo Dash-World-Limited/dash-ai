@@ -13,15 +13,20 @@ import { chatRoutes } from "./routes/chat.js";
 import type { RouteContext } from "./routes/context.js";
 import { conversationRoutes } from "./routes/conversations.js";
 import { documentRoutes } from "./routes/documents.js";
+import { pluginRoutes } from "./routes/plugins.js";
 import { systemRoutes } from "./routes/system.js";
 import { RateLimiter } from "./security/rateLimiter.js";
 import { MemoryStore } from "./store/memoryStore.js";
 import type { Store } from "./store/store.js";
+import { ToolRuntime } from "./tools/runtime.js";
+import type { PluginRegistry } from "./tools/registry.js";
 
 export interface AppDependencies {
   config: AppConfig;
   store?: Store;
   providers?: ProviderRegistry;
+  /** Plugins this server knows about. Defaults to the built-in demo plugin only. */
+  plugins?: PluginRegistry;
   logStream?: LogStream;
   now?: () => Date;
 }
@@ -88,6 +93,7 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
     config,
     store,
     providers,
+    tools: ToolRuntime.fromConfig(config, store, deps.plugins),
     streams: new StreamRegistry(),
     limiters,
     requireAuth: makeRequireAuth(store, now),
@@ -140,6 +146,7 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   conversationRoutes(app, context);
   chatRoutes(app, context);
   documentRoutes(app, context);
+  pluginRoutes(app, context);
 
   app.addHook("onClose", async () => {
     context.streams.cancelAll();

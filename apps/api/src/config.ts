@@ -47,6 +47,11 @@ const EnvSchema = z.object({
   DATA_ENCRYPTION_KEY_ID: z.preprocess(emptyToUndefined, z.string().regex(/^[A-Za-z0-9_-]{1,32}$/).default("k1")),
   /** Retired keys kept for decrypting old data: id:base64,id2:base64 */
   DATA_ENCRYPTION_PREVIOUS_KEYS: optionalString,
+  /** Server-wide kill switch for tool calling. */
+  TOOLS_ENABLED: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("true")),
+  TOOL_TIMEOUT_MS: int(10_000, 100, 120_000),
+  TOOL_MAX_ROUNDS: int(4, 1, 8),
+  TOOL_MAX_RESULT_CHARS: int(20_000, 100, 200_000),
   /** Production refuses to start on the in-memory store unless this is "true". */
   ALLOW_MEMORY_STORE: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("false")),
 });
@@ -81,6 +86,7 @@ export interface AppConfig {
     autoMigrate: boolean;
     allowMemoryStore: boolean;
   };
+  tools: { enabled: boolean; timeoutMs: number; maxRounds: number; maxResultChars: number };
   dataEncryption: { key: string | undefined; keyId: string; previousKeys: string | undefined };
   version: string;
 }
@@ -122,6 +128,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       poolMax: e.DATABASE_POOL_MAX,
       autoMigrate: e.DATABASE_AUTO_MIGRATE ? e.DATABASE_AUTO_MIGRATE === "true" : e.NODE_ENV !== "production",
       allowMemoryStore: e.ALLOW_MEMORY_STORE === "true",
+    },
+    tools: {
+      enabled: e.TOOLS_ENABLED === "true",
+      timeoutMs: e.TOOL_TIMEOUT_MS,
+      maxRounds: e.TOOL_MAX_ROUNDS,
+      maxResultChars: e.TOOL_MAX_RESULT_CHARS,
     },
     dataEncryption: {
       key: e.DATA_ENCRYPTION_KEY,

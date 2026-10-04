@@ -10,6 +10,7 @@ import {
   type UsageRow,
   type UserRecord,
 } from "./store.js";
+import type { PluginSettingRecord, ToolInvocationRow } from "../tools/types.js";
 
 interface StoredConversation {
   record: ConversationRecord;
@@ -31,6 +32,8 @@ export class MemoryStore implements Store {
   private readonly documents = new Map<string, DocumentRecord>();
   private readonly syncCounters = new Map<string, number>();
   private usage: UsageRow[] = [];
+  private readonly pluginSettings = new Map<string, Map<string, PluginSettingRecord>>();
+  private toolInvocations: ToolInvocationRow[] = [];
 
   private bump(conversation: StoredConversation): void {
     const next = (this.syncCounters.get(conversation.record.userId) ?? 0) + 1;
@@ -74,6 +77,8 @@ export class MemoryStore implements Store {
     }
     for (const [id, d] of this.documents) if (d.userId === userId) this.documents.delete(id);
     this.usage = this.usage.filter((u) => u.userId !== userId);
+    this.pluginSettings.delete(userId);
+    this.toolInvocations = this.toolInvocations.filter((t) => t.userId !== userId);
   }
 
   async createSession(session: SessionRecord): Promise<void> {
@@ -209,6 +214,24 @@ export class MemoryStore implements Store {
 
   async listUsage(userId: string): Promise<UsageRow[]> {
     return this.usage.filter((u) => u.userId === userId).map((u) => ({ ...u }));
+  }
+
+  async getPluginSettings(userId: string): Promise<PluginSettingRecord[]> {
+    return [...(this.pluginSettings.get(userId)?.values() ?? [])].map((s) => ({ ...s, grantedScopes: [...s.grantedScopes] }));
+  }
+
+  async savePluginSetting(userId: string, setting: PluginSettingRecord): Promise<void> {
+    const map = this.pluginSettings.get(userId) ?? new Map<string, PluginSettingRecord>();
+    map.set(setting.pluginId, { ...setting, grantedScopes: [...setting.grantedScopes] });
+    this.pluginSettings.set(userId, map);
+  }
+
+  async recordToolInvocation(row: ToolInvocationRow): Promise<void> {
+    this.toolInvocations.push({ ...row });
+  }
+
+  async listToolInvocations(userId: string, limit: number): Promise<ToolInvocationRow[]> {
+    return this.toolInvocations.filter((t) => t.userId === userId).slice(-limit).reverse().map((t) => ({ ...t }));
   }
 
   async close(): Promise<void> {}

@@ -106,6 +106,19 @@ class ContractFixturesTest {
     }
 
     @Test
+    fun `tool events from the server are ignored and the answer text is unaffected`() {
+        val raw = SseParser.parseAll(Fixtures.text("chat-stream-tools.sse"))
+        assertEquals(listOf("tool.call", "tool.result"), raw.map { it.event }.filter { it.startsWith("tool.") })
+        val events = raw.mapNotNull { StreamEventDecoder.decode(it, strict) }
+        // start + 3 deltas + end + stream end; the two tool events are forward-compatibly dropped.
+        assertEquals(6, events.size)
+        assertEquals("Let me check.\n\nIt has 3 words.", events.filterIsInstance<ChatStreamEvent.Delta>().joinToString("") { it.text })
+        val end = assertIs<ChatStreamEvent.MessageEnded>(events[4])
+        assertEquals(FinishReason.STOP, end.finishReason)
+        assertIs<ChatStreamEvent.Ended>(events[5])
+    }
+
+    @Test
     fun `the error SSE transcript decodes into a stream failure`() {
         val events = SseParser.parseAll(Fixtures.text("chat-stream-error.sse")).mapNotNull { StreamEventDecoder.decode(it, strict) }
         assertEquals("internal_error", assertIs<ChatStreamEvent.Failed>(events.single()).error.code)

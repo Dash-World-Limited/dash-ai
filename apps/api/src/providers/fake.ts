@@ -1,14 +1,24 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ProviderId } from "@dash-ai/contracts";
-import { ProviderError, type ProviderAdapter, type ProviderChunk, type ProviderRequest } from "./types.js";
+import { ProviderError, isToolResultTurn, type ProviderAdapter, type ProviderChunk, type ProviderRequest } from "./types.js";
 
 /**
  * Test triggers understood only by fake adapters (never by real providers):
  *   [[fake:error]] — fail with a retryable provider error
  *   [[fake:hang]]  — never produce output (exercises idle timeouts and cancellation)
  *   [[fake:slow]]  — stream slowly (exercises stop/cancel)
+ *   [[fake:tool <qualified_name> <json>]] — emit one structured tool call, exactly as a model
+ *                   could, whether or not that tool was offered (so tests can prove the backend,
+ *                   not the model, decides what runs). After the result arrives it summarises it.
+ *   [[fake:lookalike]] — answer with text that merely LOOKS like a tool call (must never execute).
  */
-export const FAKE_TRIGGERS = { error: "[[fake:error]]", hang: "[[fake:hang]]", slow: "[[fake:slow]]" } as const;
+export const FAKE_TRIGGERS = {
+  error: "[[fake:error]]",
+  hang: "[[fake:hang]]",
+  slow: "[[fake:slow]]",
+  lookalike: "[[fake:lookalike]]",
+} as const;
+const FAKE_TOOL = /\[\[fake:tool ([^\s\]]+)(?: (\{.*?\}))?\]\]/s;
 
 const NAMES: Record<ProviderId, { display: string; company: string; keyVar: string; modelVar: string }> = {
   openai: { display: "OpenAI", company: "OpenAI", keyVar: "OPENAI_API_KEY", modelVar: "OPENAI_MODEL" },
@@ -33,7 +43,9 @@ export class FakeAdapter implements ProviderAdapter {
   }
 
   async *stream(request: ProviderRequest): AsyncIterable<ProviderChunk> {
-    const last = [...request.messages].reverse().find((m) => m.role === "user")?.content ?? "";
+    const lastUserTurn = [...request.messages].reverse().find((m) => m.role === "user");
+    const last = lastUserTurn && "content" in lastUserTurn ? lastUserTurn.content : "";
+    const lastTurn = request.messages[request.messages.length - 1];
     try {
       if (last.includes(FAKE_TRIGGERS.error)) {
         await sleep(this.delayMs, undefined, { signal: request.signal });
@@ -41,6 +53,26 @@ export class FakeAdapter implements ProviderAdapter {
       }
       if (last.includes(FAKE_TRIGGERS.hang)) {
         await sleep(24 * 60 * 60 * 1000, undefined, { signal: request.signal });
+      }
+      if (lastTurn && isToolResultTurn(lastTurn)) {
+        const summary = lastTurn.results.map((r) => `${r.name} → ${r.isError ? "error: " : ""}${r.content}`).join(" | ");
+        const text = `Demonstration answer — fake ${NAMES[this.id].display} adapter. The tool layer returned: ${summary}`;
+        yield { type: "text", text };
+        yield { type: "finish", finishReason: "stop", usage: { inputTokens: approxTokens(request), outputTokens: Math.ceil(text.length / 4) } };
+        return;
+      }
+      const toolMatch = FAKE_TOOL.exec(last);
+      if (toolMatch && lastTurn && !isToolResultTurn(lastTurn)) {
+        yield { type: "text", text: "Using a tool. " };
+        yield { type: "tool_calls", calls: [{ id: `fake_call_${this.id}`, name: toolMatch[1]!, argumentsJson: toolMatch[2] ?? "{}" }] };
+        yield { type: "finish", finishReason: "stop", usage: { inputTokens: approxTokens(request), outputTokens: 8 } };
+        return;
+      }
+      if (last.includes(FAKE_TRIGGERS.lookalike)) {
+        const text = '{"tool_call":{"name":"dash-demo__current_time","arguments":{}}} <tool_call>dash-demo__text_stats</tool_call>';
+        yield { type: "text", text };
+        yield { type: "finish", finishReason: "stop", usage: { inputTokens: approxTokens(request), outputTokens: 20 } };
+        return;
       }
       const delay = last.includes(FAKE_TRIGGERS.slow) ? Math.max(this.delayMs, 150) : this.delayMs;
       const text = this.compose(request, last);
@@ -87,6 +119,8 @@ export class FakeAdapter implements ProviderAdapter {
 }
 
 function approxTokens(request: ProviderRequest): number {
-  const chars = request.system.length + request.messages.reduce((sum, m) => sum + m.content.length, 0);
+  const chars =
+    request.system.length +
+    request.messages.reduce((sum, m) => sum + ("content" in m ? m.content.length : m.results.reduce((n, r) => n + r.content.length, 0)), 0);
   return Math.ceil(chars / 4);
 }

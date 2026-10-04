@@ -12,9 +12,17 @@ import { AppError } from "../errors.js";
 import { buildProviderMessages } from "../providers/context.js";
 import { buildSystemPrompt } from "../providers/instructions.js";
 import type { ProviderRegistry } from "../providers/registry.js";
-import { toProviderError, type ProviderAdapter } from "../providers/types.js";
+import {
+  toProviderError,
+  type ProviderAdapter,
+  type ProviderToolResult,
+  type ProviderTurn,
+} from "../providers/types.js";
 import { newId } from "../security/crypto.js";
 import type { ConversationRecord, DocumentRecord, Store } from "../store/store.js";
+import type { OfferedTools } from "../tools/registry.js";
+import type { ToolRuntime } from "../tools/runtime.js";
+import type { ModelToolCall } from "../tools/types.js";
 import { withIdleTimeout } from "./timeouts.js";
 import { DEFAULT_TITLE, generateTitle } from "./titles.js";
 
@@ -27,10 +35,14 @@ export interface SseSink {
 export interface ChatContext {
   store: Store;
   providers: ProviderRegistry;
+  tools: ToolRuntime;
   config: AppConfig;
   log: FastifyBaseLogger;
   now: () => Date;
 }
+
+/** A model may ask for many calls in one step; beyond this they are refused, not run. */
+export const MAX_TOOL_CALLS_PER_ROUND = 8;
 
 export interface PreparedTarget {
   adapter: ProviderAdapter;
@@ -45,6 +57,8 @@ export interface PreparedChat {
   routingReason: string;
   compareGroupId: string | null;
   documents: DocumentRecord[];
+  /** Tools this user has enabled and granted. Empty when none (the usual case). */
+  offered: OfferedTools;
 }
 
 /**
@@ -101,6 +115,7 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
     routingReason: routing.reason,
     compareGroupId: request.modelChoice === "compare" ? request.message.id : null,
     documents,
+    offered: await ctx.tools.offeredFor(userId),
   };
 }
 
@@ -193,29 +208,64 @@ async function runTarget(
   let usage: Usage = { inputTokens: null, outputTokens: null };
 
   try {
-    const messages = buildProviderMessages(
+    const turns: ProviderTurn[] = buildProviderMessages(
       adapter.id,
       prepared.request.history,
       prepared.request.message.content,
       prepared.documents,
     );
-    const source = adapter.stream({
-      system: buildSystemPrompt(prepared.request.mode, adapter),
-      messages,
-      maxOutputTokens: ctx.config.maxOutputTokens,
-      signal: controller.signal,
-    });
+    const offered = prepared.offered;
+    const system = buildSystemPrompt(prepared.request.mode, adapter, { toolsOffered: offered.size > 0 });
     let finishReason: "stop" | "length" | "refusal" = "stop";
-    for await (const chunk of withIdleTimeout(source, ctx.config.providerIdleTimeoutMs, () =>
-      controller.abort("timeout"),
-    )) {
-      if (chunk.type === "text") {
-        content += chunk.text;
-        sink.send({ event: "message.delta", data: { messageId, text: chunk.text } });
-      } else {
-        finishReason = chunk.finishReason;
-        usage = chunk.usage;
+    let servedModel: string | null | undefined;
+
+    for (let round = 0; ; round++) {
+      // A cancel or timeout during a tool call must end the response, not start another round.
+      if (controller.signal.aborted) throw new Error("aborted");
+      // The last allowed round offers no tools, so the model must answer with what it has.
+      const tools = offered.size > 0 && round < ctx.tools.maxRounds ? offered.list() : undefined;
+      let roundText = "";
+      let calls: ModelToolCall[] = [];
+      let roundFinish: "stop" | "length" | "refusal" = "stop";
+      const source = adapter.stream({
+        system,
+        messages: turns,
+        ...(tools ? { tools } : {}),
+        maxOutputTokens: ctx.config.maxOutputTokens,
+        signal: controller.signal,
+      });
+      for await (const chunk of withIdleTimeout(source, ctx.config.providerIdleTimeoutMs, () =>
+        controller.abort("timeout"),
+      )) {
+        if (chunk.type === "text") {
+          if (roundText === "" && content !== "" && !/\s$/.test(content)) {
+            content += "\n\n";
+            sink.send({ event: "message.delta", data: { messageId, text: "\n\n" } });
+          }
+          content += chunk.text;
+          roundText += chunk.text;
+          sink.send({ event: "message.delta", data: { messageId, text: chunk.text } });
+        } else if (chunk.type === "tool_calls") {
+          calls = chunk.calls;
+        } else {
+          roundFinish = chunk.finishReason;
+          usage = addUsage(usage, chunk.usage);
+          servedModel = chunk.servedModel ?? servedModel;
+        }
       }
+      finishReason = roundFinish;
+      if (calls.length === 0) break;
+      if (!tools || roundFinish !== "stop") {
+        // Tool requests when none were offered, or from a cut-off answer, are never acted on.
+        ctx.log.warn({ provider: adapter.id, calls: calls.length, offered: Boolean(tools) }, "ignored tool calls");
+        break;
+      }
+
+      const results = await runToolCalls(ctx, prepared, target, calls, controller.signal, sink);
+      turns.push({ role: "assistant", content: roundText, toolCalls: calls }, { role: "tool", results });
+    }
+    if (servedModel && servedModel !== adapter.model) {
+      ctx.log.info({ provider: adapter.id, configuredModel: adapter.model, servedModel }, "provider served a different model id");
     }
     sink.send({ event: "message.end", data: { messageId, finishReason, usage } });
   } catch (err) {
@@ -268,4 +318,76 @@ async function runTarget(
     createdAt: now,
   });
   return { provider: adapter.id, status, usage };
+}
+
+const addUsage = (a: Usage, b: Usage): Usage => ({
+  inputTokens: a.inputTokens === null && b.inputTokens === null ? null : (a.inputTokens ?? 0) + (b.inputTokens ?? 0),
+  outputTokens: a.outputTokens === null && b.outputTokens === null ? null : (a.outputTokens ?? 0) + (b.outputTokens ?? 0),
+});
+
+/**
+ * Runs one round of model-requested tool calls through the backend tool layer, one at a time and
+ * in the order requested. Every call gets a result (the providers require it) and an audit row.
+ */
+async function runToolCalls(
+  ctx: ChatContext,
+  prepared: PreparedChat,
+  target: PreparedTarget,
+  calls: readonly ModelToolCall[],
+  signal: AbortSignal,
+  sink: SseSink,
+): Promise<ProviderToolResult[]> {
+  const { adapter, messageId } = target;
+  const results: ProviderToolResult[] = [];
+  for (const [index, call] of calls.entries()) {
+    const overLimit = index >= MAX_TOOL_CALLS_PER_ROUND;
+    const label = /^([a-z][a-z0-9-]{1,31})__([a-z][a-z0-9_]{1,47})$/.exec(call.name);
+    const plugin = label?.[1] ?? "unknown";
+    const tool = label?.[2] ?? "unknown";
+    sink.send({ event: "tool.call", data: { messageId, callId: call.id, plugin, tool } });
+    const execution = overLimit
+      ? {
+          callId: call.id, name: call.name, plugin, tool, status: "denied" as const, isError: true, durationMs: 0,
+          argBytes: Buffer.byteLength(call.argumentsJson, "utf8"),
+          content: "Too many tool calls were requested in one step; this one was not run.",
+        }
+      : await ctx.tools.executor.execute(call, prepared.offered, {
+          userId: prepared.userId,
+          conversationId: prepared.conversation.id,
+          messageId,
+          provider: adapter.id,
+          signal,
+          now: ctx.now,
+          log: ctx.log,
+        });
+    sink.send({
+      event: "tool.result",
+      data: { messageId, callId: call.id, plugin: execution.plugin, tool: execution.tool, status: execution.status, durationMs: execution.durationMs },
+    });
+    // Metadata only (no arguments, no results), for the user's own tool-activity view and export.
+    ctx.log.info(
+      { provider: adapter.id, plugin: execution.plugin, tool: execution.tool, status: execution.status, durationMs: execution.durationMs },
+      "tool call finished",
+    );
+    try {
+      await ctx.store.recordToolInvocation({
+        userId: prepared.userId,
+        conversationId: prepared.conversation.id,
+        messageId,
+        callId: call.id.slice(0, 128),
+        provider: adapter.id,
+        plugin: execution.plugin,
+        tool: execution.tool,
+        status: execution.status,
+        durationMs: execution.durationMs,
+        argBytes: execution.argBytes,
+        resultChars: execution.content.length,
+        createdAt: ctx.now().toISOString(),
+      });
+    } catch (err) {
+      ctx.log.warn({ err }, "could not record tool audit row");
+    }
+    results.push({ callId: call.id, name: call.name, content: execution.content, isError: execution.isError });
+  }
+  return results;
 }

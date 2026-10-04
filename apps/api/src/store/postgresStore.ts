@@ -1,5 +1,6 @@
 import pg from "pg";
 import type { AssistantMode, DocumentKind, DocumentStatus, MessageRole, MessageStatus, ProviderId } from "@dash-ai/contracts";
+import type { PluginSettingRecord, ToolInvocationRow } from "../tools/types.js";
 import type { DataCipher } from "../security/dataCrypto.js";
 import { assertMigrated, migrate } from "./migrate.js";
 import {
@@ -352,6 +353,46 @@ export class PostgresStore implements Store {
   async deleteDocument(userId: string, id: string): Promise<boolean> {
     const res = await this.pool.query("DELETE FROM documents WHERE id = $1 AND user_id = $2", [id, userId]);
     return res.rowCount === 1;
+  }
+
+  // ---- plugins and tool audit ------------------------------------------------------------------
+
+  async getPluginSettings(userId: string): Promise<PluginSettingRecord[]> {
+    const { rows } = await this.pool.query<{ plugin_id: string; enabled: boolean; granted_scopes: string[]; updated_at: Date }>(
+      "SELECT * FROM plugin_settings WHERE user_id = $1 ORDER BY plugin_id",
+      [userId],
+    );
+    return rows.map((r) => ({ pluginId: r.plugin_id, enabled: r.enabled, grantedScopes: r.granted_scopes, updatedAt: iso(r.updated_at) }));
+  }
+
+  async savePluginSetting(userId: string, s: PluginSettingRecord): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO plugin_settings (user_id, plugin_id, enabled, granted_scopes, updated_at) VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (user_id, plugin_id) DO UPDATE SET enabled = EXCLUDED.enabled,
+         granted_scopes = EXCLUDED.granted_scopes, updated_at = EXCLUDED.updated_at`,
+      [userId, s.pluginId, s.enabled, s.grantedScopes, s.updatedAt],
+    );
+  }
+
+  async recordToolInvocation(t: ToolInvocationRow): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO tool_invocations (user_id, conversation_id, message_id, call_id, provider, plugin_id, tool_name, status,
+         duration_ms, arg_bytes, result_chars, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [t.userId, t.conversationId, t.messageId, t.callId, t.provider, t.plugin, t.tool, t.status, t.durationMs, t.argBytes, t.resultChars, t.createdAt],
+    );
+  }
+
+  async listToolInvocations(userId: string, limit: number): Promise<ToolInvocationRow[]> {
+    const { rows } = await this.pool.query<{
+      user_id: string; conversation_id: string; message_id: string; call_id: string; provider: string; plugin_id: string;
+      tool_name: string; status: string; duration_ms: number; arg_bytes: number; result_chars: number; created_at: Date;
+    }>("SELECT * FROM tool_invocations WHERE user_id = $1 ORDER BY id DESC LIMIT $2", [userId, limit]);
+    return rows.map((r) => ({
+      userId: r.user_id, conversationId: r.conversation_id, messageId: r.message_id, callId: r.call_id,
+      provider: r.provider as ProviderId, plugin: r.plugin_id, tool: r.tool_name, status: r.status as ToolInvocationRow["status"],
+      durationMs: r.duration_ms, argBytes: r.arg_bytes, resultChars: r.result_chars, createdAt: iso(r.created_at),
+    }));
   }
 
   // ---- usage -----------------------------------------------------------------------------------
