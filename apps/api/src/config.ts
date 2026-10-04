@@ -62,6 +62,9 @@ const EnvSchema = z.object({
 
 export type Env = z.infer<typeof EnvSchema>;
 
+/** Every environment variable the API reads (kept in sync with .env.example by a test). */
+export const ENV_KEYS: readonly string[] = Object.keys(EnvSchema.shape);
+
 export interface ProviderConfig {
   apiKey: string | undefined;
   model: string | undefined;
@@ -147,4 +150,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     version: "0.1.0",
   };
+}
+
+/**
+ * Explicit production settings that weaken security. Insecure *defaults* are refused elsewhere
+ * (no database, no encryption key, malformed keys); these are deliberate opt-outs, so they are
+ * logged loudly at start-up instead.
+ */
+export function configWarnings(config: AppConfig): string[] {
+  if (config.nodeEnv !== "production") return [];
+  const warnings: string[] = [];
+  if (config.database.url && config.database.ssl === "disable") {
+    warnings.push("DATABASE_SSL=disable in production: database traffic (including session hashes and ciphertext) is not encrypted in transit.");
+  }
+  if (config.database.url && config.database.ssl === "no-verify") {
+    warnings.push("DATABASE_SSL=no-verify in production: the database certificate is not verified, so a network attacker can impersonate the database.");
+  }
+  if (config.logLevel === "debug" || config.logLevel === "trace") {
+    warnings.push(`LOG_LEVEL=${config.logLevel} in production: verbose logs are larger and record more request detail. Use info.`);
+  }
+  if (config.providerMode === "fake") {
+    warnings.push("PROVIDER_MODE=fake in production: every answer is a labelled demonstration, not a real model.");
+  }
+  return warnings;
 }

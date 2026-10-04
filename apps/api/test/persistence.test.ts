@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import { buildApp } from "../src/app.js";
@@ -43,6 +43,10 @@ describe("DataCipher (AES-256-GCM)", () => {
     expect(() => cipher.decrypt({ ...enc, payload: tampered }, "doc-1")).toThrow(DataKeyError);
     expect(() => cipher.decrypt({ ...enc, payload: enc.payload.subarray(0, 10) }, "doc-1")).toThrow(DataKeyError);
     expect(() => cipher.decrypt({ ...enc, keyId: "unknown" }, "doc-1")).toThrow(/key id/);
+    // A format version this build does not know is refused before any decryption is attempted.
+    const future = Buffer.from(enc.payload);
+    future[0] = 2;
+    expect(() => cipher.decrypt({ ...enc, payload: future }, "doc-1")).toThrow(/unsupported format/);
   });
 
   it("supports rotation: new key encrypts, retired keys still decrypt", () => {
@@ -65,8 +69,33 @@ describe("DataCipher (AES-256-GCM)", () => {
       expect(err).toBeInstanceOf(DataKeyError);
       expect((err as Error).message).not.toContain(secret);
     }
+    // Not base64 (Buffer.from would silently skip the bad characters), or obviously not random.
+    for (const bad of [`${"A".repeat(42)}!=`, b64(key()).replace(/.$/, "*"), b64(Buffer.alloc(32)), b64(Buffer.alloc(32, 7)), b64(Buffer.from("password".repeat(4)))]) {
+      expect(() => DataCipher.fromConfig(bad, "k1"), bad).toThrow(DataKeyError);
+    }
+    expect(DataCipher.fromConfig(key().toString("base64url"), "k1").keyId).toBe("k1");
+    expect(DataCipher.fromConfig(` ${b64(key())}\n`, "k1").keyId).toBe("k1");
     expect(() => DataCipher.fromConfig(b64(key()), "k1", "nocolon")).toThrow(DataKeyError);
     expect(() => DataCipher.fromConfig(b64(key()), "k1", `k1:${b64(key())}`)).toThrow(/twice/);
+  });
+});
+
+describe("migrations are append-only", () => {
+  // A shipped migration must never change: databases that already applied it would refuse to start
+  // (checksum mismatch), and fresh databases would get a different schema. Add a new migration instead.
+  const PINNED: Record<number, string> = {
+    1: "b352cf11fc08c2dc585422e4f823de5fe8d6d8b458640d6472efaab950f7fc23",
+    2: "6a2d015a0e66761fd5ce4d6cab841197d82e3db82b9556e77cb58ba6d1957530",
+    3: "5e209d88684b3ae84563f2add965a54fbee1ab389b58af1c6cfca52106d3144b",
+    4: "d3c0d87923a156d30ce6337a87c2c2b501ed9c13cd87ee70f7439b36af38db9b",
+  };
+
+  it("ids are consecutive from 1 and every pinned migration is unchanged", () => {
+    expect(MIGRATIONS.map((m) => m.id)).toEqual(MIGRATIONS.map((_, i) => i + 1));
+    for (const [id, sum] of Object.entries(PINNED)) {
+      const migration = MIGRATIONS.find((m) => m.id === Number(id));
+      expect(migration && createHash("sha256").update(migration.sql).digest("hex"), `migration ${id}`).toBe(sum);
+    }
   });
 });
 

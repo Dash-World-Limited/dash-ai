@@ -41,6 +41,7 @@ import kotlin.test.assertTrue
 class LiveApiContractTest {
     private val baseUrl: String? = System.getenv("DASH_API_BASE_URL")
     private var token: String? = null
+    private val email = "android-${UUID.randomUUID()}@example.com"
     private lateinit var client: DashApiClient
 
     @Before
@@ -48,7 +49,7 @@ class LiveApiContractTest {
         assumeTrue("DASH_API_BASE_URL not set; skipping live API contract test", !baseUrl.isNullOrBlank())
         client = DashApiClient(baseUrl!!, tokenProvider = { token })
         runBlocking {
-            val session = AuthService { client }.register("android-${UUID.randomUUID()}@example.com", "correct horse battery", "Android CI")
+            val session = AuthService { client }.register(email, "correct horse battery", "Android CI")
             token = session.token
         }
     }
@@ -214,6 +215,20 @@ class LiveApiContractTest {
         // Retrying the Claude answer with OpenAI replaced it: the second question's answer now comes from OpenAI.
         val secondAnswer = laptop[laptop.indexOfFirst { it.content == "Second question" } + 1]
         assertEquals(ProviderId.OPENAI, secondAnswer.provider)
+    }
+
+    @Test
+    fun `signing out everywhere revokes every device's session`() = runBlocking<Unit> {
+        // `client` is this account's phone; a laptop signs in to the same account.
+        var laptopToken: String? = null
+        val laptop = DashApiClient(baseUrl!!, tokenProvider = { laptopToken })
+        laptopToken = AuthService { laptop }.login(email, "correct horse battery").token
+        DashApiSyncRemote(laptop).changes("0", 10)
+        AuthService { client }.signOutEverywhere()
+        for (device in listOf(client, laptop)) {
+            val error = assertFailsWith<ApiException> { DashApiSyncRemote(device).changes("0", 10) }
+            assertEquals(401, error.httpStatus)
+        }
     }
 
     @Test

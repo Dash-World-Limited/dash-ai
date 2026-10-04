@@ -43,6 +43,8 @@ interface DashApiService {
 
     @POST("v1/auth/logout") suspend fun logout(): retrofit2.Response<Unit>
 
+    @POST("v1/auth/logout-all") suspend fun logoutAll(): retrofit2.Response<Unit>
+
     @GET("v1/me") suspend fun me(): MeResponseDto
 
     @DELETE("v1/me") suspend fun deleteAccount(): retrofit2.Response<Unit>

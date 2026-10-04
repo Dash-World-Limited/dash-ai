@@ -63,6 +63,31 @@ function storeContract(name: string, make: () => Promise<Store>, teardown?: () =
       expect(await store.findSession(live.tokenHash)).toBeUndefined();
     });
 
+    it("signs a user out everywhere without touching other users' sessions", async () => {
+      const a = user();
+      const b = user();
+      await store.createUser(a);
+      await store.createUser(b);
+      const session = (userId: string) => ({ tokenHash: uid("h"), userId, createdAt: t(), expiresAt: t(1000) });
+      const [a1, a2, b1] = [session(a.id), session(a.id), session(b.id)];
+      for (const s of [a1, a2, b1]) await store.createSession(s);
+      expect(await store.deleteSessionsForUser(a.id)).toBe(2);
+      expect(await store.findSession(a1.tokenHash)).toBeUndefined();
+      expect(await store.findSession(a2.tokenHash)).toBeUndefined();
+      expect(await store.findSession(b1.tokenHash)).toEqual(b1);
+      expect(await store.deleteSessionsForUser(a.id)).toBe(0);
+    });
+
+    it("replaces a password hash only if it has not changed since it was read", async () => {
+      const u = user({ passwordHash: "scrypt$old" });
+      await store.createUser(u);
+      expect(await store.replacePasswordHash(u.id, "scrypt$stale", "scrypt$x")).toBe(false);
+      expect((await store.findUserById(u.id))?.passwordHash).toBe("scrypt$old");
+      expect(await store.replacePasswordHash(u.id, "scrypt$old", "scrypt$new")).toBe(true);
+      expect((await store.findUserById(u.id))?.passwordHash).toBe("scrypt$new");
+      expect(await store.replacePasswordHash("nobody-nobody", "scrypt$new", "scrypt$y")).toBe(false);
+    });
+
     it("round-trips conversations and messages in insertion order", async () => {
       const u = user();
       await store.createUser(u);

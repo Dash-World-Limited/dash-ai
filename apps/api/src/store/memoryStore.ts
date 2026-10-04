@@ -68,6 +68,13 @@ export class MemoryStore implements Store {
     return this.users.get(id);
   }
 
+  async replacePasswordHash(userId: string, expected: string, next: string): Promise<boolean> {
+    const user = this.users.get(userId);
+    if (!user || user.passwordHash !== expected) return false;
+    this.users.set(userId, { ...user, passwordHash: next });
+    return true;
+  }
+
   async deleteUserData(userId: string): Promise<void> {
     const user = this.users.get(userId);
     if (user) this.usersByEmail.delete(user.email);
@@ -96,6 +103,17 @@ export class MemoryStore implements Store {
 
   async deleteSession(tokenHash: string): Promise<void> {
     this.sessions.delete(tokenHash);
+  }
+
+  async deleteSessionsForUser(userId: string): Promise<number> {
+    let removed = 0;
+    for (const [hash, session] of this.sessions) {
+      if (session.userId === userId) {
+        this.sessions.delete(hash);
+        removed += 1;
+      }
+    }
+    return removed;
   }
 
   async purgeExpiredSessions(now: Date): Promise<number> {

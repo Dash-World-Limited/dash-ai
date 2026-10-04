@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import { withIdleTimeout, IdleTimeoutError } from "../src/chat/timeouts.js";
 import { DEFAULT_TITLE, generateTitle } from "../src/chat/titles.js";
 import { StreamRegistry } from "../src/chat/streamRegistry.js";
-import { ConfigError, loadConfig } from "../src/config.js";
+import { readFileSync } from "node:fs";
+import { ConfigError, ENV_KEYS, configWarnings, loadConfig } from "../src/config.js";
 import { sanitizeFileName, signatureMatches } from "../src/documents/inspect.js";
 import { redactSecrets, sanitizeUrl } from "../src/logging.js";
 import {
@@ -17,7 +18,8 @@ import { FakeAdapter, FAKE_TRIGGERS } from "../src/providers/fake.js";
 import { buildSystemPrompt, MODE_INSTRUCTIONS } from "../src/providers/instructions.js";
 import { ProviderRegistry } from "../src/providers/registry.js";
 import { toProviderError, type ProviderChunk } from "../src/providers/types.js";
-import { hashPassword, hashToken, newSessionToken, verifyPassword } from "../src/security/crypto.js";
+import { scryptSync } from "node:crypto";
+import { hashPassword, hashToken, needsRehash, newSessionToken, verifyPassword } from "../src/security/crypto.js";
 import { RateLimiter } from "../src/security/rateLimiter.js";
 import type { DocumentRecord } from "../src/store/store.js";
 import { contractsFixture, PNG_BYTES } from "./helpers.js";
@@ -62,6 +64,41 @@ describe("config", () => {
     });
   });
 
+  describe(".env.example", () => {
+    const example = readFileSync(new URL("../.env.example", import.meta.url), "utf8");
+    const entries = new Map(
+      example
+        .split("\n")
+        .map((line) => /^([A-Z][A-Z0-9_]*)=(.*)$/.exec(line))
+        .filter((m): m is RegExpExecArray => m !== null)
+        .map((m) => [m[1]!, m[2]!] as const),
+    );
+
+    it("documents exactly the variables the server reads", () => {
+      expect([...entries.keys()].sort()).toEqual([...ENV_KEYS].sort());
+    });
+
+    it("holds no credentials, and parses as a valid configuration", () => {
+      for (const secret of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "DATA_ENCRYPTION_PREVIOUS_KEYS"]) {
+        expect(entries.get(secret), secret).toBe("");
+      }
+      expect(() => loadConfig(Object.fromEntries(entries))).not.toThrow();
+    });
+  });
+
+  it("warns about deliberate insecure choices in production only", () => {
+    const prod = (env: Record<string, string>) =>
+      configWarnings(loadConfig({ NODE_ENV: "production", DATABASE_URL: "postgres://placeholder", ...env })).join(" ");
+    expect(prod({})).toBe("");
+    expect(prod({ DATABASE_SSL: "disable" })).toMatch(/not encrypted in transit/);
+    expect(prod({ DATABASE_SSL: "no-verify" })).toMatch(/not verified/);
+    expect(prod({ LOG_LEVEL: "debug" })).toMatch(/LOG_LEVEL=debug/);
+    expect(prod({ PROVIDER_MODE: "fake" })).toMatch(/demonstration/);
+    expect(configWarnings(loadConfig({ DATABASE_SSL: "disable", LOG_LEVEL: "trace" }))).toEqual([]);
+    // Defaults in production are the safe ones.
+    expect(loadConfig({ NODE_ENV: "production" }).database).toMatchObject({ ssl: "require", autoMigrate: false, allowMemoryStore: false });
+  });
+
   it("fake mode activates clearly-labelled fake adapters for both providers", () => {
     const registry = ProviderRegistry.fromConfig(loadConfig({ PROVIDER_MODE: "fake" }));
     expect(registry.status().map((s) => s.mode)).toEqual(["fake", "fake"]);
@@ -78,6 +115,28 @@ describe("security utilities", () => {
     expect(await verifyPassword("correct horse battery", hash)).toBe(true);
     expect(await verifyPassword("wrong", hash)).toBe(false);
     expect(await verifyPassword("x", "garbage")).toBe(false);
+  });
+
+  it("hashes at OWASP's scrypt cost and still verifies (then upgrades) older hashes", async () => {
+    const hash = await hashPassword("correct horse battery");
+    expect(hash.split("$").slice(1, 4)).toEqual(["32768", "8", "3"]);
+    expect(needsRehash(hash)).toBe(false);
+    // A hash made by the previous release (N=2^14, r=8, p=1).
+    const salt = Buffer.alloc(16, 1);
+    const legacyKey = scryptSync("correct horse battery".normalize("NFKC"), salt, 64, { N: 16_384, r: 8, p: 1 });
+    const legacy = ["scrypt", 16_384, 8, 1, salt.toString("base64url"), legacyKey.toString("base64url")].join("$");
+    expect(await verifyPassword("correct horse battery", legacy)).toBe(true);
+    expect(await verifyPassword("wrong", legacy)).toBe(false);
+    expect(needsRehash(legacy)).toBe(true);
+  });
+
+  it("refuses stored hashes with out-of-range costs instead of running them", async () => {
+    const [, , , , salt, key] = (await hashPassword("pw")).split("$");
+    for (const [N, r, p] of [["1024", "8", "1"], ["4194304", "8", "1"], ["30000", "8", "1"], ["32768", "1", "1"], ["32768", "8", "64"], ["1e5", "8", "1"]]) {
+      const tampered = ["scrypt", N, r, p, salt, key].join("$");
+      expect(await verifyPassword("pw", tampered), tampered.slice(0, 30)).toBe(false);
+    }
+    expect(await verifyPassword("pw", ["scrypt", "32768", "8", "3", "c2hvcnQ", key].join("$"))).toBe(false);
   });
 
   it("creates opaque tokens and stores only hashes", () => {

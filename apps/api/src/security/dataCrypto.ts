@@ -88,10 +88,21 @@ export class DataCipher {
   }
 }
 
+/** Base64 (standard or URL-safe) of exactly 32 bytes: 43 characters plus optional padding. */
+const KEY_TEXT = /^[A-Za-z0-9+/_-]{43}=?$/;
+/** 32 random bytes almost always hold ~30 distinct values; fewer than this is a typed or patterned key. */
+const MIN_DISTINCT_BYTES = 16;
+
 function decodeKey(value: string, id: string): Buffer {
-  const key = Buffer.from(value.trim(), "base64");
+  const text = value.trim();
+  // Buffer.from(..., "base64") silently skips characters that are not base64, so a mistyped or
+  // non-base64 value could otherwise still decode to 32 bytes.
+  const key = KEY_TEXT.test(text) ? Buffer.from(text, text.includes("-") || text.includes("_") ? "base64url" : "base64") : Buffer.alloc(0);
   if (key.length !== KEY_BYTES) {
     throw new DataKeyError(`Encryption key "${id}" must be base64 of exactly ${KEY_BYTES} bytes (generate with: openssl rand -base64 32).`);
+  }
+  if (new Set(key).size < MIN_DISTINCT_BYTES) {
+    throw new DataKeyError(`Encryption key "${id}" does not look random. Generate one with: openssl rand -base64 32`);
   }
   return key;
 }

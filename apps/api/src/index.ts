@@ -1,5 +1,5 @@
 import { buildApp } from "./app.js";
-import { ConfigError, loadConfig } from "./config.js";
+import { ConfigError, configWarnings, loadConfig } from "./config.js";
 import { startupErrorText } from "./startupError.js";
 import { createStore } from "./store/factory.js";
 
@@ -28,7 +28,7 @@ async function main(): Promise<void> {
   }
 
   const { app, context } = await buildApp({ config, store: selection.store });
-  for (const warning of [...selection.warnings, ...context.providers.warnings]) app.log.warn(warning);
+  for (const warning of [...configWarnings(config), ...selection.warnings, ...context.providers.warnings]) app.log.warn(warning);
   app.log.info({ store: selection.kind }, "data store");
 
   // Expired sessions are also rejected on use; this just keeps the table small.

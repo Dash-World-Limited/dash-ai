@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, scryptSync } from "node:crypto";
 import { ConversationDetailResponse, ToolActivityResponse, type StreamEvent } from "@dash-ai/contracts";
 import type { FastifyInstance } from "fastify";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
@@ -121,6 +121,44 @@ describe("cross-user access and sessions", () => {
     expect((await app.inject({ method: "POST", url: "/v1/auth/logout", headers: phone.auth })).statusCode).toBe(204);
     expect((await app.inject({ method: "GET", url: "/v1/me", headers: phone.auth })).statusCode).toBe(401);
     expect((await app.inject({ method: "GET", url: "/v1/me", headers: laptop })).statusCode).toBe(200);
+  });
+
+  it("'sign out everywhere' revokes every session of that user only (lost phone, leaked token)", async () => {
+    const { app } = await setup();
+    const phone = await register(app, `everywhere-${Date.now()}@example.com`);
+    const other = await register(app);
+    const login = await app.inject({ method: "POST", url: "/v1/auth/login", payload: { email: phone.user.email, password: "correct horse battery" } });
+    const stolen = { authorization: `Bearer ${(login.json() as { token: string }).token}` };
+    expect((await app.inject({ method: "POST", url: "/v1/auth/logout-all" })).statusCode).toBe(401);
+    expect((await app.inject({ method: "POST", url: "/v1/auth/logout-all", headers: phone.auth })).statusCode).toBe(204);
+    for (const auth of [phone.auth, stolen]) {
+      expect((await app.inject({ method: "GET", url: "/v1/me", headers: auth })).statusCode).toBe(401);
+      expect((await app.inject({ method: "GET", url: "/v1/sync/conversations", headers: auth })).statusCode).toBe(401);
+    }
+    expect((await app.inject({ method: "GET", url: "/v1/me", headers: other.auth })).statusCode).toBe(200);
+    // The password still works: signing back in issues a fresh session.
+    const again = await app.inject({ method: "POST", url: "/v1/auth/login", payload: { email: phone.user.email, password: "correct horse battery" } });
+    expect(again.statusCode).toBe(200);
+  });
+
+  it("upgrades a password hash made with an older cost at the next sign-in", async () => {
+    const { app, context } = await setup();
+    const email = `rehash-${Date.now()}@example.com`;
+    const account = await register(app, email);
+    const current = (await context.store.findUserById(account.user.id))!.passwordHash;
+    const salt = randomBytes(16);
+    const legacyKey = scryptSync("correct horse battery".normalize("NFKC"), salt, 64, { N: 16_384, r: 8, p: 1 });
+    const legacy = ["scrypt", 16_384, 8, 1, salt.toString("base64url"), legacyKey.toString("base64url")].join("$");
+    expect(await context.store.replacePasswordHash(account.user.id, current, legacy)).toBe(true);
+
+    const login = () => app.inject({ method: "POST", url: "/v1/auth/login", payload: { email, password: "correct horse battery" } });
+    expect((await login()).statusCode).toBe(200);
+    const upgraded = (await context.store.findUserById(account.user.id))!.passwordHash;
+    expect(upgraded).not.toBe(legacy);
+    expect(upgraded.split("$").slice(1, 4)).toEqual(["32768", "8", "3"]);
+    expect((await login()).statusCode).toBe(200);
+    const wrong = await app.inject({ method: "POST", url: "/v1/auth/login", payload: { email, password: "wrong password!" } });
+    expect(wrong.statusCode).toBe(401);
   });
 });
 

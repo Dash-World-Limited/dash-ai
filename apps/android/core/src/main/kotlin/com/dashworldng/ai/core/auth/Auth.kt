@@ -45,6 +45,9 @@ class AuthService(private val client: () -> DashApiClient) {
 
     suspend fun logout() = client().callNoContent { logout() }
 
+    /** Revokes every session of this account, on every device (lost phone, leaked token). */
+    suspend fun signOutEverywhere() = client().callNoContent { logoutAll() }
+
     suspend fun deleteAccount() = client().callNoContent { deleteAccount() }
 
     suspend fun providers(): ProvidersResponseDto = client().call { providers() }

@@ -232,6 +232,11 @@ export class PostgresStore implements Store {
     return rows[0] && toUser(rows[0]);
   }
 
+  async replacePasswordHash(userId: string, expected: string, next: string): Promise<boolean> {
+    const res = await this.pool.query("UPDATE users SET password_hash = $3 WHERE id = $1 AND password_hash = $2", [userId, expected, next]);
+    return res.rowCount === 1;
+  }
+
   async deleteUserData(userId: string): Promise<void> {
     // Every owned table cascades from users.
     await this.pool.query("DELETE FROM users WHERE id = $1", [userId]);
@@ -254,6 +259,11 @@ export class PostgresStore implements Store {
 
   async deleteSession(tokenHash: string): Promise<void> {
     await this.pool.query("DELETE FROM sessions WHERE token_hash = $1", [tokenHash]);
+  }
+
+  async deleteSessionsForUser(userId: string): Promise<number> {
+    const res = await this.pool.query("DELETE FROM sessions WHERE user_id = $1", [userId]);
+    return res.rowCount ?? 0;
   }
 
   async purgeExpiredSessions(now: Date): Promise<number> {

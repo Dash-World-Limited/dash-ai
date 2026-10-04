@@ -135,12 +135,16 @@ export interface Store {
   createUser(user: UserRecord): Promise<boolean>;
   findUserByEmail(email: string): Promise<UserRecord | undefined>;
   findUserById(id: string): Promise<UserRecord | undefined>;
+  /** Replaces the password hash only if it is still `expected` (a re-hash never overwrites a newer change). */
+  replacePasswordHash(userId: string, expected: string, next: string): Promise<boolean>;
   /** Deletes the user and everything they own. */
   deleteUserData(userId: string): Promise<void>;
 
   createSession(session: SessionRecord): Promise<void>;
   findSession(tokenHash: string): Promise<SessionRecord | undefined>;
   deleteSession(tokenHash: string): Promise<void>;
+  /** Signs the user out everywhere. Returns how many sessions were removed. */
+  deleteSessionsForUser(userId: string): Promise<number>;
 
   /** Returns the conversation only if it belongs to userId and has not been deleted. */
   getConversation(userId: string, id: string): Promise<ConversationRecord | undefined>;
