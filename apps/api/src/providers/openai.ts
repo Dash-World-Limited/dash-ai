@@ -106,7 +106,7 @@ export class OpenAIAdapter implements ProviderAdapter {
           model: this.model,
           instructions: request.system,
           input: toOpenAIInput(request.messages),
-          ...(request.tools && request.tools.length > 0 ? { tools: toOpenAITools(request.tools), tool_choice: "auto" as const } : {}),
+          ...(request.tools && request.tools.length > 0 ? { tools: toOpenAITools(request.tools), tool_choice: request.toolChoice ?? "auto" } : {}),
           ...(request.tools && request.tools.length > 0 && this.encryptedReasoning ? { include: ["reasoning.encrypted_content" as const] } : {}),
           max_output_tokens: request.maxOutputTokens,
           stream: true,

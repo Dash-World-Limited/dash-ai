@@ -157,7 +157,9 @@ export class AnthropicAdapter implements ProviderAdapter {
           max_tokens: request.maxOutputTokens,
           system: request.system,
           messages: toAnthropicMessages(request.messages),
-          ...(request.tools && request.tools.length > 0 ? { tools: toAnthropicTools(request.tools) } : {}),
+          ...(request.tools && request.tools.length > 0
+            ? { tools: toAnthropicTools(request.tools), ...(request.toolChoice === "none" ? { tool_choice: { type: "none" as const } } : {}) }
+            : {}),
           stream: true,
         },
         { signal: request.signal },

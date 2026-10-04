@@ -17,7 +17,7 @@ interface Collected {
   continuation?: unknown;
 }
 
-async function collect(adapter: ProviderAdapter, messages: ProviderTurn[], extra: { tools?: Parameters<ProviderAdapter["stream"]>[0]["tools"]; maxOutputTokens?: number } = {}): Promise<Collected> {
+async function collect(adapter: ProviderAdapter, messages: ProviderTurn[], extra: Pick<Parameters<ProviderAdapter["stream"]>[0], "tools" | "toolChoice"> & { maxOutputTokens?: number } = {}): Promise<Collected> {
   const started = Date.now();
   const out: Collected = { text: "", chunks: 0, firstTextMs: null, totalMs: 0, finish: undefined, calls: [] };
   for await (const chunk of adapter.stream({
@@ -25,7 +25,7 @@ async function collect(adapter: ProviderAdapter, messages: ProviderTurn[], extra
     messages,
     maxOutputTokens: extra.maxOutputTokens ?? 256,
     signal: AbortSignal.timeout(60_000),
-    ...(extra.tools ? { tools: extra.tools } : {}),
+    ...(extra.tools ? { tools: extra.tools, ...(extra.toolChoice ? { toolChoice: extra.toolChoice } : {}) } : {}),
   })) {
     if (chunk.type === "text") {
       out.text += chunk.text;
@@ -150,8 +150,10 @@ export async function runAdapterChecks(adapter: ProviderAdapter, options: Adapte
             { role: "assistant", content: first.text, toolCalls: first.calls, ...(first.continuation !== undefined ? { continuation: first.continuation } : {}) },
             { role: "tool", results: [{ callId: call.id, name: call.name, content: execution.content, isError: false }] },
           ],
-          { tools: offered.list() },
+          // The same tools with tool use switched off, exactly like the orchestrator's last round.
+          { tools: offered.list(), toolChoice: "none" },
         );
+        check(second.calls.length === 0, "the model requested a tool although tool use was switched off");
         check(second.text.includes("3"), "the final answer did not use the tool result");
         check(second.finish?.finishReason === "stop", "the final answer did not finish cleanly");
         return `call=${call.name} status=ok rounds=2`;

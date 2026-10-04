@@ -229,16 +229,17 @@ describe("end-to-end tool calling through the real provider adapters", () => {
     expect(openai.requests[0]!.body).not.toHaveProperty("tools");
   });
 
-  it("bounds runaway tool loops: the last round offers no tools", async () => {
+  it("bounds runaway tool loops: the last round switches tool use off without changing the tools", async () => {
     const openai = scriptedProvider("openai", (req) =>
-      req.body.tools ? { kind: "tool", name: "dash-demo__text_stats", args: { text: "again" } } : { kind: "text", text: "Stopping here." },
+      req.body.tool_choice === "auto" ? { kind: "tool", name: "dash-demo__text_stats", args: { text: "again" } } : { kind: "text", text: "Stopping here." },
     );
     const { app } = await setup({ providers: registryFor(openai), env: { TOOL_MAX_ROUNDS: "2" } });
     const { auth } = await register(app);
     await enable(app, auth, "dash-demo");
     const { events } = await chat(app, auth, { modelChoice: "openai" });
     expect(openai.requests).toHaveLength(3); // two tool rounds + one forced final answer
-    expect(openai.requests.map((r) => Boolean(r.body.tools))).toEqual([true, true, false]);
+    expect(openai.requests.map((r) => r.body.tool_choice)).toEqual(["auto", "auto", "none"]);
+    expect(new Set(openai.requests.map((r) => JSON.stringify(r.body.tools))).size).toBe(1);
     expect(byEvent(events, "tool.result")).toHaveLength(2);
     expect(answerText(events)).toContain("Stopping here.");
   });

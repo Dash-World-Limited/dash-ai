@@ -41,6 +41,11 @@ export class OfferedTools {
     return this.entries.get(qualifiedName);
   }
 
+  /** Tools present in both sets: offered to the model AND still permitted right now. */
+  intersect(other: OfferedTools): OfferedTools {
+    return new OfferedTools(new Map([...this.entries].filter(([name]) => other.entries.has(name))));
+  }
+
   static readonly none = new OfferedTools(new Map());
 }
 

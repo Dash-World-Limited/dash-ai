@@ -47,8 +47,15 @@ export const isToolResultTurn = (t: ProviderTurn): t is ProviderToolResultTurn =
 export interface ProviderRequest {
   system: string;
   messages: ProviderTurn[];
-  /** Tools the model may call this round. Omit to disable tool calling. */
+  /** Tools offered in this response. Omit when the user has none enabled. */
   tools?: NormalizedTool[];
+  /**
+   * "none" keeps `tools` exactly as before but tells the model it may not call one this round. Tool
+   * use is switched off this way, never by dropping `tools`: Claude ties replayed thinking to the
+   * tool set it was produced under, so changing the set mid-loop invalidates that thinking.
+   * Defaults to "auto".
+   */
+  toolChoice?: "auto" | "none";
   maxOutputTokens: number;
   signal: AbortSignal;
 }

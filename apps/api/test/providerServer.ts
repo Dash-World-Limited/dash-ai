@@ -60,8 +60,18 @@ function openaiResponse(plan: ModelPlan, model: string, id: number, delayMs: num
   return enc(events, delayMs, signal);
 }
 
-/** What a thinking model sent for one tool-use turn: the blocks the API expects back unchanged. */
-type IssuedTurn = unknown[];
+/**
+ * What a thinking model sent for one tool-use turn: the blocks the API expects back unchanged, and
+ * the tool set they were produced under (Claude ties thinking to it; see checkThinkingReplay).
+ */
+interface IssuedTurn {
+  content: unknown[];
+  tools: string;
+}
+
+/** The request's tools as a name-keyed set (order does not matter to the API's check). */
+const toolSetKey = (body: Record<string, any>): string => // eslint-disable-line @typescript-eslint/no-explicit-any
+  JSON.stringify(((body.tools ?? []) as Array<{ name: string }>).slice().sort((a, b) => a.name.localeCompare(b.name)));
 
 function anthropicResponse(
   plan: ModelPlan,
@@ -69,7 +79,7 @@ function anthropicResponse(
   id: number,
   delayMs: number,
   signal?: AbortSignal | null,
-  thinking?: { issued: Map<string, IssuedTurn> },
+  thinking?: { issued: Map<string, IssuedTurn>; tools: string },
 ): Response {
   const events: [string, unknown][] = [
     ["message_start", { type: "message_start", message: { id: `msg_${id}`, type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 12, output_tokens: 1 } } }],
@@ -109,7 +119,7 @@ function anthropicResponse(
     }
     events.push(["content_block_stop", { type: "content_block_stop", index }]);
     content.push({ type: "tool_use", id: `toolu_${id}`, name: plan.name, input: plan.args });
-    thinking?.issued.set(`toolu_${id}`, content);
+    thinking?.issued.set(`toolu_${id}`, { content, tools: thinking.tools });
   }
   events.push(["message_delta", { type: "message_delta", delta: { stop_reason: plan.kind === "tool" ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 7 } }]);
   events.push(["message_stop", { type: "message_stop" }]);
@@ -129,16 +139,21 @@ const apiError = (status: number, type: string, message: string) =>
   new Response(JSON.stringify({ type: "error", error: { type, message } }), { status, headers: { "content-type": "application/json" } });
 
 /**
- * Anthropic's rule for thinking models: an assistant tool-use turn must come back with the blocks the
- * model produced (thinking first, unmodified, in order), or the request is a 400.
+ * Anthropic's rules for thinking models: an assistant tool-use turn must come back with the blocks the
+ * model produced (thinking first, unmodified, in order), and under the same tool set it was produced
+ * with (tool use is switched off with tool_choice "none", never by removing tools), or the request is
+ * a 400.
  */
 function checkThinkingReplay(body: Record<string, any>, issued: Map<string, IssuedTurn>): Response | undefined { // eslint-disable-line @typescript-eslint/no-explicit-any
   for (const message of (body.messages ?? []) as Array<{ role: string; content: unknown }>) {
     if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
     const toolUse = (message.content as Array<{ type: string; id?: string }>).find((b) => b.type === "tool_use");
     const expected = toolUse?.id ? issued.get(toolUse.id) : undefined;
-    if (expected && JSON.stringify(message.content) !== JSON.stringify(expected)) {
+    if (expected && JSON.stringify(message.content) !== JSON.stringify(expected.content)) {
       return apiError(400, "invalid_request_error", "messages: Expected `thinking` or `redacted_thinking`, but found `tool_use`. Thinking blocks must be passed back unmodified.");
+    }
+    if (expected && toolSetKey(body) !== expected.tools) {
+      return apiError(400, "invalid_request_error", "messages: thinking blocks cannot be verified because the tool set changed since they were produced.");
     }
   }
   return undefined;
@@ -177,7 +192,7 @@ export function scriptedProvider(
     const encrypted = Array.isArray(req.body.include) && (req.body.include as string[]).includes("reasoning.encrypted_content");
     return kind === "openai"
       ? openaiResponse(decided, servedModel, requests.length, delay, signal, options.reasoning ? { encrypted } : undefined)
-      : anthropicResponse(decided, servedModel, requests.length, delay, signal, options.thinking ? { issued } : undefined);
+      : anthropicResponse(decided, servedModel, requests.length, delay, signal, options.thinking ? { issued, tools: toolSetKey(req.body) } : undefined);
   }) as typeof fetch;
   return { requests, fetch: fetchImpl };
 }

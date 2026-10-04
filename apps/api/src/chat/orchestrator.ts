@@ -20,7 +20,7 @@ import {
 } from "../providers/types.js";
 import { newId } from "../security/crypto.js";
 import type { ConversationRecord, DocumentRecord, Store } from "../store/store.js";
-import type { OfferedTools } from "../tools/registry.js";
+import { OfferedTools } from "../tools/registry.js";
 import type { ToolRuntime } from "../tools/runtime.js";
 import type { ModelToolCall } from "../tools/types.js";
 import { withIdleTimeout } from "./timeouts.js";
@@ -223,8 +223,10 @@ async function runTarget(
     for (let round = 0; ; round++) {
       // A cancel or timeout during a tool call must end the response, not start another round.
       if (controller.signal.aborted) throw new Error("aborted");
-      // The last allowed round offers no tools, so the model must answer with what it has.
-      const tools = offered.size > 0 && round < ctx.tools.maxRounds ? offered.list() : undefined;
+      // The tool list stays identical every round (see ProviderRequest.toolChoice). On the last
+      // allowed round tool use is switched off, so the model must answer with what it has.
+      const tools = offered.size > 0 ? offered.list() : undefined;
+      const toolUse = tools !== undefined && round < ctx.tools.maxRounds;
       let roundText = "";
       let calls: ModelToolCall[] = [];
       let continuation: unknown;
@@ -232,7 +234,7 @@ async function runTarget(
       const source = adapter.stream({
         system,
         messages: turns,
-        ...(tools ? { tools } : {}),
+        ...(tools ? { tools, toolChoice: toolUse ? ("auto" as const) : ("none" as const) } : {}),
         maxOutputTokens: ctx.config.maxOutputTokens,
         signal: controller.signal,
       });
@@ -258,9 +260,9 @@ async function runTarget(
       }
       finishReason = roundFinish;
       if (calls.length === 0) break;
-      if (!tools || roundFinish !== "stop") {
-        // Tool requests when none were offered, or from a cut-off answer, are never acted on.
-        ctx.log.warn({ provider: adapter.id, calls: calls.length, offered: Boolean(tools) }, "ignored tool calls");
+      if (!toolUse || roundFinish !== "stop") {
+        // Tool requests when tool use was off, or from a cut-off answer, are never acted on.
+        ctx.log.warn({ provider: adapter.id, calls: calls.length, offered: toolUse }, "ignored tool calls");
         break;
       }
 
@@ -346,6 +348,16 @@ async function runToolCalls(
 ): Promise<ProviderToolResult[]> {
   const { adapter, messageId } = target;
   const results: ProviderToolResult[] = [];
+  // Permissions are checked again at the moment of invocation, not only when the response started:
+  // a plugin disabled, a scope revoked or TOOLS_ENABLED switched off mid-response takes effect at the
+  // next round. If the current permissions cannot be read, nothing runs (fail closed).
+  let allowed: OfferedTools;
+  try {
+    allowed = prepared.offered.intersect(await ctx.tools.offeredFor(prepared.userId));
+  } catch (err) {
+    ctx.log.warn({ err }, "could not re-check tool permissions; refusing this round");
+    allowed = OfferedTools.none;
+  }
   for (const [index, call] of calls.entries()) {
     const overLimit = index >= MAX_TOOL_CALLS_PER_ROUND;
     // Call ids come from the provider. The original is replayed to that provider, but only a bounded,
@@ -361,7 +373,7 @@ async function runToolCalls(
           argBytes: Buffer.byteLength(call.argumentsJson, "utf8"),
           content: "Too many tool calls were requested in one step; this one was not run.",
         }
-      : await ctx.tools.executor.execute(call, prepared.offered, {
+      : await ctx.tools.executor.execute(call, allowed, {
           userId: prepared.userId,
           conversationId: prepared.conversation.id,
           messageId,

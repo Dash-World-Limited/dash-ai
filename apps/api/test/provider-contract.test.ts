@@ -102,6 +102,50 @@ describe("Claude thinking models: tool-use turns are replayed with their thinkin
     expect(JSON.stringify(toAnthropicMessages([foreign]))).not.toContain("openai");
   });
 
+  it("the last tool round switches tool use off with tool_choice none and keeps the tool set, so thinking still verifies", async () => {
+    // A model that keeps asking for the tool whenever it is allowed to.
+    const claude = scriptedProvider(
+      "anthropic",
+      (r) => (r.body.tool_choice?.type === "none" ? { kind: "text", text: "Answering with what I have." } : { kind: "tool", name: "dash-demo__text_stats", args: { text: "again" } }),
+      "claude-thinking",
+      { thinking: true },
+    );
+    const providers = new ProviderRegistry({ anthropic: new AnthropicAdapter("sk-ant-test-not-real", "cfg-claude", { fetch: claude.fetch, maxRetries: 0 }) });
+    const { app, auth } = await appWith(providers, { TOOL_MAX_ROUNDS: "2" });
+    const events = await chat(app, auth, { modelChoice: "claude" });
+    // Dropping `tools` on the last round (the old behaviour) changes the tool set the replayed thinking was
+    // produced under, which the API rejects.
+    expect(byEvent(events, "message.error")).toEqual([]);
+    expect(claude.requests.map((r) => r.body.tool_choice?.type ?? "auto")).toEqual(["auto", "auto", "none"]);
+    expect(new Set(claude.requests.map((r) => JSON.stringify(r.body.tools))).size).toBe(1);
+    expect(byEvent(events, "message.delta").map((d) => d.data.text).join("")).toContain("Answering with what I have.");
+
+    // And a tool set that changes mid-loop is what the scripted API refuses.
+    const changed = scriptedProvider("anthropic", toolThenAnswer("anthropic"), "m", { thinking: true });
+    const adapter = new AnthropicAdapter("sk-ant-test-not-real", "m", { fetch: changed.fetch, maxRetries: 0 });
+    const tools = [{ name: "dash-demo__text_stats", description: "d", inputSchema: { type: "object", properties: {} } }];
+    const first = await collect(adapter.stream(req([{ role: "user", content: "count" }], { tools })));
+    const calls = first.find((c) => c.type === "tool_calls");
+    if (calls?.type !== "tool_calls") throw new Error("expected tool calls");
+    const turns: ProviderTurn[] = [
+      { role: "user", content: "count" },
+      { role: "assistant", content: "Checking.", toolCalls: calls.calls, continuation: calls.continuation },
+      { role: "tool", results: [{ callId: calls.calls[0]!.id, name: "dash-demo__text_stats", content: "{}", isError: false }] },
+    ];
+    await expect(collect(adapter.stream(req(turns)))).rejects.toMatchObject({ code: "provider_error", httpStatus: 400 });
+    await expect(collect(adapter.stream(req(turns, { tools, toolChoice: "none" })))).resolves.toBeDefined();
+  });
+
+  it("tool calls a model emits after tool use was switched off are ignored: nothing runs", async () => {
+    const claude = scriptedProvider("anthropic", () => ({ kind: "tool", name: "dash-demo__text_stats", args: { text: "x" } }), "m", { thinking: true });
+    const providers = new ProviderRegistry({ anthropic: new AnthropicAdapter("sk-ant-test-not-real", "cfg-claude", { fetch: claude.fetch, maxRetries: 0 }) });
+    const { app, auth } = await appWith(providers, { TOOL_MAX_ROUNDS: "1" });
+    const events = await chat(app, auth, { modelChoice: "claude" });
+    expect(claude.requests).toHaveLength(2);
+    expect(byEvent(events, "tool.result")).toHaveLength(1); // only the round where tool use was allowed
+    expect(byEvent(events, "message.end")).toHaveLength(1);
+  });
+
   it("counts prompt-cache reads and writes as input tokens", async () => {
     const body = [
       ["message_start", { type: "message_start", message: { id: "m", type: "message", role: "assistant", model: "m", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: 100, cache_read_input_tokens: 1000 } } }],
