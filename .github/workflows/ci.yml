@@ -1,3 +1,6 @@
+# Fast verification on every push and pull request. Each job is isolated so a failure points at
+# one layer. The Android app module runs in android.yml (path-filtered); release builds only in
+# release.yml (manual).
 name: CI
 
 on:
@@ -36,8 +39,28 @@ jobs:
           /tmp/gitleaks detect --source . --config .gitleaks.toml --redact --no-banner
           /tmp/gitleaks detect --no-git --source . --config .gitleaks.toml --redact --no-banner
 
-  api:
-    name: API and contracts (lint, typecheck, tests, PostgreSQL)
+  backend:
+    name: Backend (lint, typecheck, unit + API tests on the in-memory store, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - name: Contract and API tests (PostgreSQL tests are skipped here and run in the next job)
+        run: pnpm test
+      - run: pnpm build
+      - name: The live smoke command stays a no-op unless explicitly enabled
+        run: pnpm smoke:live
+
+  postgres:
+    name: PostgreSQL integration (store contract, encryption, whole API suite, migrations from zero)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -66,24 +89,35 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - name: Tests (in-memory API suite + store contract on both stores)
-        run: pnpm test
-      - name: API suite against PostgreSQL
-        run: pnpm --filter @dash-ai/api test:pg
       - run: pnpm build
-      - name: Migrations apply cleanly through the built CLI
-        env:
-          DATABASE_URL: postgres://postgres@127.0.0.1:5432/dash_test
+      - name: Whole API suite on PostgreSQL (includes store contract, encryption and restart tests)
+        run: pnpm --filter @dash-ai/api test:pg
+      - name: Migrations from zero, twice, then encryption maintenance, through the built CLIs
         run: |
+          psql "postgres://postgres@127.0.0.1:5432/postgres" -c "CREATE DATABASE dash_fresh"
+          export DATABASE_URL=postgres://postgres@127.0.0.1:5432/dash_fresh
+          export DATA_ENCRYPTION_KEY="$(openssl rand -base64 32)"
           node apps/api/dist/migrate-cli.js
           node apps/api/dist/migrate-cli.js
+          node apps/api/dist/data-cli.js
 
-  android-core:
-    name: Android core (pure Kotlin) + live API contract tests
+  kotlin-core:
+    name: Kotlin core (pure Kotlin) + live contract tests against the API on PostgreSQL
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: dash_live
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -96,12 +130,15 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - name: Start the API with fake providers
+      - name: Start the API (fake providers, PostgreSQL store, key generated for this run only)
         run: |
           pnpm install --frozen-lockfile
           pnpm build
+          export DATABASE_URL=postgres://postgres@127.0.0.1:5432/dash_live
+          export DATA_ENCRYPTION_KEY="$(openssl rand -base64 32)"
           PROVIDER_MODE=fake PORT=8787 FAKE_STREAM_DELAY_MS=2 LOG_LEVEL=warn node apps/api/dist/index.js > /tmp/api.log 2>&1 &
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8787/health && break; sleep 1; done
+          curl -sf http://127.0.0.1:8787/health
       - name: Core unit, contract and live contract tests
         working-directory: apps/android/core
         env:
@@ -114,48 +151,7 @@ jobs:
           name: core-test-reports
           path: apps/android/core/build/reports/tests/
           if-no-files-found: ignore
+          retention-days: 7
       - name: API log
         if: failure()
         run: cat /tmp/api.log || true
-
-  android-app:
-    name: Android app (build, lint, Compose UI tests, APK)
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-      - uses: gradle/actions/setup-gradle@v4
-      - uses: android-actions/setup-android@v3
-        with:
-          # The legacy "tools" package in the action's default list no longer exists.
-          packages: "platform-tools platforms;android-35 build-tools;35.0.0"
-      - name: Build debug APK
-        working-directory: apps/android
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
-      - name: Robolectric Compose UI and unit tests
-        working-directory: apps/android
-        run: ./gradlew :app:testDebugUnitTest --no-daemon
-      - name: Android lint
-        working-directory: apps/android
-        run: ./gradlew :app:lintDebug --no-daemon
-      - name: Check the APK contains no provider keys or endpoints
-        run: scripts/check-apk.sh apps/android/app/build/outputs/apk/debug/app-debug.apk
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: dash-ai-debug-apk
-          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-      - name: Upload app test and lint reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-app-reports
-          path: |
-            apps/android/app/build/reports/
-            apps/android/app/build/test-results/
-          if-no-files-found: ignore
