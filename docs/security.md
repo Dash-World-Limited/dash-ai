@@ -14,6 +14,34 @@
   app data is excluded from cloud backup and device transfer (`data_extraction_rules.xml`).
 - Release builds allow HTTPS only; cleartext is permitted in debug builds for a local dev server.
 
+## Persistence and encryption at rest
+- Durable data lives in PostgreSQL ([persistence.md](persistence.md)). Production refuses to start on the
+  in-memory store, and `DATABASE_SSL` defaults to certificate-verified TLS in production.
+- **Extracted document text is encrypted at rest** with AES-256-GCM (random nonce, ciphertext bound to
+  its user and document id, key from server configuration only, key-id based rotation).
+- **Not encrypted by the application:** titles, message content, emails and usage rows. They rely on the
+  database host's disk encryption and TLS. Field-level encryption of messages is a roadmap item.
+- Passwords (scrypt) and session tokens (SHA-256 of a 256-bit random token) are stored only as hashes.
+- Conversation deletion keeps a content-free tombstone (id, owner, timestamps; title scrubbed, messages
+  removed) so other devices learn about it; account deletion removes everything, tombstones included.
+
+## Plugins and tool calling
+Full detail: [plugins.md](plugins.md). The security-relevant guarantees:
+- **Optional and off by default.** No plugin is required, enabled or credentialed by default; a server
+  kill switch (`TOOLS_ENABLED`) disables all tool calling.
+- **The model cannot execute anything by emitting text.** Only structured tool calls from the providers'
+  tool channels reach the backend `ToolExecutor`; look-alike text is just text.
+- **Per-request permission check:** plugin registered ∧ user enabled it ∧ user granted the scope ∧ tool is
+  read-only. Anything else is denied and audited. Write tools are never run in this milestone.
+- **Bounded execution:** strict argument validation (16 KB cap, unknown properties rejected), hard timeout
+  and cancellation even for handlers that ignore them, bounded output, bounded rounds and calls per round.
+- **No leakage through errors:** handler failures become a generic message; validation errors never echo
+  submitted values; audit rows hold metadata only (never arguments or results).
+- **Tool results are untrusted data** (prompt-injection aware): they use the providers' tool-result channel
+  and the system prompt says to treat them as information, not instructions. This reduces, but cannot
+  eliminate, prompt-injection risk, which is why write tools need a confirmation flow before they exist.
+- Tool state is never shared between providers; Compare runs two independent loops.
+
 ## Request validation and abuse protection
 - Every request body, path parameter and upload is validated (zod schemas from
   `packages/contracts`). Validation errors name the field but never echo the submitted values.
@@ -52,13 +80,14 @@
   (`finishReason: refusal`); nothing attempts to bypass them.
 
 ## Data rights
-- `GET /v1/me/export` returns everything the server holds for the user; the app exports all local
-  data to a JSON file (Settings → Export my data).
+- `GET /v1/me/export` returns everything the server holds for the user (including plugin choices and
+  tool-call audit metadata); the app exports all local data to a JSON file (Settings → Export my data).
 - `DELETE /v1/me` deletes the account and all server data and cancels active streams; the app also
   offers "Delete local data" and deletes local data after account deletion.
 - Conversation and document deletion are available in the app and API.
 
 ## Known limitations
-See [roadmap.md](roadmap.md#security-follow-ups): durable storage, distributed rate limiting,
-email verification/password reset, TLS termination and server-side encryption at rest are not
-part of this MVP.
+See [roadmap.md](roadmap.md#security-follow-ups). Not done: distributed rate limiting (the limiter is
+per-instance memory), email verification and password reset, TLS termination and deployment hardening,
+application-level encryption of message content, bulk re-encryption after key rotation, a secrets/consent
+design for external plugins, and a confirmation flow for write tools.

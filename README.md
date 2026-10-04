@@ -6,8 +6,10 @@ Dash AI is Dash World's premium, multi-model AI assistant for general conversati
 planning, professional writing, document analysis and research. This repository contains the
 native Android app, the secure backend it talks to, and the contracts shared between them.
 
-> Status: MVP foundation on branch `claude/mvp-foundation`. Not deployed. See
-> [docs/roadmap.md](docs/roadmap.md) for what is live, what is simulated and what comes next.
+> Status: production-foundation milestone (PostgreSQL persistence, optional plugin/tool layer,
+> conversation sync, provider verification tooling). Not deployed. The live OpenAI/Anthropic APIs have
+> **not** been exercised yet. See [docs/roadmap.md](docs/roadmap.md) for exactly what is real, what is
+> mocked and what comes next.
 
 ## What's inside
 
@@ -15,7 +17,7 @@ native Android app, the secure backend it talks to, and the contracts shared bet
 | --- | --- |
 | `apps/android` | Native Android app — Kotlin, Jetpack Compose, Material 3, Room. Application ID `com.dashworldng.ai`. |
 | `apps/android/core` | Pure-Kotlin core used by the app: chat state machine, routing, streaming client, Demo Mode, Markdown parser, prompt library. Builds and tests without Google's Android repositories. |
-| `apps/api` | Secure TypeScript backend (Fastify). Holds the provider keys, routes prompts to OpenAI and/or Anthropic Claude, streams answers over SSE. |
+| `apps/api` | Secure TypeScript backend (Fastify). Holds the provider keys, routes prompts to OpenAI and/or Anthropic Claude, streams answers over SSE, persists to PostgreSQL, hosts the optional plugin/tool layer and conversation sync. |
 | `packages/contracts` | Shared API schemas (zod), limits, the Dash Smart routing table, upload rules and JSON/SSE fixtures used by contract tests on both sides. |
 | `docs` | Product, architecture, security, design, decisions and roadmap. |
 | `scripts` | Secret scanning and APK checks used locally and in CI. |
@@ -38,7 +40,7 @@ Requirements: Node 22+, pnpm 10, JDK 17+.
 
 ```bash
 pnpm install
-pnpm test              # contracts + API tests (fake providers, no API credits)
+pnpm test              # contracts + API tests (fake/scripted providers, no API credits; in-memory store)
 pnpm lint && pnpm typecheck
 node scripts/scan-secrets.mjs
 
@@ -48,12 +50,29 @@ cd apps/android/core && ../gradlew test
 
 ### Run the API
 
+By default the API uses an **in-memory store** (data is lost on restart; production refuses it). For
+durable storage set `DATABASE_URL` and `DATA_ENCRYPTION_KEY` — see [docs/persistence.md](docs/persistence.md).
+
+```bash
+# PostgreSQL tests and a durable local server (any PostgreSQL 14+; never commit credentials)
+export TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/dash_test
+pnpm test && pnpm --filter @dash-ai/api test:pg
+DATABASE_URL=postgres://postgres@127.0.0.1:5432/dash DATA_ENCRYPTION_KEY=$(openssl rand -base64 32) \
+  pnpm --filter @dash-ai/api migrate
+```
+
 ```bash
 cp apps/api/.env.example apps/api/.env   # placeholders only; fill in locally, never commit
 pnpm build
 PROVIDER_MODE=fake node apps/api/dist/index.js     # demonstration adapters, no network
 # or, with real keys and model ids in apps/api/.env and PROVIDER_MODE=live:
 pnpm --filter @dash-ai/api start
+```
+
+### Verify the real providers (opt-in, costs money)
+
+```bash
+DASH_LIVE_SMOKE=1 pnpm smoke:live      # needs real keys/models in apps/api/.env; see docs/provider-verification.md
 ```
 
 Configuration is described in [docs/environment.md](docs/environment.md). Model identifiers are
@@ -81,9 +100,11 @@ answers are clearly labelled simulations. To use a live server, open *Settings �
 | Suite | Where | Runs in CI |
 | --- | --- | --- |
 | Contract schema + fixture tests | `packages/contracts/test` | ✅ |
-| API unit, adapter (official SDKs with recorded streams) and HTTP integration tests | `apps/api/test` | ✅ |
+| API unit, adapter (official SDKs with scripted streams), tool-calling and HTTP integration tests (in-memory store) | `apps/api/test` | ✅ |
+| Store contract, migration, encryption and restart tests on a real PostgreSQL; whole API suite on PostgreSQL | `apps/api/test` (`test:pg`) | ✅ (Postgres service container) |
+| Live provider smoke test | `pnpm smoke:live` | ❌ opt-in only (real keys, real cost) |
 | Kotlin core unit + contract fixture tests | `apps/android/core/src/test` | ✅ |
-| Live contract test: Kotlin client ↔ running API (fake providers) | `LiveApiContractTest` | ✅ |
+| Live contract test: Kotlin client ↔ running API (fake providers), including sync | `LiveApiContractTest` | ✅ |
 | Compose UI tests (Robolectric) + Room tests | `apps/android/app/src/test` | ✅ |
 | Android lint, TypeScript lint/typecheck | — | ✅ |
 | Secret scanning (tracked files + gitleaks) and APK provider-key check | `scripts/` | ✅ |
@@ -94,6 +115,10 @@ answers are clearly labelled simulations. To use a live server, open *Settings �
 - [Architecture](docs/architecture.md) — components, data flow, streaming protocol
 - [Security & privacy](docs/security.md)
 - [Design](docs/design.md) — Dash World identity, the temporary mark
+- [Persistence (PostgreSQL)](docs/persistence.md) — schema, migrations, encryption, key rotation
+- [Plugins and tool calling](docs/plugins.md) — optional plugins, permissions, executor, provider formats
+- [Conversation sync](docs/sync.md) — protocol and the deterministic merge rules
+- [Provider verification](docs/provider-verification.md) — what is tested offline vs the live smoke test
 - [Environment variables](docs/environment.md)
 - [Decisions](docs/decisions/) — architecture decision records
 - [Roadmap](docs/roadmap.md) — including every mocked or unfinished capability
