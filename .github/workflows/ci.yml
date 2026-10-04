@@ -37,9 +37,27 @@ jobs:
           /tmp/gitleaks detect --no-git --source . --config .gitleaks.toml --redact --no-banner
 
   api:
-    name: API and contracts (lint, typecheck, tests)
+    name: API and contracts (lint, typecheck, tests, PostgreSQL)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    services:
+      # Throwaway database for this job only. Trust auth: no password exists anywhere.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: dash_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/dash_test
+      # A missing database must fail the job, not silently skip the PostgreSQL tests.
+      REQUIRE_DB_TESTS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -50,8 +68,17 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
-      - run: pnpm test
+      - name: Tests (in-memory API suite + store contract on both stores)
+        run: pnpm test
+      - name: API suite against PostgreSQL
+        run: pnpm --filter @dash-ai/api test:pg
       - run: pnpm build
+      - name: Migrations apply cleanly through the built CLI
+        env:
+          DATABASE_URL: postgres://postgres@127.0.0.1:5432/dash_test
+        run: |
+          node apps/api/dist/migrate-cli.js
+          node apps/api/dist/migrate-cli.js
 
   android-core:
     name: Android core (pure Kotlin) + live API contract tests

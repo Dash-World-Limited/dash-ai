@@ -1,22 +1,47 @@
-import type {
-  ConversationRecord,
-  DocumentRecord,
-  MessageRecord,
-  SessionRecord,
-  Store,
-  UsageRow,
-  UserRecord,
+import {
+  summarizeDocument,
+  type ConversationChangePage,
+  type ConversationRecord,
+  type DocumentRecord,
+  type DocumentSummary,
+  type MessageRecord,
+  type SessionRecord,
+  type Store,
+  type UsageRow,
+  type UserRecord,
 } from "./store.js";
 
-/** In-memory store. Data is lost on restart; suitable for development, tests and demos. */
+interface StoredConversation {
+  record: ConversationRecord;
+  seq: number;
+  deleted: boolean;
+}
+
+/**
+ * In-memory store. Data is lost on restart: for isolated tests and local demos only (production
+ * uses PostgresStore). It mirrors the Postgres semantics, including sync sequence numbers and
+ * conversation tombstones, and both are checked by the same contract tests.
+ */
 export class MemoryStore implements Store {
   private readonly users = new Map<string, UserRecord>();
   private readonly usersByEmail = new Map<string, string>();
   private readonly sessions = new Map<string, SessionRecord>();
-  private readonly conversations = new Map<string, ConversationRecord>();
+  private readonly conversations = new Map<string, StoredConversation>();
   private readonly messages = new Map<string, MessageRecord[]>();
   private readonly documents = new Map<string, DocumentRecord>();
+  private readonly syncCounters = new Map<string, number>();
   private usage: UsageRow[] = [];
+
+  private bump(conversation: StoredConversation): void {
+    const next = (this.syncCounters.get(conversation.record.userId) ?? 0) + 1;
+    this.syncCounters.set(conversation.record.userId, next);
+    conversation.seq = next;
+  }
+
+  private live(conversationId: string): StoredConversation | undefined {
+    const c = this.conversations.get(conversationId);
+    return c && !c.deleted ? c : undefined;
+  }
 
   async createUser(user: UserRecord): Promise<boolean> {
     const email = user.email.toLowerCase();
@@ -39,9 +64,10 @@ export class MemoryStore implements Store {
     const user = this.users.get(userId);
     if (user) this.usersByEmail.delete(user.email);
     this.users.delete(userId);
+    this.syncCounters.delete(userId);
     for (const [hash, s] of this.sessions) if (s.userId === userId) this.sessions.delete(hash);
     for (const [id, c] of this.conversations) {
-      if (c.userId === userId) {
+      if (c.record.userId === userId) {
         this.conversations.delete(id);
         this.messages.delete(id);
       }
@@ -62,9 +88,20 @@ export class MemoryStore implements Store {
     this.sessions.delete(tokenHash);
   }
 
+  async purgeExpiredSessions(now: Date): Promise<number> {
+    let removed = 0;
+    for (const [hash, s] of this.sessions) {
+      if (Date.parse(s.expiresAt) <= now.getTime()) {
+        this.sessions.delete(hash);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
   async getConversation(userId: string, id: string): Promise<ConversationRecord | undefined> {
-    const c = this.conversations.get(id);
-    return c && c.userId === userId ? { ...c } : undefined;
+    const c = this.live(id);
+    return c && c.record.userId === userId ? { ...c.record } : undefined;
   }
 
   async conversationExists(id: string): Promise<boolean> {
@@ -72,41 +109,75 @@ export class MemoryStore implements Store {
   }
 
   async saveConversation(conversation: ConversationRecord): Promise<void> {
-    this.conversations.set(conversation.id, { ...conversation });
+    const existing = this.conversations.get(conversation.id);
+    if (existing && (existing.deleted || existing.record.userId !== conversation.userId)) return;
+    const stored = existing ?? { record: conversation, seq: 0, deleted: false };
+    stored.record = { ...conversation };
+    this.bump(stored);
+    this.conversations.set(conversation.id, stored);
   }
 
   async listConversations(userId: string): Promise<ConversationRecord[]> {
     return [...this.conversations.values()]
-      .filter((c) => c.userId === userId)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-      .map((c) => ({ ...c }));
+      .filter((c) => !c.deleted && c.record.userId === userId)
+      .map((c) => ({ ...c.record }))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
   async deleteConversation(userId: string, id: string): Promise<boolean> {
-    const c = this.conversations.get(id);
-    if (!c || c.userId !== userId) return false;
-    this.conversations.delete(id);
+    const c = this.live(id);
+    if (!c || c.record.userId !== userId) return false;
+    c.deleted = true;
+    c.record = { ...c.record, title: "" };
     this.messages.delete(id);
+    this.bump(c);
     return true;
   }
 
-  async listMessages(conversationId: string): Promise<MessageRecord[]> {
+  async listConversationChanges(userId: string, afterSeq: number, limit: number): Promise<ConversationChangePage> {
+    const rows = [...this.conversations.values()]
+      .filter((c) => c.record.userId === userId && c.seq > afterSeq)
+      .sort((a, b) => a.seq - b.seq);
+    const page = rows.slice(0, limit);
+    return {
+      hasMore: rows.length > limit,
+      changes: page.map((c) => ({
+        seq: c.seq,
+        deleted: c.deleted,
+        conversation: { ...c.record },
+        messages: c.deleted ? [] : this.cloneMessages(c.record.id),
+      })),
+    };
+  }
+
+  private cloneMessages(conversationId: string): MessageRecord[] {
     return (this.messages.get(conversationId) ?? []).map((m) => ({ ...m, attachmentIds: [...m.attachmentIds] }));
   }
 
+  async listMessages(conversationId: string): Promise<MessageRecord[]> {
+    return this.live(conversationId) ? this.cloneMessages(conversationId) : [];
+  }
+
   async saveMessage(message: MessageRecord): Promise<void> {
+    const conversation = this.live(message.conversationId);
+    if (!conversation) return;
     const list = this.messages.get(message.conversationId) ?? [];
+    const stored = { ...message, attachmentIds: [...message.attachmentIds] };
     const index = list.findIndex((m) => m.id === message.id);
-    if (index === -1) list.push({ ...message });
-    else list[index] = { ...message };
+    if (index === -1) list.push(stored);
+    else list[index] = stored;
     this.messages.set(message.conversationId, list);
+    this.bump(conversation);
   }
 
   async truncateMessagesFrom(conversationId: string, messageId: string): Promise<void> {
+    const conversation = this.live(conversationId);
     const list = this.messages.get(conversationId);
-    if (!list) return;
+    if (!conversation || !list) return;
     const index = list.findIndex((m) => m.id === messageId);
-    if (index !== -1) list.splice(index);
+    if (index === -1) return;
+    list.splice(index);
+    this.bump(conversation);
   }
 
   async saveDocument(document: DocumentRecord): Promise<void> {
@@ -118,11 +189,11 @@ export class MemoryStore implements Store {
     return d && d.userId === userId ? { ...d } : undefined;
   }
 
-  async listDocuments(userId: string): Promise<DocumentRecord[]> {
+  async listDocuments(userId: string): Promise<DocumentSummary[]> {
     return [...this.documents.values()]
       .filter((d) => d.userId === userId)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .map((d) => ({ ...d }));
+      .map(summarizeDocument)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   async deleteDocument(userId: string, id: string): Promise<boolean> {
@@ -139,4 +210,6 @@ export class MemoryStore implements Store {
   async listUsage(userId: string): Promise<UsageRow[]> {
     return this.usage.filter((u) => u.userId === userId).map((u) => ({ ...u }));
   }
+
+  async close(): Promise<void> {}
 }

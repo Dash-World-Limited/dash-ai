@@ -5,6 +5,8 @@ import JSZip from "jszip";
 import { buildApp } from "../src/app.js";
 import { loadConfig, type AppConfig } from "../src/config.js";
 import { ProviderRegistry } from "../src/providers/registry.js";
+import type { Store } from "../src/store/store.js";
+import { createTestPgStore } from "./pgTestStore.js";
 import type { ProviderAdapter, ProviderChunk, ProviderRequest } from "../src/providers/types.js";
 
 export function contractsFixture(name: string): string {
@@ -31,11 +33,27 @@ export class LogCapture {
   }
 }
 
+/** The API suite runs against Postgres when DASH_TEST_STORE=postgres (pnpm test:pg), else in memory. */
+export const USING_POSTGRES = process.env.DASH_TEST_STORE === "postgres";
+
 export async function makeApp(
-  options: { config?: AppConfig; providers?: ProviderRegistry; logs?: LogCapture; env?: Record<string, string> } = {},
+  options: {
+    config?: AppConfig;
+    providers?: ProviderRegistry;
+    logs?: LogCapture;
+    env?: Record<string, string>;
+    store?: Store;
+  } = {},
 ) {
   const config = options.config ?? testConfig({ ...(options.logs ? { LOG_LEVEL: "debug" } : {}), ...options.env });
-  const { app, context } = await buildApp({ config, providers: options.providers, logStream: options.logs });
+  const pg = !options.store && USING_POSTGRES ? await createTestPgStore() : undefined;
+  const { app, context } = await buildApp({
+    config,
+    providers: options.providers,
+    logStream: options.logs,
+    store: options.store ?? pg?.store,
+  });
+  if (pg) app.addHook("onClose", async () => pg.dispose());
   await app.ready();
   return { app, context, config };
 }

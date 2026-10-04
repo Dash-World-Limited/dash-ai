@@ -1,5 +1,5 @@
 import type { Conversation, ConversationMessage, DocumentResponse, UsageRecord, User } from "@dash-ai/contracts";
-import type { ConversationRecord, DocumentRecord, MessageRecord, UsageRow, UserRecord } from "../store/store.js";
+import type { ConversationRecord, DocumentSummary, MessageRecord, UsageRow, UserRecord } from "../store/store.js";
 
 export const toUser = (u: UserRecord): User => ({
   id: u.id,
@@ -28,7 +28,7 @@ export const toMessage = (m: MessageRecord): ConversationMessage => ({
   createdAt: m.createdAt,
 });
 
-export const toDocument = (d: DocumentRecord): DocumentResponse => ({
+export const toDocument = (d: DocumentSummary): DocumentResponse => ({
   id: d.id,
   name: d.name,
   kind: d.kind,
@@ -36,7 +36,7 @@ export const toDocument = (d: DocumentRecord): DocumentResponse => ({
   sizeBytes: d.sizeBytes,
   status: d.status,
   statusDetail: d.statusDetail,
-  extractedChars: d.extractedText.length,
+  extractedChars: d.extractedChars,
   pageCount: d.pageCount,
   createdAt: d.createdAt,
 });

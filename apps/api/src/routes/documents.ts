@@ -5,6 +5,7 @@ import { currentUser } from "../auth/requireAuth.js";
 import { extractText, sanitizeFileName, signatureMatches } from "../documents/inspect.js";
 import { AppError, parseOrThrow } from "../errors.js";
 import { newId } from "../security/crypto.js";
+import { summarizeDocument } from "../store/store.js";
 import type { RouteContext } from "./context.js";
 import { toDocument } from "./mappers.js";
 
@@ -53,7 +54,7 @@ export function documentRoutes(app: FastifyInstance, ctx: RouteContext): void {
         "document uploaded",
       );
       reply.code(201);
-      return toDocument(record);
+      return toDocument(summarizeDocument(record));
     },
   );
 

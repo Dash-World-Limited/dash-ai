@@ -34,6 +34,21 @@ const EnvSchema = z.object({
   SESSION_TTL_DAYS: int(30, 1, 365),
   /** Set to "true" only behind a trusted reverse proxy so client IPs come from X-Forwarded-For. */
   TRUST_PROXY: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("false")),
+
+  /** PostgreSQL connection string. Unset = in-memory store (development and tests only). */
+  DATABASE_URL: optionalString,
+  /** TLS to the database. Defaults to "require" in production and "disable" elsewhere. */
+  DATABASE_SSL: z.preprocess(emptyToUndefined, z.enum(["disable", "require", "no-verify"]).optional()),
+  DATABASE_POOL_MAX: int(10, 1, 100),
+  /** Apply pending migrations at startup. Defaults to true outside production, false in production. */
+  DATABASE_AUTO_MIGRATE: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).optional()),
+  /** Base64 of 32 random bytes (openssl rand -base64 32). Encrypts document text at rest. */
+  DATA_ENCRYPTION_KEY: optionalString,
+  DATA_ENCRYPTION_KEY_ID: z.preprocess(emptyToUndefined, z.string().regex(/^[A-Za-z0-9_-]{1,32}$/).default("k1")),
+  /** Retired keys kept for decrypting old data: id:base64,id2:base64 */
+  DATA_ENCRYPTION_PREVIOUS_KEYS: optionalString,
+  /** Production refuses to start on the in-memory store unless this is "true". */
+  ALLOW_MEMORY_STORE: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("false")),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
@@ -59,6 +74,14 @@ export interface AppConfig {
   maxConcurrentStreamsPerUser: number;
   sessionTtlDays: number;
   trustProxy: boolean;
+  database: {
+    url: string | undefined;
+    ssl: "disable" | "require" | "no-verify";
+    poolMax: number;
+    autoMigrate: boolean;
+    allowMemoryStore: boolean;
+  };
+  dataEncryption: { key: string | undefined; keyId: string; previousKeys: string | undefined };
   version: string;
 }
 
@@ -93,6 +116,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     maxConcurrentStreamsPerUser: e.MAX_CONCURRENT_STREAMS_PER_USER,
     sessionTtlDays: e.SESSION_TTL_DAYS,
     trustProxy: e.TRUST_PROXY === "true",
+    database: {
+      url: e.DATABASE_URL,
+      ssl: e.DATABASE_SSL ?? (e.NODE_ENV === "production" ? "require" : "disable"),
+      poolMax: e.DATABASE_POOL_MAX,
+      autoMigrate: e.DATABASE_AUTO_MIGRATE ? e.DATABASE_AUTO_MIGRATE === "true" : e.NODE_ENV !== "production",
+      allowMemoryStore: e.ALLOW_MEMORY_STORE === "true",
+    },
+    dataEncryption: {
+      key: e.DATA_ENCRYPTION_KEY,
+      keyId: e.DATA_ENCRYPTION_KEY_ID,
+      previousKeys: e.DATA_ENCRYPTION_PREVIOUS_KEYS,
+    },
     version: "0.1.0",
   };
 }

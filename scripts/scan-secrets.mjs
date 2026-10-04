@@ -13,6 +13,8 @@ const PATTERNS = [
   ["GitHub token", /\bgh[pousr]_[A-Za-z0-9]{36,}\b/],
   ["Slack token", /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/],
   ["Google API key", /\bAIza[0-9A-Za-z_-]{35}\b/],
+  // Connection strings with an inline password (user:password@host). Placeholders are allowed.
+  ["Database URL with password", /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^\s:/@'"]+:(?!(?:password|pass|secret|changeme|placeholder|xxxx*|\*+|<[^>]*>|\$\{?[A-Za-z_]+\}?)(?:@|$))[^\s@'"]{3,}@/i],
   ["Private key", /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY( BLOCK)?-----/],
 ];
 
@@ -47,7 +49,7 @@ for (const file of files) {
       problems.push(`${file}:${i + 1}: Android code must not reference an AI provider API directly`);
     }
     if (base === ".env.example") {
-      const m = /^\s*([A-Z0-9_]*(?:API_KEY|SECRET|TOKEN|PASSWORD))\s*=\s*(\S+)/.exec(line);
+      const m = /^\s*([A-Z0-9_]*(?:API_KEY|ENCRYPTION_KEY|PREVIOUS_KEYS|SECRET|TOKEN|PASSWORD|DATABASE_URL))\s*=\s*(\S+)/.exec(line);
       if (m) problems.push(`${file}:${i + 1}: ${m[1]} must be empty in .env.example`);
     }
   });

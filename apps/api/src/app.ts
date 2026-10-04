@@ -144,6 +144,7 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   app.addHook("onClose", async () => {
     context.streams.cancelAll();
   });
+  // The caller that created the store (index.ts / tests) owns closing it.
 
   return { app, context };
 }
