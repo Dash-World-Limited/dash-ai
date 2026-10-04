@@ -1,10 +1,19 @@
 # Roadmap
 
-## Current state (production-foundation milestone)
+## Current state (production-hardening milestone)
 
 Nothing here is deployed. Nothing paid has been provisioned. Demo Mode is unchanged.
 
 ### Real and verified in the authoring environment
+- **Two-way conversation sync** ([sync.md](sync.md)): push (uploads of offline conversations, renames with
+  title-revision conflict detection, deletions) and pull, idempotent and server-authoritative; verified on
+  both stores, with Kotlin-core unit tests and live two-device tests through the real API on PostgreSQL.
+- **Titles and all message content encrypted at rest**, with backfill, key rotation (`data:encrypt`) and a
+  start-up key check ([persistence.md](persistence.md), [data-inventory.md](data-inventory.md)).
+- **Threat-model review** with regression tests for every issue found ([threat-model.md](threat-model.md)).
+- **CI split** into secret scanning, backend, PostgreSQL integration, Kotlin core (+ live API on
+  PostgreSQL), a path-filtered Android app workflow and a manual-only release workflow. The workflows pass
+  actionlint; they have **not** been observed running on GitHub in this session.
 - **PostgreSQL persistence** ([persistence.md](persistence.md)): users, sessions, conversations,
   messages, documents, usage, plugin settings and tool audit rows; checksummed migrations with a CLI;
   document text encrypted at rest (AES-256-GCM, key rotation). Verified against a local PostgreSQL 16:
@@ -29,10 +38,11 @@ Nothing here is deployed. Nothing paid has been provisioned. Demo Mode is unchan
 | External plugins (GitHub, Gmail, Calendar, web search, Dash World services) | **Do not exist.** The only external-style plugin is `mock-github` inside the tests (canned data). No connector framework, OAuth flow or per-user secret store exists. |
 | Write tools | Can be declared but are refused by the executor; needs a per-call confirmation flow. |
 | Android plugin/tool UI | None. The app ignores `tool.*` events; manage plugins via the API. |
-| Android sync wiring | `PrefsSyncStateStore`, `AppServices` and `ChatViewModel` changes were written without an Android SDK and **have not been compiled or run**; the pure-Kotlin engine is tested. CI builds and tests the app module. No Room-level sync test exists yet. |
-| Push of local-only conversations, document/prompt/settings sync, background sync | Not implemented. Sync is pull-only, at sign-in/app start. |
+| Android sync wiring | `PrefsSyncStateStore`, `AppServices` and `ChatViewModel` changes (upload hook, sign-in/app-start/reconnect triggers, rename/delete outbox) were written without an Android SDK and **have not been compiled or run**; the pure-Kotlin engine is tested. `android.yml` compiles and tests the app module. No Room-level sync test exists yet. |
+| Document/prompt/settings sync, background sync | Not implemented. Sync runs at sign-in, app start and when connectivity returns. |
 | Production database | A local PostgreSQL 16 was used for tests. No managed database, backups, point-in-time recovery, TLS configuration or key management exists; you must provide them. |
-| Message-content encryption | Not done; only document text is encrypted by the app. |
+| Encryption of document names, emails, display names | Not done (plaintext; see [data-inventory.md](data-inventory.md)). Titles, messages and document text are encrypted. |
+| Dropping the legacy plaintext columns | Phase 2 migration not shipped; `data:encrypt` must first report zero plaintext rows in each deployment. |
 | Demo Mode answers | Simulated on the device and labelled as demonstrations. |
 | API fake mode (`PROVIDER_MODE=fake`) | Demonstration adapters, labelled as such, for tests and demos. |
 | Web research | Not available — no search provider is connected. Research mode uses model knowledge only and says so (the Research instructions must change when a search plugin exists). |
@@ -44,17 +54,15 @@ Nothing here is deployed. Nothing paid has been provisioned. Demo Mode is unchan
 | Instrumented (on-device) UI tests | Compose UI tests run on the JVM with Robolectric; no emulator job yet. |
 | Release signing, Play Store listing, deployment | Not set up (by instruction: no deployment). |
 
-## Next recommended milestone: "Verify live, then ship a first real deployment"
-1. **Run the live smoke test** with real keys; fix whatever the real providers reveal (OpenAI
-   reasoning-item replay, model ids, token limits, tool round trip). Record the result in this file.
-2. **Confirm CI is green for the Android module**, including the sync wiring and a Room-backed sync test;
-   add the chat-screen "last synced / offline" affordance.
-3. **Deployment foundation** (needs your decisions and infrastructure): managed PostgreSQL with
-   backups and TLS, secret manager for `DATA_ENCRYPTION_KEY` and provider keys, HTTPS reverse proxy
-   (`TRUST_PROXY=true`), container image, health checks, structured log shipping (metadata only),
-   a deliberate `migrate` deploy step.
-4. **Accounts**: email verification, password reset, session management UI.
-5. **Push sync** for local-only conversations, then documents.
+## Next recommended milestone: "Verify on real infrastructure"
+Everything left unverified needs things this environment does not have:
+1. **Run the live smoke test** (`DASH_LIVE_SMOKE=1 pnpm smoke:live`) with real OpenAI/Anthropic keys and
+   fix what the real providers reveal (tool-call replay for reasoning models, model ids, token limits).
+2. **Watch CI run on GitHub**, especially `android.yml`: it is the first compile of the app-module sync
+   wiring. Add a Room-backed sync test there.
+3. **Stand up a staging deployment** (needs your decisions and infrastructure): managed PostgreSQL with
+   backups and TLS, a secret manager for `DATA_ENCRYPTION_KEY` and provider keys, HTTPS reverse proxy,
+   the deliberate `migrate` + `data:encrypt` deploy steps, and a real phone (Samsung A55) syncing against it.
 
 ## Later
 - Plugins: a connector/secret/consent design, a first read-only real plugin (web search with citations is

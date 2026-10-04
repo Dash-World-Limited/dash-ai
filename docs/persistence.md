@@ -18,8 +18,8 @@ Production (`NODE_ENV=production`) **refuses to start** without `DATABASE_URL`
 | --- | --- | --- |
 | `users` | id, lower-cased email (unique), display name, scrypt password hash, `sync_counter` | |
 | `sessions` | SHA-256 hash of the session token, user, expiry | Raw tokens are never stored. Expired rows are purged hourly and rejected on use. |
-| `conversations` | id, owner, title, mode, timestamps, `deleted_at`, `sync_seq` | Deletion is a tombstone (title scrubbed, messages removed) so other devices learn about it. Ids are never reused. |
-| `messages` | per-conversation id, role, content, provider, model, status, compare group, attachment ids | Primary key is `(conversation_id, id)`: client-chosen message ids cannot collide across users. |
+| `conversations` | id, owner, **encrypted title**, mode, timestamps, `deleted_at`, `sync_seq`, `title_rev` | Deletion is a tombstone (no title, messages removed) so other devices learn about it. Ids are never reused. |
+| `messages` | per-conversation id, role, **encrypted content**, provider, model, status, compare group, attachment ids | Primary key is `(conversation_id, id)`: client-chosen message ids cannot collide across users. |
 | `documents` | metadata + **encrypted** extracted text | Raw uploaded bytes are never stored. |
 | `usage_records` | provider, model, token counts per answer | |
 | `plugin_settings` | a user's plugin choices | No row = never configured = disabled. |
@@ -45,7 +45,12 @@ node apps/api/dist/migrate-cli.js           # same, from the built output
 off the server checks at start-up that every migration is applied and refuses to run otherwise, so
 a deployment runs the migrate step deliberately.
 
-## Encryption of document text at rest
+## Encryption at rest
+
+Encrypted fields: **conversation titles, all message content (user and assistant), extracted document
+text.** Field-by-field audit: [data-inventory.md](data-inventory.md).
+
+### Document text
 
 `documents.extracted_text_enc` holds AES-256-GCM ciphertext. The key (`DATA_ENCRYPTION_KEY`,
 base64 of 32 random bytes) comes only from server configuration; it is never stored in the
@@ -53,17 +58,39 @@ database. Each value has a random 96-bit nonce and is bound (as GCM additional a
 to its user and document id, so ciphertext copied to another row or user fails authentication.
 Listing documents reads only plaintext metadata (`extracted_chars`), never the text.
 
-**Key rotation:** set the new key as `DATA_ENCRYPTION_KEY` with a new `DATA_ENCRYPTION_KEY_ID` and
-keep the old one in `DATA_ENCRYPTION_PREVIOUS_KEYS=old_id:base64`. New writes use the new key; old
-rows stay readable. There is no bulk re-encryption job yet.
-
-**Back up the key** (in a secret manager, separately from database backups): without it stored
+**Back up every key** (in a secret manager, separately from database backups): without it stored
 document text is unrecoverable.
 
-**What is *not* encrypted by the application:** conversation titles and message content, emails
-and usage rows are stored as normal columns. Protect them with the database host's disk/volume
-encryption and TLS; field-level encryption of messages is a roadmap item, not something this
-milestone claims.
+### Titles and message content (migration 4)
+
+Same cipher and keyring. AAD binds a title to its conversation id and content to its conversation and
+message id. The migration is two-phase so it never needs the key inside SQL:
+
+1. **Migration 4** adds `title_enc/title_key_id` and `content_enc/content_key_id` and makes the plaintext
+   columns nullable. Every write from this version stores ciphertext only (plaintext `NULL`).
+2. **Backfill**: rows written before migration 4 are encrypted in batches (row locks, `SKIP LOCKED`, safe while
+   serving). Automatic at start-up outside production; in production run
+   `pnpm --filter @dash-ai/api data:encrypt` (`node dist/data-cli.js`). Reads handle both forms meanwhile.
+3. **Later migration** (not shipped yet): drop the plaintext columns once `data:encrypt` reports zero
+   plaintext rows everywhere.
+
+The server never searches titles or messages, so encryption costs no query capability.
+
+### Key rotation
+
+1. Generate a new key; set it as `DATA_ENCRYPTION_KEY` with a **new** `DATA_ENCRYPTION_KEY_ID`; move the old
+   key to `DATA_ENCRYPTION_PREVIOUS_KEYS=old_id:base64`.
+2. Run `data:encrypt`: it re-encrypts every title, message and document still under a retired key and prints
+   counts (never content).
+3. When it reports zero rows under retired keys, remove the old key.
+
+Start-up refuses to run when `DATA_ENCRYPTION_KEY` does not match data already stored under the same key id
+(the classic "new key, old id" mistake), with a message naming key ids only. Rows under a key the server
+does not hold are left untouched by maintenance and fail clearly when read. Start-up also warns while
+plaintext or retired-key rows remain.
+
+**What is *not* encrypted by the application:** document file names, emails, display names, usage rows and
+structural metadata (see [data-inventory.md](data-inventory.md)).
 
 ## Running the database tests locally
 

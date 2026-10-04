@@ -1,6 +1,6 @@
 # ADR 0009 — Pull-based conversation sync with deterministic merging
 
-**Status:** accepted
+**Status:** accepted; extended to two-way sync by [ADR 0010](0010-two-way-sync.md)
 
 **Context.** With durable server storage, a user signing in on a new device (or after reinstalling)
 should see their conversations, without Room ceasing to be the offline cache.
@@ -16,6 +16,6 @@ should see their conversations, without Room ceasing to be the offline cache.
 - The engine is pure Kotlin and tested offline and against the live API; Android only supplies storage
   and triggers.
 
-**Consequences.** Sync is pull-only: local-only conversations are not uploaded, and documents and settings
+**Consequences.** (Original) Sync was pull-only; ADR 0010 adds the push direction. Documents and settings
 do not sync. A stale local message can survive a server-side regenerate (documented trade-off). Cursor
 state is device-local and safe to lose.

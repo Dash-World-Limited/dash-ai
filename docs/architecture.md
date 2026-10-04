@@ -7,7 +7,7 @@
 │                              ├─ ChatGateway ── DemoChatGateway (on-device, Demo Mode) │
 │                              │              └─ RemoteChatGateway (OkHttp SSE) ───────┼──► Dash AI API
 │                              ├─ ConversationRepository ── Room (on device, local cache)│
-│                              ├─ ConversationSyncService ◄── GET /v1/sync/conversations │
+│                              ├─ ConversationSyncService ◄─► /v1/sync (pull + push)   │
 │                              └─ ContextBuilder, SmartRouting, TitleGenerator         │
 │ DataStore settings · Android Keystore token store · connectivity monitor             │
 └──────────────────────────────────────────────────────────────────────────────────────┘
@@ -38,8 +38,8 @@ limits and title algorithm, and compare the JSON the app sends with `chat-stream
 - **Routes**: `GET /health`, `GET /v1/providers`, `POST /v1/auth/{register,login,logout}`,
   `GET|DELETE /v1/me`, `GET /v1/me/export`, `GET /v1/usage`, conversation CRUD under
   `/v1/conversations`, `POST /v1/chat/stream`, `POST /v1/chat/streams/:id/cancel`,
-  `POST|GET /v1/documents`, `DELETE /v1/documents/:id`, `GET /v1/sync/conversations`
-  ([sync.md](sync.md)), `GET /v1/plugins`, `PUT /v1/plugins/:id`, `GET /v1/tools/activity`
+  `POST|GET /v1/documents`, `DELETE /v1/documents/:id`, `GET /v1/sync/conversations`,
+  `POST /v1/sync/push` ([sync.md](sync.md)), `GET /v1/plugins`, `PUT /v1/plugins/:id`, `GET /v1/tools/activity`
   ([plugins.md](plugins.md)).
 - **Orchestrator** (`src/chat/orchestrator.ts`): validates everything that can fail *before*
   the stream starts (so those failures are JSON errors with proper status codes), then runs one
@@ -52,7 +52,7 @@ limits and title algorithm, and compare the JSON the app sends with `chat-stream
   plus that provider's own answers), trimmed to the character budget, consecutive turns merged,
   and extracted document text wrapped in delimited `<document>` blocks.
 - **Store** (`src/store`): an async `Store` interface with `PostgresStore` (production: migrations,
-  per-user sync sequence, tombstones, encrypted document text) and `MemoryStore` (isolated tests and
+  per-user sync sequence, tombstones, title revisions, encrypted titles, messages and document text) and `MemoryStore` (isolated tests and
   demos), both held to one contract test suite. See [persistence.md](persistence.md).
 - **Tool layer** (`src/tools`): provider-neutral `ToolPlugin`/`ToolDefinition` contract, `PluginRegistry`
   (permission resolution), `ToolExecutor` (validation, timeout, cancellation, bounded output, audit) and a
@@ -110,8 +110,9 @@ A `: ping` comment is sent every 15 seconds so idle connections are not dropped.
 The server (PostgreSQL) holds the durable record of each account's conversations; the device (Room)
 is the local cache the UI reads, so the app works offline and in Demo Mode. Live chat requests still
 carry the relevant history (filtered by provider rules; the API re-applies the filter). After sign-in
-the device pulls server conversations into Room with deterministic merge rules ([sync.md](sync.md),
-[ADR 0009](decisions/0009-conversation-sync.md)). Local-only conversations are not pushed to the server yet.
+the device pushes its pending work (conversations written offline, renames, deletions) and pulls server
+conversations into Room with deterministic rules ([sync.md](sync.md), [ADR 0009](decisions/0009-conversation-sync.md),
+[ADR 0010](decisions/0010-two-way-sync.md)).
 
 ## Running the live contract test locally
 

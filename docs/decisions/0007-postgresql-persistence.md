@@ -1,6 +1,6 @@
 # ADR 0007 — PostgreSQL persistence behind the Store interface
 
-**Status:** accepted
+**Status:** accepted; amended by migration 4 (titles and message content are now encrypted too, see [persistence.md](../persistence.md))
 
 **Context.** The MVP kept all server state in memory, so accounts, sessions and history vanished on
 restart. Production needs durable storage, safe schema evolution and protection for document text.

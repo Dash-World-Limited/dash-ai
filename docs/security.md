@@ -17,10 +17,11 @@
 ## Persistence and encryption at rest
 - Durable data lives in PostgreSQL ([persistence.md](persistence.md)). Production refuses to start on the
   in-memory store, and `DATABASE_SSL` defaults to certificate-verified TLS in production.
-- **Extracted document text is encrypted at rest** with AES-256-GCM (random nonce, ciphertext bound to
-  its user and document id, key from server configuration only, key-id based rotation).
-- **Not encrypted by the application:** titles, message content, emails and usage rows. They rely on the
-  database host's disk encryption and TLS. Field-level encryption of messages is a roadmap item.
+- **Encrypted at rest** with AES-256-GCM (random nonce, ciphertext bound to its row, key from server
+  configuration only): conversation titles, all user and assistant message content, extracted document
+  text. Key rotation re-encrypts with `data:encrypt`; start-up refuses a key that does not match stored data.
+- **Not encrypted by the application:** document file names, emails, display names, usage rows and
+  structural metadata. Full audit: [data-inventory.md](data-inventory.md).
 - Passwords (scrypt) and session tokens (SHA-256 of a 256-bit random token) are stored only as hashes.
 - Conversation deletion keeps a content-free tombstone (id, owner, timestamps; title scrubbed, messages
   removed) so other devices learn about it; account deletion removes everything, tombstones included.
@@ -41,6 +42,16 @@ Full detail: [plugins.md](plugins.md). The security-relevant guarantees:
   and the system prompt says to treat them as information, not instructions. This reduces, but cannot
   eliminate, prompt-injection risk, which is why write tools need a confirmation flow before they exist.
 - Tool state is never shared between providers; Compare runs two independent loops.
+
+## Sync
+- Pull and push are scoped to the signed-in user; another account's conversation ids are rejected or
+  reported as not found without detail. Devices can only contribute user messages: provider, model, demo
+  and status labels are server-made. Uploads only append a newer tail and never touch tombstones, so retries
+  and stale devices cannot duplicate or resurrect data. Details: [sync.md](sync.md).
+
+## Threat model
+The focused review of this milestone, with the test behind each mitigation and the residual risks, is in
+[threat-model.md](threat-model.md).
 
 ## Request validation and abuse protection
 - Every request body, path parameter and upload is validated (zod schemas from
@@ -63,7 +74,9 @@ Full detail: [plugins.md](plugins.md). The security-relevant guarantees:
 - Fastify's logger uses custom serializers: method, path (query strings stripped), status, request
   id and timings. Headers and bodies are never logged; error messages pass through
   `redactSecrets`. Provider failures are logged as provider + error code only.
-- Code never logs prompt text, document text or model output. An integration test sends canary
+- Error messages are also scrubbed of quoted values and key/value details before logging, because database
+  drivers and parsers quote offending values.
+- Code never logs prompt text, document text, titles or model output. An integration test sends canary
   strings through prompts, documents, answers, query strings, passwords and tokens and asserts
   none appear in the logs.
 

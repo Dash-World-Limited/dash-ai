@@ -21,6 +21,7 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `RATE_LIMIT_AUTH_PER_MINUTE` | `10` | Sign-in/registration attempts per IP per minute. |
 | `RATE_LIMIT_UPLOAD_PER_MINUTE` | `10` | Uploads per user per minute. |
 | `RATE_LIMIT_API_PER_MINUTE` | `240` | All requests per IP per minute. |
+| `RATE_LIMIT_SYNC_PER_MINUTE` | `60` | Sync pulls and pushes per user per minute. |
 | `MAX_CONCURRENT_STREAMS_PER_USER` | `3` | Simultaneous chat streams per user. |
 | `SESSION_TTL_DAYS` | `30` | Session token lifetime. |
 | `TRUST_PROXY` | `false` | Set `true` only behind a trusted reverse proxy. |
@@ -28,7 +29,7 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `DATABASE_SSL` | `require` in production, else `disable` | `disable`, `require` (verify certificate) or `no-verify`. |
 | `DATABASE_POOL_MAX` | `10` | Connection pool size. |
 | `DATABASE_AUTO_MIGRATE` | `true` outside production, `false` in production | Apply pending migrations at start-up. When off, start-up fails if the schema is not current; run `pnpm --filter @dash-ai/api migrate`. |
-| `DATA_ENCRYPTION_KEY` | — | **Required with `DATABASE_URL`.** Base64 of 32 random bytes (`openssl rand -base64 32`). Encrypts document text at rest. Back it up separately: losing it makes stored document text unreadable. |
+| `DATA_ENCRYPTION_KEY` | — | **Required with `DATABASE_URL`.** Base64 of 32 random bytes (`openssl rand -base64 32`). Encrypts conversation titles, message content and document text at rest. Start-up refuses a key that does not match data stored under its key id. Back it up separately: losing it makes stored document text unreadable. |
 | `DATA_ENCRYPTION_KEY_ID` | `k1` | Label stored with each ciphertext; change it when you rotate the key. |
 | `DATA_ENCRYPTION_PREVIOUS_KEYS` | — | Retired keys still needed to read old data: `id:base64,id2:base64`. |
 | `ALLOW_MEMORY_STORE` | `false` | Lets production run on the in-memory store (throw-away demos only). |
