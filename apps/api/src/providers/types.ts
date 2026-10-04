@@ -88,16 +88,20 @@ export const emptyUsage = (): Usage => ({ ...EMPTY_USAGE });
 interface SdkLikeError {
   name?: string;
   status?: number;
+  /** Provider error code carried by SDK errors raised from in-stream error events. */
+  code?: string | null;
 }
 
 /** Maps SDK/network errors to ProviderError without copying provider error text. */
 export function toProviderError(displayName: string, err: unknown, signal?: AbortSignal): ProviderError {
-  if (err instanceof ProviderError) return err;
+  // An aborted request explains whatever the stream threw (SDKs may end silently or throw anything),
+  // so the abort reason decides: a timeout is a timeout, anything else is the user's cancel.
   if (signal?.aborted) {
     return signal.reason === "timeout"
       ? new ProviderError("provider_timeout", `${displayName} took too long to respond.`, true)
       : new ProviderError("cancelled", "Generation was stopped.", false);
   }
+  if (err instanceof ProviderError) return err;
   const e = (typeof err === "object" && err !== null ? err : {}) as SdkLikeError;
   const name = e.name ?? "";
   if (name === "AbortError" || name === "APIUserAbortError") {
@@ -107,7 +111,7 @@ export function toProviderError(displayName: string, err: unknown, signal?: Abor
     return new ProviderError("provider_timeout", `${displayName} took too long to respond.`, true);
   }
   const status = typeof e.status === "number" ? e.status : undefined;
-  if (status === 429) {
+  if (status === 429 || e.code === "rate_limit_exceeded") {
     return new ProviderError("rate_limited", `${displayName} is receiving too many requests. Try again shortly.`, true, status);
   }
   if (status === 401 || status === 403) {

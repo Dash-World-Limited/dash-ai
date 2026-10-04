@@ -121,18 +121,40 @@ export class OpenAIAdapter implements ProviderAdapter {
             return;
           }
           case "response.failed":
-            throw new ProviderError("provider_error", "OpenAI could not complete the response.", true);
+            throw mapStreamFailure(event.response.error?.code);
           case "error":
-            throw new ProviderError("provider_error", "OpenAI reported an error while streaming.", true);
+            throw mapStreamFailure(event.code);
           default:
             break;
         }
       }
-      yield { type: "finish", finishReason: refused ? "refusal" : "stop", usage };
+      // The SDK ends the iteration silently when the request is aborted: that is a cancellation.
+      if (request.signal.aborted) throw request.signal.reason ?? new Error("aborted");
+      // The connection ended without a terminal event: the answer may be cut off, so never present
+      // it as complete.
+      throw new ProviderError("provider_error", "OpenAI's response ended unexpectedly. Try again.", true);
     } catch (err) {
       throw toProviderError(this.displayName, err, request.signal);
     }
   }
+}
+
+/** Maps an in-stream failure code to a safe error. Provider message text is never copied. */
+function mapStreamFailure(code: string | null | undefined): ProviderError {
+  if (code === "rate_limit_exceeded") {
+    return new ProviderError("rate_limited", "OpenAI is receiving too many requests. Try again shortly.", true);
+  }
+  if (code === "insufficient_quota" || code === "invalid_api_key") {
+    return new ProviderError(
+      "provider_error",
+      "OpenAI rejected the server's credentials or quota. The server administrator needs to check the account.",
+      false,
+    );
+  }
+  if (code === "context_length_exceeded") {
+    return new ProviderError("provider_error", "This request is too long for OpenAI. Start a new chat.", false);
+  }
+  return new ProviderError("provider_error", "OpenAI could not complete the response.", true);
 }
 
 /** Function calls from a completed response, exactly as the model emitted them. */

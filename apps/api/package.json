@@ -15,7 +15,9 @@
     "test": "vitest run",
     "migrate": "tsx --env-file-if-exists=.env src/migrate-cli.ts",
     "migrate:built": "node --env-file-if-exists=.env dist/migrate-cli.js",
-    "test:pg": "DASH_TEST_STORE=postgres vitest run"
+    "test:pg": "DASH_TEST_STORE=postgres vitest run",
+    "smoke:live": "tsx --env-file-if-exists=.env src/smoke/main.ts",
+    "smoke:live:built": "node --env-file-if-exists=.env dist/smoke/main.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",

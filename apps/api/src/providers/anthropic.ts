@@ -5,6 +5,7 @@ import type { SdkAdapterOptions } from "./openai.js";
 import {
   isToolCallTurn,
   isToolResultTurn,
+  ProviderError,
   toProviderError,
   type ProviderAdapter,
   type ProviderChunk,
@@ -130,6 +131,8 @@ export class AnthropicAdapter implements ProviderAdapter {
           case "message_delta":
             stopReason = event.delta.stop_reason ?? stopReason;
             if (typeof event.usage.output_tokens === "number") outputTokens = event.usage.output_tokens;
+            // Newer API versions report cumulative input tokens here too.
+            if (typeof event.usage.input_tokens === "number") inputTokens = event.usage.input_tokens;
             break;
           case "message_stop":
             yield* finishChunk();
@@ -138,7 +141,10 @@ export class AnthropicAdapter implements ProviderAdapter {
             break;
         }
       }
-      yield* finishChunk();
+      // The SDK ends the iteration silently when the request is aborted: that is a cancellation.
+      if (request.signal.aborted) throw request.signal.reason ?? new Error("aborted");
+      // The connection ended without message_stop: never present a possibly cut-off answer as complete.
+      throw new ProviderError("provider_error", "Claude's response ended unexpectedly. Try again.", true);
     } catch (err) {
       throw toProviderError(this.displayName, err, request.signal);
     }
