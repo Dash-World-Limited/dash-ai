@@ -42,6 +42,18 @@ relying on either adapter.
   the reasoning items with their function calls (stateless reasoning continuity). It stays off by
   default until verified live for your model; with it off, turns are rebuilt without item ids.
 
+## Failures, retries and recovery
+
+Retryable failures (429, 5xx, timeouts, malformed or reset streams) are retried by the orchestrator only
+**before the request produced any output**, with bounded exponential backoff; permanent errors are not
+retried; SDK retries are off. A final failure is stored as failed and sent with
+`recovery: { attempts, alternatives }`: the user may retry or explicitly choose another provider; the
+server never switches provider on its own ([ADR 0011](decisions/0011-provider-failures-retry-not-failover.md)).
+`apps/api/test/provider-resilience.test.ts` covers timeout, 429, 5xx, malformed stream, mid-stream
+disconnect, cancellation during the backoff, failure after a tool ran (the tool ran once), success after
+retries, repeated failures (bounded), the time budget, Smart and Compare, and an explicit switch afterwards,
+all through the real SDKs.
+
 ## What is verified automatically (no keys, no cost)
 
 CI and `pnpm test` run the real adapters and real SDKs against **scripted HTTP responses in each

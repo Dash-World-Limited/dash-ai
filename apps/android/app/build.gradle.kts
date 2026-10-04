@@ -7,6 +7,15 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// Optional default server for release (e.g. staging) builds, never committed:
+//   ./gradlew :app:assembleRelease -PdashServerUrl=https://<your staging API host>/
+// Only an https:// URL ending in "/" is accepted (release builds refuse cleartext). When it is not
+// given, release builds have no default and users enter the server address in Settings.
+val releaseServerUrl: String = (findProperty("dashServerUrl") as String?)?.trim().orEmpty()
+require(releaseServerUrl.isEmpty() || Regex("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/([A-Za-z0-9._~-]+/)*$").matches(releaseServerUrl)) {
+    "dashServerUrl must be an https:// URL ending with / (got a value that is not)"
+}
+
 android {
     namespace = "com.dashworldng.ai"
     compileSdk = 35
@@ -27,8 +36,8 @@ android {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Release builds have no default server; an HTTPS address must be configured.
-            buildConfigField("String", "DEFAULT_SERVER_URL", "\"\"")
+            // Release builds have no default server unless -PdashServerUrl gives an HTTPS one.
+            buildConfigField("String", "DEFAULT_SERVER_URL", "\"$releaseServerUrl\"")
         }
     }
 

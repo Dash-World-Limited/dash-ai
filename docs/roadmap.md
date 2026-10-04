@@ -1,9 +1,23 @@
 # Roadmap
 
-## Current state (verification and release-readiness milestone)
+## Current state (final production hardening before staging)
 
 Nothing here is deployed. Nothing paid has been provisioned. Demo Mode is unchanged. Gate-by-gate
 status, evidence and what each remaining gate needs: [release-readiness.md](release-readiness.md).
+The staging procedure is prepared in [staging-runbook.md](staging-runbook.md) (not executed).
+
+### Added in this milestone
+- **Shared rate limiting** through Redis across API instances, with a safe fallback; per-account sign-in limit.
+- **Shared-device privacy** on Android: one account's data per device; sign-out removes it, online or offline.
+- **Provider resilience**: bounded retries before output, explicit recovery choices, no silent failover (ADR 0011).
+- **Tool exactly-once**: repeated call ids never re-run; side-effecting tools at most once per user message.
+- **Documents**: encrypted PDFs refused before parsing; two bypasses of the size check closed.
+- **Observability**: `/ready`, token-protected `/metrics`, metrics free of user content.
+- **Bugs fixed**: a PostgreSQL deadlock on concurrent identical sends; deleted accounts recreated by a
+  still-streaming answer on the in-memory store.
+- **Staging package**: `deploy/staging/staging.env.example`, runbook, HTTPS-only `-PdashServerUrl` for release builds.
+
+### Earlier: verification and release-readiness milestone
 
 ### Added in this milestone
 - **Provider contract fixes** found by stricter scripted servers ([provider-verification.md](provider-verification.md)):
@@ -56,7 +70,7 @@ status, evidence and what each remaining gate needs: [release-readiness.md](rele
 | External plugins (GitHub, Gmail, Calendar, web search, Dash World services) | **Do not exist.** The only external-style plugin is `mock-github` inside the tests (canned data). No connector framework, OAuth flow or per-user secret store exists. |
 | Write tools | Can be declared but are refused by the executor; needs a per-call confirmation flow. |
 | Android plugin/tool UI | None. The app ignores `tool.*` events; manage plugins via the API. |
-| Android app module build | **Not built.** The Android SDK and Google Maven are unreachable from the authoring environment, so no APK exists and Robolectric/Room/lint have not run on this branch. The sync wiring files (`PrefsSyncStateStore`, `AppServices`, `ChatViewModel`) were type-checked with the real Kotlin compiler against the real core module and stubbed Android types only. `android.yml` compiles, tests, lints and builds the debug APK once Actions runs. No Room-level sync test exists yet. |
+| Android app module build | **Not built.** The account-guard wiring (`AppServices`, `PrefsLocalOwnerStore`) is type-checked only; `AuthScreen`/`AccountScreen` changes are not compiled. The Android SDK and Google Maven are unreachable from the authoring environment, so no APK exists and Robolectric/Room/lint have not run on this branch. The sync wiring files (`PrefsSyncStateStore`, `AppServices`, `ChatViewModel`) were type-checked with the real Kotlin compiler against the real core module and stubbed Android types only. `android.yml` compiles, tests, lints and builds the debug APK once Actions runs. No Room-level sync test exists yet. |
 | Document/prompt/settings sync, background sync | Not implemented. Sync runs at sign-in, app start and when connectivity returns. |
 | Production database | A local PostgreSQL 16 was used for tests. No managed database, backups, point-in-time recovery, TLS configuration or key management exists; you must provide them. |
 | Encryption of document names, emails, display names | Not done (plaintext; see [data-inventory.md](data-inventory.md)). Titles, messages and document text are encrypted. |
@@ -67,12 +81,12 @@ status, evidence and what each remaining gate needs: [release-readiness.md](rele
 | Image analysis, scanned-PDF OCR | Not available; images are validated but not read. |
 | Demo documents | Validated on device by name/type/size only. |
 | Email verification, password reset, social sign-in | Not implemented. |
-| Rate limiting across instances | In-memory, single instance only. |
+| Rate limiting across instances | Redis-backed and tested against a real Redis; no managed Redis exists yet. |
 | Official Dash World logo | Missing — temporary typographic mark (see [design.md](design.md)). |
 | Instrumented (on-device) UI tests | Compose UI tests run on the JVM with Robolectric; no emulator job yet. |
 | Release signing, Play Store listing, deployment | Not set up (by instruction: no deployment). |
 
-## Next recommended milestone: "Staging on real infrastructure"
+## Next recommended milestone: "Staging on real infrastructure" (procedure: [staging-runbook.md](staging-runbook.md))
 Everything left unverified needs things this environment does not have:
 1. **Unblock GitHub Actions** (account billing/spending limit), then watch `ci.yml` and `android.yml` go
    green. `android.yml` is the first real compile of the app module on this branch and produces the first

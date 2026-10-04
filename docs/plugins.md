@@ -88,6 +88,25 @@ or answer after their timeout, permissions revoked or the settings store failing
 result steering the model towards a write tool, and a canary proving that tool arguments and results
 reach the model only: never logs, the event stream, audit rows, exports or any database row.
 
+## Exactly-once under retries, reconnects and restarts
+
+- A call id the provider repeats in the same response (same round or a later one) is never run again; it
+  gets a `duplicate` result pointing at the earlier one.
+- Equivalent read-only calls with different ids **do** run each time: repeating a lookup is intended.
+- Tools that change things declare `idempotency: "per-message"` (registration refuses a `write` tool
+  without it). Before such a handler runs, the executor claims a ledger row keyed by a SHA-256 of user,
+  conversation, **user message**, tool and canonical (key-sorted) arguments (`tool_executions`, migration 5;
+  no arguments or results are stored). A second claim fails, so a retried provider request, a re-sent
+  message (reconnecting client), a second API instance or a server restart between the tool and the
+  provider's continuation cannot repeat the action; a claim whose outcome is unknown (crash mid-run) is
+  never re-run (at most once); if the ledger cannot be written, the action does not run. A new user
+  message may perform the same action again.
+- Provider retries ([ADR 0011](decisions/0011-provider-failures-retry-not-failover.md)) only happen before
+  a request produced output, and tools that already ran are part of the retried request's history.
+
+Tested in `apps/api/test/tool-exactly-once.test.ts` (both stores, including two servers racing on one
+database) and `provider-resilience.test.ts`.
+
 ## Providers: the same definitions, two wire formats
 
 | | OpenAI Responses API | Anthropic Messages API |

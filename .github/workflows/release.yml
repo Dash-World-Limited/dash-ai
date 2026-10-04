@@ -9,6 +9,10 @@ on:
       confirm:
         description: 'Type "release" to build a release APK'
         required: true
+      server_url:
+        description: "Optional default API address baked into the build (https://…/), e.g. your staging API. Empty: users enter it in Settings."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -41,7 +45,14 @@ jobs:
         run: ./gradlew :app:testDebugUnitTest --no-daemon
       - name: Build the release APK (unsigned)
         working-directory: apps/android
-        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+        env:
+          SERVER_URL: ${{ inputs.server_url }}
+        run: |
+          if [ -n "$SERVER_URL" ]; then
+            ./gradlew :app:assembleRelease --no-daemon --stacktrace "-PdashServerUrl=$SERVER_URL"
+          else
+            ./gradlew :app:assembleRelease --no-daemon --stacktrace
+          fi
       - name: Check the APK contains no provider keys or endpoints
         run: scripts/check-apk.sh "$(ls apps/android/app/build/outputs/apk/release/*.apk | head -n 1)"
       - name: Record the APK checksum

@@ -16,6 +16,8 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `ANTHROPIC_MODEL` | — | Claude model id from Anthropic's docs. Required with the key. |
 | `PROVIDER_TIMEOUT_MS` | `120000` | Maximum time for one provider answer. |
 | `PROVIDER_IDLE_TIMEOUT_MS` | `45000` | Maximum gap between streamed chunks. |
+| `PROVIDER_MAX_RETRIES` | `2` | Extra attempts after a retryable provider failure (429, 5xx, timeout, malformed stream) that happened **before any output**. 0 disables retries. See [ADR 0011](decisions/0011-provider-failures-retry-not-failover.md). |
+| `PROVIDER_RETRY_BASE_MS` | `500` | First retry delay; doubles per attempt with ±20 % jitter, ×4 after rate limiting, capped at 8 s and never past `PROVIDER_TIMEOUT_MS`. |
 | `MAX_OUTPUT_TOKENS` | `16000` | Output token limit per answer. Includes thinking/reasoning tokens on models that think, so leave room for both. |
 | `FAKE_STREAM_DELAY_MS` | `25` | Delay between chunks of fake answers. |
 | `DOCUMENT_EXTRACTION_TIMEOUT_MS` | `20000` | Time limit for parsing one PDF or DOCX. Parsing runs in a separate process with no secrets in its environment, a memory cap and decompression budgets (see [security.md](security.md)); a file that exceeds any limit is stored as `unsupported` with an explanation. |
@@ -24,6 +26,9 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `RATE_LIMIT_UPLOAD_PER_MINUTE` | `10` | Uploads per user per minute. |
 | `RATE_LIMIT_API_PER_MINUTE` | `240` | All requests per IP per minute. |
 | `RATE_LIMIT_SYNC_PER_MINUTE` | `60` | Sync pulls and pushes per user per minute. |
+| `RATE_LIMIT_LOGIN_PER_ACCOUNT` | `20` | Sign-in attempts per account (email) per 15 minutes, from any number of IPs. |
+| `RATE_LIMIT_BACKEND` | `memory` | `memory`: limits per API process (one instance, development). `redis`: shared by every instance through `REDIS_URL` (required with more than one instance; production warns when it is `memory`). If Redis fails, each instance uses its own limits for a few seconds at a time, then retries Redis. |
+| `REDIS_URL` | — | **Secret.** `redis://` or `rediss://` (TLS; production warns about `redis://`). Required with `RATE_LIMIT_BACKEND=redis`. Keys stored in Redis are SHA-256 hashes (no IPs, ids or emails). |
 | `MAX_CONCURRENT_STREAMS_PER_USER` | `3` | Simultaneous chat streams per user. |
 | `SESSION_TTL_DAYS` | `30` | Session token lifetime. |
 | `TRUST_PROXY` | `false` | Set `true` only behind a trusted reverse proxy. Behind a load balancer with this `false`, every client shares the balancer's IP and therefore one per-IP rate-limit bucket. |
@@ -39,6 +44,7 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `TOOL_TIMEOUT_MS` | `10000` | Default per-tool-call timeout (a tool may set a shorter one; 120 s ceiling). |
 | `TOOL_MAX_ROUNDS` | `4` | Maximum model → tool → model rounds per answer; the last round keeps the same tools but switches tool use off (tool choice "none"). |
 | `TOOL_MAX_RESULT_CHARS` | `20000` | Tool output beyond this is truncated before it reaches the model. |
+| `METRICS_TOKEN` | — | **Secret.** At least 24 characters. Enables `GET /metrics` (Prometheus text) for requests bearing this token; unset, the endpoint does not exist. |
 
 `.env.example` lists exactly these variables (a test keeps the two in sync and checks that every
 credential slot in it is empty).
@@ -49,7 +55,9 @@ Production (`NODE_ENV=production`) **refuses to start** without `DATABASE_URL` (
 `ALLOW_MEMORY_STORE=true`), without a valid `DATA_ENCRYPTION_KEY`, with a key that does not match
 stored data, or with a schema that is not migrated. Its defaults are the safe ones (`DATABASE_SSL=require`,
 `DATABASE_AUTO_MIGRATE=false`). It **warns** at start-up about deliberate opt-outs: `DATABASE_SSL=disable`
-or `no-verify`, `LOG_LEVEL=debug`/`trace`, and `PROVIDER_MODE=fake`. Set `NODE_ENV=production` in every
+or `no-verify`, `LOG_LEVEL=debug`/`trace`, `PROVIDER_MODE=fake`, `RATE_LIMIT_BACKEND=memory` (limits are
+per instance) and an unencrypted `redis://` `REDIS_URL`. A staging template with production-safe values is
+`deploy/staging/staging.env.example`; the procedure is [staging-runbook.md](staging-runbook.md). Set `NODE_ENV=production` in every
 deployment: without it the development defaults apply (no database TLS by default, migrations at
 start-up, in-memory store allowed).
 

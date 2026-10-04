@@ -8,14 +8,23 @@
 - `.env` files are git-ignored; only `apps/api/.env.example` (empty placeholders) is committed.
   `scripts/scan-secrets.mjs` and gitleaks run in CI on every push.
 - User sessions use opaque random tokens (`dash_…`, 256 bits). Only their SHA-256 hash is stored
-  server-side. `POST /v1/auth/logout` ends one session; `POST /v1/auth/logout-all` ends every session of
-  the account (lost phone, leaked token).
+  server-side. A session lives `SESSION_TTL_DAYS` (no refresh tokens, no sliding renewal); an expired one
+  is refused and deleted at the exact expiry instant, and expired rows are purged hourly.
+  `POST /v1/auth/logout` ends one session; `POST /v1/auth/logout-all` ends every session of the account
+  (lost phone, leaked token). Deleting an account removes every session and all of its data; an answer
+  still streaming on another device cannot recreate any of it.
+- Sign-in is limited per IP and per account (`RATE_LIMIT_LOGIN_PER_ACCOUNT` per 15 minutes from any IPs),
+  with limits shared across API instances through Redis (`RATE_LIMIT_BACKEND=redis`).
 - Passwords are hashed with scrypt at an OWASP-recommended cost (N=2^15, r=8, p=3) and a per-user salt.
   Verification uses the cost stored with each hash, accepted only within a bounded range, and hashes made
   with an older cost are replaced at the next successful sign-in. Login responses do not reveal whether an
   email exists, and a dummy hash evens out timing.
 - On Android the session token is encrypted with an AES-256-GCM key held in the Android Keystore;
   app data is excluded from cloud backup and device transfer (`data_extraction_rules.xml`).
+- **Shared devices**: the app keeps one account's data at a time. Signing out (online or offline) removes
+  the token and every local conversation, message, document, prompt and sync record; signing in as
+  another account removes the previous account's leftovers first; an interrupted sign-out is finished
+  at the next start (`LocalAccountGuard`, Kotlin core).
 - Release builds allow HTTPS only; cleartext is permitted in debug builds for a local dev server.
 
 ## Persistence and encryption at rest
@@ -81,6 +90,13 @@ The focused review of this milestone, with the test behind each mitigation and t
   (default 20 s), a raised OOM score and at most two at a time. Whatever happens there, the API receives a
   bounded, validated result; a file over any limit is stored as `unsupported` with an explanation.
 
+## Operational metrics
+
+`GET /metrics` (only with `METRICS_TOKEN`) exposes counts and durations: provider latency, failures and
+retries, tool outcomes, sync failures, rate-limit rejections, document rejections, database and Redis
+health. Label values must look like identifiers (provider ids, codes, statuses); anything else is
+recorded as `other`, so free text cannot leak into metrics. `GET /ready` reports up/down only.
+
 ## Privacy-safe logging
 - Fastify's logger uses custom serializers: method, path (query strings stripped), status, request
   id and timings. Headers and bodies are never logged; error messages pass through
@@ -112,7 +128,7 @@ The focused review of this milestone, with the test behind each mitigation and t
 
 ## Known limitations
 See [roadmap.md](roadmap.md#security-follow-ups) and the residual risks in
-[threat-model.md](threat-model.md). Not done: distributed rate limiting (the limiter is per-instance
-memory), email verification and password reset, a session list and an in-app "sign out everywhere"
-button, TLS termination and deployment hardening, a secrets/consent design for external plugins, a
+[threat-model.md](threat-model.md). Not done: email verification and password reset, a session list and an
+in-app "sign out everywhere" button, TLS termination and deployment (prepared in
+[staging-runbook.md](staging-runbook.md), not executed), a secrets/consent design for external plugins, a
 confirmation flow for write tools, and app-level encryption of on-device data.

@@ -86,6 +86,30 @@ describe("config", () => {
     });
   });
 
+  describe("staging template (deploy/staging/staging.env.example)", () => {
+    const template = new Map(
+      readFileSync(new URL("../../../deploy/staging/staging.env.example", import.meta.url), "utf8")
+        .split("\n")
+        .map((line) => /^([A-Z][A-Z0-9_]*)=(.*)$/.exec(line))
+        .filter((m): m is RegExpExecArray => m !== null)
+        .map((m) => [m[1]!, m[2]!] as const),
+    );
+    const secrets = ["DATABASE_URL", "DATA_ENCRYPTION_KEY", "DATA_ENCRYPTION_PREVIOUS_KEYS", "REDIS_URL", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "METRICS_TOKEN"];
+
+    it("covers every variable, holds no secret values, and is production-safe once secrets are supplied", () => {
+      expect([...template.keys()].sort()).toEqual([...ENV_KEYS].sort());
+      for (const secret of secrets) expect(template.get(secret), secret).toBe("");
+      // Placeholders the operator would supply from the secret manager (none of them real).
+      const filled = loadConfig({
+        ...Object.fromEntries(template),
+        DATABASE_URL: "postgres://placeholder", DATA_ENCRYPTION_KEY: "", REDIS_URL: "rediss://placeholder",
+        OPENAI_API_KEY: "placeholder", OPENAI_MODEL: "placeholder-model",
+      });
+      expect(configWarnings(filled)).toEqual([]);
+      expect(filled).toMatchObject({ nodeEnv: "production", providerMode: "live", trustProxy: true, database: { ssl: "require", autoMigrate: false, allowMemoryStore: false }, rateLimits: { backend: "redis" } });
+    });
+  });
+
   it("warns about deliberate insecure choices in production only", () => {
     const shared = { RATE_LIMIT_BACKEND: "redis", REDIS_URL: "rediss://placeholder" };
     const prod = (env: Record<string, string>) =>

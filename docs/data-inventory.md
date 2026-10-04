@@ -31,6 +31,10 @@ the ciphertext bound to its row so it cannot be moved to another row or user.
 | `usage_records` | No — provider, model, token counts | Plaintext | |
 | `plugin_settings` | No — plugin ids and scope ids | Plaintext | |
 | `tool_invocations` | No — plugin/tool labels (sanitised), status, sizes, a bounded call id | Plaintext | **Never** arguments or results. Model-supplied names are reduced to safe labels; provider call ids to `[A-Za-z0-9_.:-]{1,64}`. |
+| `tool_executions` | No — a SHA-256 key, user id, status, timestamps | Plaintext | At-most-once ledger for side-effecting tools. The key hashes user, conversation, user message, tool and arguments; nothing can be read back from it. Deleted with the account. |
+| Redis (rate limiting, optional) | No — SHA-256 of the limit key, a token count and a timestamp | n/a | Expires after one window (≤ 15 min). No IPs, user ids or emails in the clear. |
+| Metrics (in memory, `/metrics`) | No — counts and durations labelled with provider ids, codes and statuses | n/a | Free-text label values are replaced by `other`. |
+| Android `dash_local_owner` preferences | No — the signed-in account id and a "wipe pending" flag | App-private | Decides whose data the device holds; excluded from backup. |
 
 ## Outside the database
 

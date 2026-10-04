@@ -6,9 +6,10 @@ Dash AI is Dash World's premium, multi-model AI assistant for general conversati
 planning, professional writing, document analysis and research. This repository contains the
 native Android app, the secure backend it talks to, and the contracts shared between them.
 
-> Status: verification and release-readiness milestone (PostgreSQL persistence with encrypted
-> conversation content, optional plugin/tool layer, two-way conversation sync, hardened provider
-> adapters, isolated document parsing, threat-model review). Not deployed. The live OpenAI/Anthropic
+> Status: final production hardening before staging (PostgreSQL persistence with encrypted
+> conversation content, Redis-shared rate limits, optional plugin/tool layer with at-most-once
+> actions, two-way sync, account-scoped device data, provider retries without silent failover,
+> isolated document parsing, metrics without user content). Not deployed. The live OpenAI/Anthropic
 > APIs have **not** been exercised yet, and the Android app module has not been built on this branch.
 > See [docs/release-readiness.md](docs/release-readiness.md) for every gate and
 > [docs/roadmap.md](docs/roadmap.md) for what is real, what is mocked and what comes next.
@@ -134,6 +135,7 @@ before a runner starts (an account-level restriction), so the local results in
 - [Decisions](docs/decisions/) — architecture decision records
 - [Roadmap](docs/roadmap.md) — including every mocked or unfinished capability
 - [Release readiness](docs/release-readiness.md) — every gate, its evidence, and what it still needs
+- [Staging runbook](docs/staging-runbook.md) — prepared (not executed) staging deployment, secrets, rollback, smoke checklist
 
 ## Brand asset notice
 

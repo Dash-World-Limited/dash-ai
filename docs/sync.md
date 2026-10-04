@@ -102,6 +102,13 @@ The same inputs always give the same Room state, whatever the page sizes or retr
 - **Consistent pages on PostgreSQL:** a pull reads its changes and the matching messages in one
   `REPEATABLE READ` read-only transaction, so a page never mixes two points in time.
 
+- **The same message sent twice at once** (a reconnecting client) succeeds twice without error. This used
+  to deadlock on PostgreSQL (two code paths took the conversation and user row locks in opposite order);
+  every transaction now locks the conversation row first (`FOR NO KEY UPDATE`).
+- **Accounts on one device**: a sync for an account that is no longer the device's owner (signed out
+  meanwhile) writes nothing, and sign-out wipes again once an in-flight sync has finished
+  (`LocalAccountGuard`, see [security.md](security.md)).
+
 ## Known trade-offs
 
 - **Clock skew vs. the append-only tail.** A message written offline is appended only if its device timestamp
