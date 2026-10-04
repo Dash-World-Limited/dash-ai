@@ -181,5 +181,7 @@ class RemoteClientTest {
         assertNotNull(AuthValidation.passwordError("short", creating = true))
         assertNull(AuthValidation.passwordError("short", creating = false))
         assertNotNull(AuthValidation.nameError(" "))
+        assertNotNull(AuthValidation.nameError("Ada\u0000Lovelace"))
+        assertNull(AuthValidation.nameError("Ada Lovelace"))
     }
 }

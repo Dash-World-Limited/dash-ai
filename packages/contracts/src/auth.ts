@@ -8,7 +8,13 @@ export const Password = z.string().min(LIMITS.minPasswordChars).max(LIMITS.maxPa
 export const RegisterRequest = z.object({
   email: Email,
   password: Password,
-  displayName: z.string().trim().min(1).max(LIMITS.maxDisplayNameChars),
+  // Control characters (NUL in particular, which PostgreSQL text cannot store) are rejected up front.
+  displayName: z
+    .string()
+    .trim()
+    .min(1)
+    .max(LIMITS.maxDisplayNameChars)
+    .refine((s) => !/[\u0000-\u001f\u007f]/.test(s), "Name must not contain control characters"),
 });
 export type RegisterRequest = z.infer<typeof RegisterRequest>;
 

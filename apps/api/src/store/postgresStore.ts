@@ -1,7 +1,7 @@
 import pg from "pg";
 import type { AssistantMode, DocumentKind, DocumentStatus, MessageRole, MessageStatus, ProviderId } from "@dash-ai/contracts";
 import type { PluginSettingRecord, ToolInvocationRow } from "../tools/types.js";
-import type { DataCipher } from "../security/dataCrypto.js";
+import { DataKeyError, type DataCipher } from "../security/dataCrypto.js";
 import { assertMigrated, migrate } from "./migrate.js";
 import {
   type ConversationChange,
@@ -105,10 +105,55 @@ export class PostgresStore implements Store {
       throw err;
     }
     const store = new PostgresStore(pool, options.cipher);
+    try {
+      await store.verifyCurrentKey();
+    } catch (err) {
+      await pool.end().catch(() => undefined);
+      throw err;
+    }
     // Development convenience: finish any plaintext backfill / key rotation right away. Production runs
     // it deliberately (pnpm --filter @dash-ai/api data:encrypt) and only gets a start-up report.
     if (options.autoMigrate ?? true) await store.runEncryptionMaintenance();
     return store;
+  }
+
+  /**
+   * Refuses to run with a DATA_ENCRYPTION_KEY that does not match data already stored under its key id
+   * (for example a new key configured under the old id). Without this, the mistake would only show up
+   * as failures when that data is read, and new writes would mix two keys under one id.
+   */
+  async verifyCurrentKey(): Promise<void> {
+    const id = this.cipher.keyId;
+    const samples: Array<{ sql: string; aad: (r: Record<string, string>) => string; column: string }> = [
+      {
+        sql: "SELECT id, title_enc AS payload FROM conversations WHERE title_key_id = $1 AND title_enc IS NOT NULL LIMIT 1",
+        aad: (r) => titleAad(r.id!),
+        column: "conversation titles",
+      },
+      {
+        sql: "SELECT conversation_id, id, content_enc AS payload FROM messages WHERE content_key_id = $1 LIMIT 1",
+        aad: (r) => contentAad(r.conversation_id!, r.id!),
+        column: "messages",
+      },
+      {
+        sql: "SELECT id, user_id, extracted_text_enc AS payload FROM documents WHERE enc_key_id = $1 LIMIT 1",
+        aad: (r) => documentAad(r.user_id!, r.id!),
+        column: "documents",
+      },
+    ];
+    for (const sample of samples) {
+      const { rows } = await this.pool.query<Record<string, string> & { payload: Buffer }>(sample.sql, [id]);
+      const row = rows[0];
+      if (!row) continue;
+      try {
+        this.cipher.decrypt({ keyId: id, payload: row.payload }, sample.aad(row));
+      } catch {
+        throw new DataKeyError(
+          `DATA_ENCRYPTION_KEY does not match the ${sample.column} already encrypted under key id "${id}". ` +
+            "Restore the original key, or configure the new key under a NEW key id and keep the old one in DATA_ENCRYPTION_PREVIOUS_KEYS.",
+        );
+      }
+    }
   }
 
   /** Repeats encryptionMaintenanceBatch until nothing is left. Returns the totals changed. */

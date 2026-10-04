@@ -36,12 +36,26 @@ export async function createStore(config: AppConfig): Promise<StoreSelection> {
     if (err instanceof DataKeyError) throw new ConfigError(err.message);
     throw err;
   }
-  const store = await PostgresStore.connect({
-    connectionString: database.url,
-    cipher,
-    ssl: database.ssl,
-    poolMax: database.poolMax,
-    autoMigrate: database.autoMigrate,
-  });
-  return { store, kind: "postgres", warnings: [] };
+  let store: PostgresStore;
+  try {
+    store = await PostgresStore.connect({
+      connectionString: database.url,
+      cipher,
+      ssl: database.ssl,
+      poolMax: database.poolMax,
+      autoMigrate: database.autoMigrate,
+    });
+  } catch (err) {
+    // Key problems carry safe, actionable messages (key ids only, never key material).
+    if (err instanceof DataKeyError) throw new ConfigError(err.message);
+    throw err;
+  }
+  const status = await store.encryptionStatus();
+  const warnings =
+    status.plaintextTitles + status.plaintextMessages + status.retiredKeyRows > 0
+      ? [
+          `${status.plaintextTitles + status.plaintextMessages} plaintext row(s) and ${status.retiredKeyRows} row(s) under retired keys remain: run pnpm --filter @dash-ai/api data:encrypt.`,
+        ]
+      : [];
+  return { store, kind: "postgres", warnings };
 }

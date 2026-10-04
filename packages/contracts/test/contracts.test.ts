@@ -153,6 +153,17 @@ describe("plugin and tool schemas", () => {
   });
 });
 
+describe("registration", () => {
+  it("rejects display names with control characters (PostgreSQL cannot store NUL)", async () => {
+    const { RegisterRequest } = await import("../src/index.js");
+    const base = { email: "a@example.com", password: "correct horse battery" };
+    expect(RegisterRequest.safeParse({ ...base, displayName: "Ada Lovelace" }).success).toBe(true);
+    for (const bad of ["Ada\u0000Lovelace", "Ada\u001bLovelace", "Ada\nLovelace"]) {
+      expect(RegisterRequest.safeParse({ ...base, displayName: bad }).success).toBe(false);
+    }
+  });
+});
+
 describe("sync push schema", () => {
   const upload = (messages: unknown[]) => ({
     operations: [{ opId: "op-12345678", type: "upload", conversation: { id: "conv-12345678", title: "t", titleIsCustom: false, mode: "general", createdAt: "2026-01-01T00:00:00.000Z" }, messages }],

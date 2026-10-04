@@ -73,10 +73,12 @@ export const MessageEndEvent = z.object({ messageId: Id, finishReason: FinishRea
 export const MessageErrorEvent = z.object({ messageId: Id, error: ApiError });
 export const ConversationTitleEvent = z.object({ conversationId: Id, title: z.string() });
 /** A model asked to use a tool and the backend started running it. Informational: never carries arguments. */
-export const ToolCallEvent = z.object({ messageId: Id, callId: z.string(), plugin: z.string(), tool: z.string() });
+/** Call ids are bounded plain identifiers: the server replaces anything else from a provider. */
+const CallId = z.string().regex(/^[A-Za-z0-9_.:-]{1,64}$/);
+export const ToolCallEvent = z.object({ messageId: Id, callId: CallId, plugin: z.string(), tool: z.string() });
 export const ToolResultEvent = z.object({
   messageId: Id,
-  callId: z.string(),
+  callId: CallId,
   plugin: z.string(),
   tool: z.string(),
   status: ToolCallStatus,

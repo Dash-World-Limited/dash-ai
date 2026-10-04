@@ -24,6 +24,18 @@ export function redactSecrets(text: string): string {
   return out;
 }
 
+/**
+ * Error messages from drivers and parsers can quote the offending value (for example PostgreSQL's
+ * `invalid input syntax ...: "value"` or JSON.parse's `"...snippet..." is not valid JSON`), which could
+ * be user content. Quoted segments and key/value details are replaced before anything is logged.
+ */
+export function scrubErrorMessage(text: string): string {
+  return redactSecrets(text)
+    .replace(/"(?:[^"\\]|\\.)*"/g, '"[…]"')
+    .replace(/'(?:[^'\\]|\\.)*'/g, "'[…]'")
+    .replace(/\(([^)]*)\)=\(([^)]*)\)/g, "([…])=([…])");
+}
+
 /** Drops query strings: they could contain search terms or tokens. */
 export function sanitizeUrl(url: string | undefined): string {
   if (!url) return "";
@@ -56,7 +68,7 @@ export function loggerOptions(level: string, stream?: LogStream): FastifyServerO
           type: err.name,
           code: typeof err.code === "string" ? err.code : undefined,
           statusCode: typeof err.statusCode === "number" ? err.statusCode : undefined,
-          message: redactSecrets(String(err.message ?? "")).slice(0, 300),
+          message: scrubErrorMessage(String(err.message ?? "")).slice(0, 300),
           // Stack frames only: the first stack line repeats the message, which is already redacted above.
           stack: (err.stack ?? "").split("\n").slice(1, 8).join("\n"),
         };

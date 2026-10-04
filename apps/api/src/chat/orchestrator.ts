@@ -43,6 +43,7 @@ export interface ChatContext {
 
 /** A model may ask for many calls in one step; beyond this they are refused, not run. */
 export const MAX_TOOL_CALLS_PER_ROUND = 8;
+const SAFE_CALL_ID = /^[A-Za-z0-9_.:-]{1,64}$/;
 
 export interface PreparedTarget {
   adapter: ProviderAdapter;
@@ -341,10 +342,13 @@ async function runToolCalls(
   const results: ProviderToolResult[] = [];
   for (const [index, call] of calls.entries()) {
     const overLimit = index >= MAX_TOOL_CALLS_PER_ROUND;
+    // Call ids come from the provider. The original is replayed to that provider, but only a bounded,
+    // plain id ever reaches clients (SSE) or the audit log.
+    const callId = SAFE_CALL_ID.test(call.id) ? call.id : `call_${index + 1}`;
     const label = /^([a-z][a-z0-9-]{1,31})__([a-z][a-z0-9_]{1,47})$/.exec(call.name);
     const plugin = label?.[1] ?? "unknown";
     const tool = label?.[2] ?? "unknown";
-    sink.send({ event: "tool.call", data: { messageId, callId: call.id, plugin, tool } });
+    sink.send({ event: "tool.call", data: { messageId, callId, plugin, tool } });
     const execution = overLimit
       ? {
           callId: call.id, name: call.name, plugin, tool, status: "denied" as const, isError: true, durationMs: 0,
@@ -362,7 +366,7 @@ async function runToolCalls(
         });
     sink.send({
       event: "tool.result",
-      data: { messageId, callId: call.id, plugin: execution.plugin, tool: execution.tool, status: execution.status, durationMs: execution.durationMs },
+      data: { messageId, callId, plugin: execution.plugin, tool: execution.tool, status: execution.status, durationMs: execution.durationMs },
     });
     // Metadata only (no arguments, no results), for the user's own tool-activity view and export.
     ctx.log.info(
@@ -374,7 +378,7 @@ async function runToolCalls(
         userId: prepared.userId,
         conversationId: prepared.conversation.id,
         messageId,
-        callId: call.id.slice(0, 128),
+        callId,
         provider: adapter.id,
         plugin: execution.plugin,
         tool: execution.tool,

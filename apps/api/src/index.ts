@@ -1,5 +1,6 @@
 import { buildApp } from "./app.js";
 import { ConfigError, loadConfig } from "./config.js";
+import { startupErrorText } from "./startupError.js";
 import { createStore } from "./store/factory.js";
 
 async function main(): Promise<void> {
@@ -22,7 +23,7 @@ async function main(): Promise<void> {
       process.stderr.write(`${err.message}\n`);
       process.exit(1);
     }
-    process.stderr.write(`Could not start the data store: ${err instanceof Error ? err.message : "unknown error"}\n`);
+    process.stderr.write(`Could not start the data store: ${startupErrorText(err, config.database.url)}\n`);
     process.exit(1);
   }
 
@@ -54,3 +55,4 @@ async function main(): Promise<void> {
 }
 
 void main();
+

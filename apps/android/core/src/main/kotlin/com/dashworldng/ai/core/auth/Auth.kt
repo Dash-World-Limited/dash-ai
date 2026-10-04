@@ -30,6 +30,7 @@ object AuthValidation {
     fun nameError(value: String): String? = when {
         value.isBlank() -> "Enter your name."
         value.trim().length > Limits.MAX_DISPLAY_NAME_CHARS -> "Names can be up to ${Limits.MAX_DISPLAY_NAME_CHARS} characters."
+        value.trim().any { it.code < 0x20 || it.code == 0x7f } -> "Names can't contain control characters."
         else -> null
     }
 }

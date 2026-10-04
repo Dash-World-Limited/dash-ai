@@ -25,9 +25,9 @@ async function main(): Promise<void> {
     const changed = await store.runEncryptionMaintenance();
     const after = await store.encryptionStatus();
     process.stdout.write(
-      `Before: ${before.plaintextTitles} plaintext titles, ${before.plaintextMessages} plaintext messages, ${before.retiredKeyRows} rows under retired keys.\\n` +
-        `Changed: ${changed.titles} titles, ${changed.messages} messages, ${changed.documents} documents.\\n` +
-        `After: ${after.plaintextTitles} plaintext titles, ${after.plaintextMessages} plaintext messages, ${after.retiredKeyRows} rows under retired keys.\\n`,
+      `Before: ${before.plaintextTitles} plaintext titles, ${before.plaintextMessages} plaintext messages, ${before.retiredKeyRows} rows under retired keys.\n` +
+        `Changed: ${changed.titles} titles, ${changed.messages} messages, ${changed.documents} documents.\n` +
+        `After: ${after.plaintextTitles} plaintext titles, ${after.plaintextMessages} plaintext messages, ${after.retiredKeyRows} rows under retired keys.\n`,
     );
   } finally {
     await store.close();
@@ -36,6 +36,6 @@ async function main(): Promise<void> {
 
 main().catch((err: unknown) => {
   // Never print raw driver errors: they can carry connection details.
-  process.stderr.write(`${err instanceof ConfigError ? err.message : `Encryption maintenance failed (${err instanceof Error ? err.name : "unknown"}).`}\\n`);
+  process.stderr.write(`${err instanceof ConfigError ? err.message : `Encryption maintenance failed (${err instanceof Error ? err.name : "unknown"}).`}\n`);
   process.exit(1);
 });

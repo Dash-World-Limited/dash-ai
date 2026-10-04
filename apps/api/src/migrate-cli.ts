@@ -1,5 +1,6 @@
 import pg from "pg";
 import { ConfigError, loadConfig } from "./config.js";
+import { startupErrorText } from "./startupError.js";
 import { migrate } from "./store/migrate.js";
 
 /** `pnpm --filter @dash-ai/api migrate` — applies pending database migrations and exits. */
@@ -24,6 +25,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  process.stderr.write(`${err instanceof Error ? err.message : "Migration failed"}\n`);
+  process.stderr.write(`Migration failed: ${startupErrorText(err, process.env.DATABASE_URL)}\n`);
   process.exit(1);
 });

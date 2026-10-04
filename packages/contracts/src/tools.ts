@@ -72,7 +72,7 @@ export type UpdatePluginRequest = z.infer<typeof UpdatePluginRequest>;
 export const ToolActivity = z.object({
   conversationId: Id,
   messageId: Id,
-  callId: z.string(),
+  callId: z.string().regex(/^[A-Za-z0-9_.:-]{1,64}$/),
   provider: ProviderId,
   plugin: z.string(),
   tool: z.string(),
