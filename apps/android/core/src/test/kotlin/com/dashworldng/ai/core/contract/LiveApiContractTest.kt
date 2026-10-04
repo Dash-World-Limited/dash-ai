@@ -22,6 +22,9 @@ import com.dashworldng.ai.core.stream.ChatStreamEvent
 import com.dashworldng.ai.core.sync.ConversationSyncService
 import com.dashworldng.ai.core.sync.DashApiSyncRemote
 import com.dashworldng.ai.core.sync.InMemorySyncStateStore
+import com.dashworldng.ai.core.presentation.ConnectionState
+import com.dashworldng.ai.core.presentation.ToolConnections
+import com.dashworldng.ai.core.tools.ToolsService
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.delay
@@ -217,6 +220,25 @@ class LiveApiContractTest {
         // Retrying the Claude answer with OpenAI replaced it: the second question's answer now comes from OpenAI.
         val secondAnswer = laptop[laptop.indexOfFirst { it.content == "Second question" } + 1]
         assertEquals(ProviderId.OPENAI, secondAnswer.provider)
+    }
+
+    @Test
+    fun `tools and connections reflect the real registry and the user's choice`() = runBlocking<Unit> {
+        val tools = ToolsService { client }
+        val before = tools.plugins()
+        val demo = before.plugins.single { it.id == "dash-demo" }
+        // Plugins are off until the user turns them on; only real registry entries are listed.
+        assertEquals(false, demo.enabled)
+        val expectedOff = if (before.toolsEnabled) ConnectionState.AVAILABLE else ConnectionState.DISABLED
+        assertEquals(expectedOff, ToolConnections.from(demo, before.toolsEnabled).state)
+        if (!before.toolsEnabled) return@runBlocking
+
+        val on = tools.setEnabled("dash-demo", true)
+        assertEquals(listOf("demo:read"), on.grantedScopes)
+        assertEquals(ConnectionState.CONNECTED, ToolConnections.from(on, true).state)
+        val off = tools.setEnabled("dash-demo", false)
+        assertEquals(ConnectionState.AVAILABLE, ToolConnections.from(off, true).state)
+        assertTrue(tools.activity().activity.isEmpty())
     }
 
     @Test

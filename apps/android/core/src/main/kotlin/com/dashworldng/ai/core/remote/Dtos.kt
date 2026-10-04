@@ -233,6 +233,19 @@ data class MessageRecoveryDto(val attempts: Int, val alternatives: List<String> 
 data class MessageErrorDto(val messageId: String, val error: ApiErrorDto, val recovery: MessageRecoveryDto? = null)
 
 @Serializable
+data class ToolCallDto(val messageId: String, val callId: String, val plugin: String, val tool: String)
+
+@Serializable
+data class ToolResultDto(
+    val messageId: String,
+    val callId: String,
+    val plugin: String,
+    val tool: String,
+    val status: String,
+    val durationMs: Long,
+)
+
+@Serializable
 data class ConversationTitleDto(val conversationId: String, val title: String)
 
 @Serializable
@@ -262,3 +275,61 @@ data class DocumentResponseDto(
 
 @Serializable
 data class DocumentListDto(val documents: List<DocumentResponseDto>)
+
+// ---- Plugins and tools --------------------------------------------------------------------------
+
+@Serializable
+data class PluginScopeDto(val id: String, val description: String, val risk: String)
+
+@Serializable
+data class PluginToolDto(
+    val name: String,
+    val qualifiedName: String,
+    val description: String,
+    val scope: String,
+    val risk: String,
+    val executable: Boolean,
+)
+
+@Serializable
+data class PluginDto(
+    val id: String,
+    val name: String,
+    val description: String,
+    val version: String,
+    val kind: String,
+    val scopes: List<PluginScopeDto>,
+    val tools: List<PluginToolDto>,
+    val enabled: Boolean,
+    val grantedScopes: List<String>,
+)
+
+@Serializable
+data class PluginsResponseDto(val toolsEnabled: Boolean, val plugins: List<PluginDto>)
+
+/** `grantedScopes` is left out (never sent as null) so the server applies its read-only default. */
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+@Serializable
+data class UpdatePluginRequestDto(
+    val enabled: Boolean,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val grantedScopes: List<String>? = null,
+)
+
+/** Audit metadata for one tool call. The API never includes arguments or results. */
+@Serializable
+data class ToolActivityDto(
+    val conversationId: String,
+    val messageId: String,
+    val callId: String,
+    val provider: String,
+    val plugin: String,
+    val tool: String,
+    val status: String,
+    val durationMs: Long,
+    val argBytes: Long,
+    val resultChars: Long,
+    val createdAt: String,
+)
+
+@Serializable
+data class ToolActivityResponseDto(val activity: List<ToolActivityDto>)

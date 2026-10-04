@@ -69,6 +69,8 @@ class DemoChatGateway(
                                     "Demo Mode simulated a ${target.provider.displayName} error so you can see how failures look.",
                                     retryable = true,
                                 ),
+                                attempts = 1,
+                                alternatives = listOf(target.provider.other),
                             ),
                         )
                         return@launch

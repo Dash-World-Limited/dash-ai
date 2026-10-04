@@ -25,6 +25,7 @@ import retrofit2.http.GET
 import retrofit2.http.Multipart
 import retrofit2.http.PATCH
 import retrofit2.http.POST
+import retrofit2.http.PUT
 import retrofit2.http.Part
 import retrofit2.http.Path
 import java.io.IOException
@@ -80,6 +81,12 @@ interface DashApiService {
     @GET("v1/documents") suspend fun documents(): DocumentListDto
 
     @DELETE("v1/documents/{id}") suspend fun deleteDocument(@Path("id") id: String): retrofit2.Response<Unit>
+
+    @GET("v1/plugins") suspend fun plugins(): PluginsResponseDto
+
+    @PUT("v1/plugins/{id}") suspend fun updatePlugin(@Path("id") id: String, @Body body: UpdatePluginRequestDto): PluginDto
+
+    @GET("v1/tools/activity") suspend fun toolActivity(): ToolActivityResponseDto
 }
 
 /**

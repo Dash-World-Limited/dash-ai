@@ -2,6 +2,7 @@ package com.dashworldng.ai.core.stream
 
 import com.dashworldng.ai.core.model.FinishReason
 import com.dashworldng.ai.core.model.ProviderId
+import com.dashworldng.ai.core.model.ToolCallStatus
 
 /** A user-safe error from the API or a provider. */
 data class ApiError(val code: String, val message: String, val retryable: Boolean) {
@@ -49,6 +50,19 @@ sealed interface ChatStreamEvent {
         val error: ApiError,
         val attempts: Int = 1,
         val alternatives: List<ProviderId> = emptyList(),
+    ) : ChatStreamEvent
+
+    /** The assistant started using a tool (names only; arguments are never sent to the app). */
+    data class ToolCalled(val messageId: String, val callId: String, val plugin: String, val tool: String) : ChatStreamEvent
+
+    /** A tool call finished. Results are never sent to the app, only the outcome. */
+    data class ToolFinished(
+        val messageId: String,
+        val callId: String,
+        val plugin: String,
+        val tool: String,
+        val status: ToolCallStatus,
+        val durationMs: Long,
     ) : ChatStreamEvent
 
     data class TitleChanged(val conversationId: String, val title: String) : ChatStreamEvent

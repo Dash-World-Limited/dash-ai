@@ -12,6 +12,11 @@ import com.dashworldng.ai.core.model.FinishReason
 import com.dashworldng.ai.core.model.MessageRole
 import com.dashworldng.ai.core.model.ModelChoice
 import com.dashworldng.ai.core.model.ProviderId
+import com.dashworldng.ai.core.model.ToolCallStatus
+import com.dashworldng.ai.core.presentation.ConnectionState
+import com.dashworldng.ai.core.presentation.ToolConnections
+import com.dashworldng.ai.core.remote.PluginsResponseDto
+import com.dashworldng.ai.core.remote.ToolActivityResponseDto
 import com.dashworldng.ai.core.remote.AuthResponseDto
 import com.dashworldng.ai.core.remote.ChatStreamRequestDto
 import com.dashworldng.ai.core.remote.ConversationDetailDto
@@ -36,6 +41,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
@@ -108,16 +114,45 @@ class ContractFixturesTest {
     }
 
     @Test
-    fun `tool events from the server are ignored and the answer text is unaffected`() {
+    fun `tool events decode into names and outcomes only and the answer text is unaffected`() {
         val raw = SseParser.parseAll(Fixtures.text("chat-stream-tools.sse"))
         assertEquals(listOf("tool.call", "tool.result"), raw.map { it.event }.filter { it.startsWith("tool.") })
         val events = raw.mapNotNull { StreamEventDecoder.decode(it, strict) }
-        // start + 3 deltas + end + stream end; the two tool events are forward-compatibly dropped.
-        assertEquals(6, events.size)
+        // start + 3 deltas + tool call + tool result + end + stream end.
+        assertEquals(8, events.size)
         assertEquals("Let me check.\n\nIt has 3 words.", events.filterIsInstance<ChatStreamEvent.Delta>().joinToString("") { it.text })
-        val end = assertIs<ChatStreamEvent.MessageEnded>(events[4])
+        val call = events.filterIsInstance<ChatStreamEvent.ToolCalled>().single()
+        assertEquals(listOf("call_1", "dash-demo", "text_stats"), listOf(call.callId, call.plugin, call.tool))
+        val result = events.filterIsInstance<ChatStreamEvent.ToolFinished>().single()
+        assertEquals(ToolCallStatus.OK, result.status)
+        assertEquals(3L, result.durationMs)
+        val end = assertIs<ChatStreamEvent.MessageEnded>(events[6])
         assertEquals(FinishReason.STOP, end.finishReason)
-        assertIs<ChatStreamEvent.Ended>(events[5])
+        assertIs<ChatStreamEvent.Ended>(events[7])
+    }
+
+    @Test
+    fun `plugin registry and tool activity fixtures decode strictly`() {
+        val plugins = strict.decodeFromString(PluginsResponseDto.serializer(), Fixtures.text("plugins-response.json"))
+        assertTrue(plugins.toolsEnabled)
+        assertEquals(listOf("dash-demo", "example-service"), plugins.plugins.map { it.id })
+        val activity = strict.decodeFromString(ToolActivityResponseDto.serializer(), Fixtures.text("tool-activity.json")).activity.single()
+        assertEquals("text_stats", activity.tool)
+        assertEquals("ok", activity.status)
+        // The registry fixture maps onto honest connection states.
+        val connections = ToolConnections.from(plugins)
+        assertEquals(ConnectionState.CONNECTED, connections[0].state)
+        // A plugin whose only tool is not runnable on this server is never offered as available.
+        assertEquals(ConnectionState.DISABLED, connections[1].state)
+        assertFalse(connections[1].canToggle)
+    }
+
+    @Test
+    fun `every server tool status maps to a known outcome`() {
+        for (wire in listOf("ok", "duplicate", "invalid_arguments", "denied", "unknown_tool", "timeout", "error", "cancelled")) {
+            assertEquals(wire, ToolCallStatus.fromWire(wire).wire)
+        }
+        assertEquals(ToolCallStatus.ERROR, ToolCallStatus.fromWire("something_new"))
     }
 
     @Test
