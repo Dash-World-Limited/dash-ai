@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { crc32, deflateRawSync, deflateSync } from "node:zlib";
 import { DocumentResponse } from "@dash-ai/contracts";
 import type { FastifyInstance } from "fastify";
@@ -106,6 +107,66 @@ const LINE = "BT /F1 12 Tf 72 712 Td (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) 
 const pageContent = (bytes: number) => Buffer.from(LINE.repeat(Math.ceil(bytes / LINE.length)));
 
 const MB = 1024 * 1024;
+
+const u16 = (n: number) => Buffer.from([n & 0xff, (n >> 8) & 0xff]);
+
+/** RC4, for building a genuinely encrypted test PDF (the PDF standard security handler, revision 2). */
+function rc4(key: Buffer, data: Buffer): Buffer {
+  const S = Array.from({ length: 256 }, (_, i) => i);
+  for (let i = 0, j = 0; i < 256; i++) {
+    j = (j + S[i]! + key[i % key.length]!) & 0xff;
+    [S[i], S[j]] = [S[j]!, S[i]!];
+  }
+  const out = Buffer.alloc(data.length);
+  for (let n = 0, i = 0, j = 0; n < data.length; n++) {
+    i = (i + 1) & 0xff;
+    j = (j + S[i]!) & 0xff;
+    [S[i], S[j]] = [S[j]!, S[i]!];
+    out[n] = data[n]! ^ S[(S[i]! + S[j]!) & 0xff]!;
+  }
+  return out;
+}
+
+/**
+ * A one-page PDF encrypted with the standard security handler (V1, R2, 40-bit RC4) and an empty
+ * user password, as many real "protected" PDFs are: viewers and parsers open it without asking.
+ */
+function encryptedPdf(content: Buffer, options: { compressed?: boolean } = {}): Buffer {
+  const md5 = (...parts: Buffer[]) => createHash("md5").update(Buffer.concat(parts)).digest();
+  const PAD = Buffer.from("28BF4E5E4E758A4164004E56FFFA01082E2E00B6D0683E802F0CA9FE6453697A", "hex");
+  const id = Buffer.from("00112233445566778899aabbccddeeff", "hex");
+  const P = -44;
+  const ownerKey = md5(PAD).subarray(0, 5);
+  const O = rc4(ownerKey, PAD);
+  const pBytes = Buffer.alloc(4);
+  pBytes.writeInt32LE(P);
+  const key = md5(PAD, O, pBytes, id).subarray(0, 5);
+  const U = rc4(key, PAD);
+  const objectKey = (n: number) => md5(key, Buffer.from([n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, 0, 0])).subarray(0, 10);
+  const body = rc4(objectKey(4), content);
+  const objects: Buffer[] = [
+    Buffer.from("<< /Type /Catalog /Pages 2 0 R >>"),
+    Buffer.from("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+    Buffer.from("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>"),
+    Buffer.concat([Buffer.from(`<< /Length ${body.length}${options.compressed ? " /Filter /FlateDecode" : ""} >>\nstream\n`), body, Buffer.from("\nendstream")]),
+    Buffer.from("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
+    Buffer.from(`<< /Filter /Standard /V 1 /R 2 /O <${O.toString("hex")}> /U <${U.toString("hex")}> /P ${P} >>`),
+  ];
+  const parts: Buffer[] = [Buffer.from("%PDF-1.4\n")];
+  const offsets: number[] = [];
+  let length = parts[0]!.length;
+  objects.forEach((o, i) => {
+    offsets.push(length);
+    const chunk = Buffer.concat([Buffer.from(`${i + 1} 0 obj\n`), o, Buffer.from("\nendobj\n")]);
+    parts.push(chunk);
+    length += chunk.length;
+  });
+  parts.push(Buffer.from(
+    `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("")}` +
+      `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R /Encrypt 6 0 R /ID [<${id.toString("hex")}> <${id.toString("hex")}>] >>\nstartxref\n${length}\n%%EOF\n`,
+  ));
+  return Buffer.concat(parts);
+}
 const OPTIONS = { timeoutMs: 20_000 };
 
 describe("DOCX decompression budget", () => {
@@ -177,9 +238,54 @@ describe("PDF decompression budget", () => {
     expect(await checkPdfBudget(pdf(corrupt, { filter: "none", contentDictionary: "/Filter /FlateDecode" }))).toEqual({ ok: false, reason: "too_large" });
   });
 
-  it("a short filter name inside binary stream data is not mistaken for a filter", async () => {
-    const binary = Buffer.concat([Buffer.from("\u0000\u0001/RL /LZWDecode/Filter 9 0 R\u0002"), Buffer.alloc(64, 7)]);
+  it("short names inside binary stream data are not mistaken for filters; long ones are treated conservatively", async () => {
+    const binary = Buffer.concat([Buffer.from("\u0000\u0001/RL /AHx /Fl /A85\u0002"), Buffer.alloc(64, 7)]);
     expect(await checkPdfBudget(pdf(binary, { filter: "none" }))).toEqual({ ok: true });
+    // A full filter name anywhere (it cannot occur by chance in binary data) refuses the file: the safe direction.
+    const named = Buffer.concat([Buffer.from("\u0000/LZWDecode\u0002"), Buffer.alloc(64, 7)]);
+    expect(await checkPdfBudget(pdf(named, { filter: "none" }))).toEqual({ ok: false, reason: "unsupported" });
+  });
+
+  it("name escapes (#xx) cannot disguise refused filters or encryption", async () => {
+    expect(await checkPdfBudget(pdf(pageContent(1024), { filter: "/Filter /LZWDec#6fde" }))).toEqual({ ok: false, reason: "unsupported" });
+    expect(await checkPdfBudget(pdf(pageContent(1024), { filter: "/Filter [/ASCIIHexDecode /Fl#61teDecode]" }))).toEqual({ ok: false, reason: "unsupported" });
+    expect(await checkPdfBudget(pdf(pageContent(1024), { extraObjects: ["<< /Encr#79pt 1 0 R >>"] }))).toEqual({ ok: false, reason: "encrypted" });
+  });
+
+  it("an `endstream` hidden inside compressed data cannot shorten what is measured", async () => {
+    // A stored (uncompressed) deflate block holding the bytes "endstream", then the bomb.
+    const big = pageContent(PDF_LIMITS.maxContentBytes + MB);
+    const decoy = Buffer.from("\nendstream\nendobj\n");
+    const zlibStream = deflateSync(Buffer.concat([decoy, big]), { level: 9, strategy: 0 });
+    // deflate may compress the decoy; force it to appear literally by prefixing a stored block.
+    const stored = Buffer.concat([Buffer.from([0x78, 0x01]), Buffer.from([0x00]), u16(decoy.length), u16(~decoy.length & 0xffff), decoy, deflateRawSync(big).subarray(0)]);
+    for (const body of [zlibStream, stored]) {
+      expect(await checkPdfBudget(pdf(body, { filter: "none", contentDictionary: "/Filter /FlateDecode" }))).toEqual({ ok: false, reason: "too_large" });
+    }
+  });
+});
+
+describe("encrypted PDFs", () => {
+  it("a real RC4-encrypted PDF with an empty user password opens in the parser, so it is refused before parsing", async () => {
+    const small = encryptedPdf(Buffer.from("BT /F1 12 Tf 72 712 Td (Secret quarterly plan) Tj ET"));
+    // The fixture is genuine: the PDF library decrypts it without a password.
+    const { extractText: parse } = await import("unpdf");
+    expect((await parse(new Uint8Array(small), { mergePages: true })).text).toContain("Secret quarterly plan");
+    // The decompression check cannot see inside it, so it refuses it instead.
+    expect(await checkPdfBudget(small)).toEqual({ ok: false, reason: "encrypted" });
+    const result = await extractText("pdf", small, OPTIONS);
+    expect(result).toMatchObject({ status: "unsupported", text: "" });
+    expect(result.statusDetail).toMatch(/encrypted or password-protected/);
+  });
+
+  it("an encrypted Flate bomb, which the size check alone could not measure, never reaches the parser", async () => {
+    const bomb = encryptedPdf(deflateSync(pageContent(64 * MB), { level: 9 }), { compressed: true });
+    expect(bomb.length).toBeLessThan(300 * 1024);
+    const started = Date.now();
+    const result = await extractText("pdf", bomb, OPTIONS);
+    expect(result).toMatchObject({ status: "unsupported", text: "" });
+    expect(result.statusDetail).toMatch(/encrypted/);
+    expect(Date.now() - started).toBeLessThan(5_000);
   });
 });
 
@@ -198,7 +304,7 @@ describe("isolated extraction process", () => {
       extractText("docx", docx(documentXml(64 * MB)), OPTIONS),
       extractText("pdf", pdf(pageContent(64 * MB)), OPTIONS),
     ]);
-    for (const r of results) expect(r).toEqual({ status: "unsupported", statusDetail: TOO_LARGE_DETAIL, text: "", pageCount: null });
+    for (const r of results) expect(r).toMatchObject({ status: "unsupported", statusDetail: TOO_LARGE_DETAIL, text: "", pageCount: null, reason: "too_large" });
     expect(Date.now() - started).toBeLessThan(10_000);
   });
 

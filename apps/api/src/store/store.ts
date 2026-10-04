@@ -132,6 +132,8 @@ export interface RenameResult {
  * (test/store.contract.test.ts).
  */
 export interface Store {
+  /** True when the store can serve requests (PostgreSQL: a trivial query succeeds). */
+  ping(): Promise<boolean>;
   createUser(user: UserRecord): Promise<boolean>;
   findUserByEmail(email: string): Promise<UserRecord | undefined>;
   findUserById(id: string): Promise<UserRecord | undefined>;

@@ -125,9 +125,22 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
 
   // Broad abuse protection for every route, keyed by client IP.
   app.addHook("onRequest", async (request) => {
-    if (request.url === "/health") return;
+    // Load-balancer probes are not rate limited (they come from one address, very often).
+    if (request.url === "/health" || request.url === "/ready") return;
     const decision = await rateLimits.consume("api", `api:${request.ip}`);
     if (!decision.allowed) throw tooMany(decision.retryAfterMs);
+  });
+
+  // Sync outcomes by operation and status class only (never bodies, ids or user data).
+  app.addHook("onResponse", async (request, reply) => {
+    const route = request.routeOptions.url;
+    const operation = route === "/v1/sync/conversations" ? "pull" : route === "/v1/sync/push" ? "push" : undefined;
+    if (!operation) return;
+    metrics.syncRequests.inc({ operation });
+    const status = reply.statusCode;
+    if (status >= 400) {
+      metrics.syncFailures.inc({ operation, code: status === 429 ? "rate_limited" : status === 401 ? "unauthorized" : status >= 500 ? "server_error" : "client_error" });
+    }
   });
 
   app.addHook("onSend", async (_request, reply, payload) => {

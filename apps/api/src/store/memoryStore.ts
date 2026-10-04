@@ -52,6 +52,10 @@ export class MemoryStore implements Store {
     return c && !c.deleted ? c : undefined;
   }
 
+  async ping(): Promise<boolean> {
+    return true;
+  }
+
   async createUser(user: UserRecord): Promise<boolean> {
     const email = user.email.toLowerCase();
     if (this.usersByEmail.has(email)) return false;
@@ -95,7 +99,17 @@ export class MemoryStore implements Store {
     for (const [key, e] of this.toolExecutions) if (e.userId === userId) this.toolExecutions.delete(key);
   }
 
+  /**
+   * Mirrors PostgreSQL's foreign keys: rows owned by a user that no longer exists are never written.
+   * Without this, an answer still streaming when its account was deleted recreated that account's
+   * conversation here.
+   */
+  private owned(userId: string): boolean {
+    return this.users.has(userId);
+  }
+
   async createSession(session: SessionRecord): Promise<void> {
+    if (!this.owned(session.userId)) return;
     this.sessions.set(session.tokenHash, session);
   }
 
@@ -139,6 +153,7 @@ export class MemoryStore implements Store {
   }
 
   async saveConversation(conversation: ConversationRecord): Promise<void> {
+    if (!this.owned(conversation.userId)) return;
     const existing = this.conversations.get(conversation.id);
     if (existing && (existing.deleted || existing.record.userId !== conversation.userId)) return;
     const stored = existing ?? { record: conversation, seq: 0, titleRev: 0, deleted: false };
@@ -189,6 +204,7 @@ export class MemoryStore implements Store {
   }
 
   async pushConversation(userId: string, input: PushConversationInput): Promise<PushConversationResult> {
+    if (!this.owned(userId)) return { status: "rejected", appended: 0, skipped: input.messages.length };
     const existing = this.conversations.get(input.conversation.id);
     if (existing && existing.record.userId !== userId) return { status: "rejected", appended: 0, skipped: input.messages.length };
     if (existing?.deleted) return { status: "deleted", appended: 0, skipped: input.messages.length };
@@ -261,6 +277,7 @@ export class MemoryStore implements Store {
   }
 
   async saveDocument(document: DocumentRecord): Promise<void> {
+    if (!this.owned(document.userId)) return;
     this.documents.set(document.id, { ...document });
   }
 
@@ -284,6 +301,7 @@ export class MemoryStore implements Store {
   }
 
   async recordUsage(row: UsageRow): Promise<void> {
+    if (!this.owned(row.userId)) return;
     this.usage.push({ ...row });
   }
 
@@ -296,12 +314,14 @@ export class MemoryStore implements Store {
   }
 
   async savePluginSetting(userId: string, setting: PluginSettingRecord): Promise<void> {
+    if (!this.owned(userId)) return;
     const map = this.pluginSettings.get(userId) ?? new Map<string, PluginSettingRecord>();
     map.set(setting.pluginId, { ...setting, grantedScopes: [...setting.grantedScopes] });
     this.pluginSettings.set(userId, map);
   }
 
   async recordToolInvocation(row: ToolInvocationRow): Promise<void> {
+    if (!this.owned(row.userId)) return;
     this.toolInvocations.push({ ...row });
   }
 

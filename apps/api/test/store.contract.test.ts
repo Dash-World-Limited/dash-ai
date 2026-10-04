@@ -78,6 +78,25 @@ function storeContract(name: string, make: () => Promise<Store>, teardown?: () =
       expect(await store.deleteSessionsForUser(a.id)).toBe(0);
     });
 
+    it("never writes rows for an account that no longer exists", async () => {
+      const u = user();
+      await store.createUser(u);
+      await store.deleteUserData(u.id);
+      const c = conversation(u.id);
+      const attempts: Array<() => Promise<unknown>> = [
+        () => store.saveConversation(c),
+        () => store.createSession({ tokenHash: uid("h"), userId: u.id, createdAt: t(), expiresAt: t(1000) }),
+        () => store.saveDocument(document(u.id)),
+        () => store.recordUsage({ userId: u.id, conversationId: c.id, messageId: uid("m"), provider: "openai", model: "m", demo: false, inputTokens: 1, outputTokens: 1, createdAt: t() }),
+      ];
+      // PostgreSQL refuses with a foreign-key error; the memory store ignores the write. Either way: no rows.
+      for (const attempt of attempts) await attempt().catch(() => undefined);
+      expect(await store.getConversation(u.id, c.id)).toBeUndefined();
+      expect(await store.listConversations(u.id)).toEqual([]);
+      expect(await store.listDocuments(u.id)).toEqual([]);
+      expect(await store.listUsage(u.id)).toEqual([]);
+    });
+
     it("replaces a password hash only if it has not changed since it was read", async () => {
       const u = user({ passwordHash: "scrypt$old" });
       await store.createUser(u);

@@ -219,6 +219,15 @@ export class PostgresStore implements Store {
 
   // ---- users and sessions ----------------------------------------------------------------------
 
+  async ping(): Promise<boolean> {
+    try {
+      await this.pool.query("SELECT 1");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async createUser(user: UserRecord): Promise<boolean> {
     const res = await this.pool.query(
       `INSERT INTO users (id, email, display_name, password_hash, created_at) VALUES ($1,$2,$3,$4,$5)

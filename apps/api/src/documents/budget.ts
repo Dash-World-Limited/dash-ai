@@ -25,7 +25,10 @@ export const PDF_LIMITS = {
   maxStreams: 20_000,
 } as const;
 
-export type BudgetResult = { ok: true } | { ok: false; reason: "too_large" | "unsupported" };
+export type BudgetResult = { ok: true } | { ok: false; reason: "too_large" | "unsupported" | "encrypted" };
+
+/** PDF names may spell any character as #xx (`/Encr#79pt` is `/Encrypt`); parsers decode them, so checks must too. */
+const decodePdfNames = (text: string): string => text.replace(/#([0-9A-Fa-f]{2})/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16)));
 
 /**
  * Streams `data` through native zlib and counts the output, stopping past `cap`. Returns how much
@@ -108,52 +111,52 @@ export async function checkDocxBudget(buf: Buffer): Promise<BudgetResult> {
 }
 
 /**
- * Bounds the zlib data in a PDF. Every `stream … endstream` body is measured whatever its
- * dictionary claims (so an indirect /Filter cannot hide Flate data); streams marked as images get
- * a larger allowance because text extraction does not decode them. Filters this check cannot see
- * through are refused: LZW and RunLength (no native bound), ASCII filters chained before Flate,
- * and indirect /Filter references. (Inline images inside page content are bounded by the content
- * allowance and the extraction process's limits.) Encrypted PDFs cannot be measured here; they rely on the
- * extraction process's time and memory limits alone.
+ * Bounds the zlib data in a PDF before any parser sees it.
+ *
+ * - Encrypted PDFs (an /Encrypt entry) are refused: their streams are ciphertext, so their size
+ *   cannot be measured here, and a parser would decrypt and decompress them anyway (PDFs with an
+ *   empty user password open without one).
+ * - Filters this check cannot see through are refused: LZW and RunLength (no native bound), ASCII
+ *   filters chained before Flate, and indirect /Filter references.
+ * - Every stream is measured from where it starts to the end of the file: zlib stops at the real end
+ *   of the compressed data, so neither /Length nor an `endstream` hidden inside the data can shorten
+ *   what is measured. Streams marked as images get a separate, larger allowance (text extraction
+ *   does not decode them).
+ *
+ * These checks are names-escape aware and read the whole file (long names do not occur by chance
+ * in binary data). The extraction process's time and memory limits remain the final boundary.
  */
 export async function checkPdfBudget(buf: Buffer): Promise<BudgetResult> {
   const text = buf.toString("latin1");
-  // Pass 1: locate stream bodies, so the filter checks below only read object syntax, never
-  // binary stream data (where a short name like "/RL" occurs by chance).
-  const bodies: { start: number; end: number; dictionary: string }[] = [];
-  const outside: string[] = [];
-  const marker = /stream\r?\n/g;
-  let last = 0;
-  for (let m = marker.exec(text); m; m = marker.exec(text)) {
-    if (m.index > 0 && /[a-z]/i.test(text[m.index - 1]!)) continue; // the tail of "endstream"
-    if (bodies.length >= PDF_LIMITS.maxStreams) return { ok: false, reason: "too_large" };
-    const start = m.index + m[0].length;
-    const end = text.indexOf("endstream", start);
-    if (end < 0) break;
-    const before = text.slice(Math.max(last, m.index - 2_048), m.index);
-    bodies.push({ start, end, dictionary: before.slice(Math.max(0, before.lastIndexOf(" obj"))) });
-    outside.push(text.slice(last, m.index));
-    last = end;
-    marker.lastIndex = end + "endstream".length;
-  }
-  outside.push(text.slice(last));
-  const syntax = outside.join("\n");
-  if (/\/(LZWDecode|RunLengthDecode)\b/.test(syntax)) return { ok: false, reason: "unsupported" };
-  if (/\/Filter\s*\d+\s+\d+\s+R\b/.test(syntax)) return { ok: false, reason: "unsupported" };
-  if (/\/Filter\s*\[[^\]]*\/(ASCIIHexDecode|ASCII85Decode|AHx|A85)\b[^\]]*\/(FlateDecode|Fl)\b/.test(syntax)) {
+  const names = decodePdfNames(text);
+  if (/\/Encrypt(?![A-Za-z0-9])/.test(names)) return { ok: false, reason: "encrypted" };
+  if (/\/(LZWDecode|RunLengthDecode)(?![A-Za-z0-9])/.test(names)) return { ok: false, reason: "unsupported" };
+  if (/\/Filter\s*\d+\s+\d+\s+R\b/.test(names)) return { ok: false, reason: "unsupported" };
+  if (/\/Filter\s*\[[^\]]*\/(ASCIIHexDecode|ASCII85Decode|AHx|A85)(?![A-Za-z0-9])[^\]]*\/(FlateDecode|Fl)(?![A-Za-z0-9])/.test(names)) {
     return { ok: false, reason: "unsupported" };
   }
 
-  // Pass 2: measure every body, one at a time, under the remaining allowance.
   let content = 0;
   let images = 0;
-  for (const body of bodies) {
-    const isImage = /\/Subtype\s*\/Image\b/.test(body.dictionary);
+  let streams = 0;
+  const marker = /stream\r?\n/g;
+  for (let m = marker.exec(text); m; m = marker.exec(text)) {
+    if (m.index > 0 && /[a-z]/i.test(text[m.index - 1]!)) continue; // the tail of "endstream"
+    if (++streams > PDF_LIMITS.maxStreams) return { ok: false, reason: "too_large" };
+    const start = m.index + m[0].length;
+    const before = names.slice(Math.max(0, m.index - 2_048), m.index);
+    const dictionary = before.slice(Math.max(0, before.lastIndexOf(" obj")));
+    const isImage = /\/Subtype\s*\/Image(?![A-Za-z0-9])/.test(dictionary);
     const remaining = isImage ? PDF_LIMITS.maxImageBytes - images : PDF_LIMITS.maxContentBytes - content;
-    const measured = await measureInflate(buf.subarray(body.start, body.end), Math.min(PDF_LIMITS.maxStreamBytes, remaining), false);
+    const measured = await measureInflate(buf.subarray(start), Math.min(PDF_LIMITS.maxStreamBytes, remaining), false);
     if (measured === "too_large") return { ok: false, reason: "too_large" };
     if (isImage) images += measured.size;
     else content += measured.size;
+    // Continue after this stream's end marker when there is one (a fake early one only means more
+    // of the file is scanned for further streams).
+    const end = text.indexOf("endstream", start);
+    if (end < 0) break;
+    marker.lastIndex = end + "endstream".length;
   }
   return { ok: true };
 }

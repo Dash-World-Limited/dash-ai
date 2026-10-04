@@ -34,7 +34,10 @@ export function documentRoutes(app: FastifyInstance, ctx: RouteContext): void {
       if (!signatureMatches(check.kind, buffer)) {
         throw new AppError("unsupported_media_type", "The file contents do not match its type.");
       }
+      const started = Date.now();
       const extraction = await extractText(check.kind, buffer, { timeoutMs: ctx.config.documentExtractionTimeoutMs });
+      ctx.metrics.documentExtractionSeconds.observe({ kind: check.kind, status: extraction.status }, (Date.now() - started) / 1000);
+      if (extraction.status === "unsupported") ctx.metrics.documentRejections.inc({ kind: check.kind, reason: extraction.reason ?? "unreadable" });
       const record = {
         id: newId(),
         userId: user.id,
@@ -50,7 +53,7 @@ export function documentRoutes(app: FastifyInstance, ctx: RouteContext): void {
       };
       await ctx.store.saveDocument(record);
       request.log.info(
-        { kind: record.kind, sizeBytes: record.sizeBytes, status: record.status },
+        { kind: record.kind, sizeBytes: record.sizeBytes, status: record.status, reason: extraction.reason },
         "document uploaded",
       );
       reply.code(201);

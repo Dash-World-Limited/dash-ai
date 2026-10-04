@@ -347,6 +347,7 @@ async function runTarget(
     parentSignal.removeEventListener("abort", onParentAbort);
   }
 
+  ctx.metrics?.aiRequestSeconds.observe({ provider: adapter.id, status }, (Date.now() - started) / 1000);
   const now = ctx.now().toISOString();
   await ctx.store.saveMessage({
     id: messageId,

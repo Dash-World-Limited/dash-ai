@@ -31,11 +31,15 @@ export function sanitizeFileName(name: string): string {
   return cleaned.length > 0 ? cleaned : "document";
 }
 
+/** Why a document was stored as unsupported (internal: metrics and logs only, never shown or stored). */
+export type ExtractionReason = "too_large" | "encrypted" | "unsupported_feature" | "unreadable" | "no_text" | "timeout" | "memory" | "crashed" | "image";
+
 export interface Extraction {
   status: DocumentStatus;
   statusDetail: string;
   text: string;
   pageCount: number | null;
+  reason?: ExtractionReason;
 }
 
 const fmt = (n: number) => n.toLocaleString("en-US");
@@ -43,7 +47,7 @@ const fmt = (n: number) => n.toLocaleString("en-US");
 function ready(text: string, pageCount: number | null): Extraction {
   const normalized = text.replace(/\r\n?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
   if (normalized.length === 0) {
-    return { status: "unsupported", statusDetail: "No readable text was found in this file.", text: "", pageCount };
+    return { status: "unsupported", statusDetail: "No readable text was found in this file.", text: "", pageCount, reason: "no_text" };
   }
   const truncated = normalized.length > LIMITS.maxExtractedChars;
   const finalText = truncated ? normalized.slice(0, LIMITS.maxExtractedChars) : normalized;
@@ -57,11 +61,12 @@ function ready(text: string, pageCount: number | null): Extraction {
   };
 }
 
-const unsupported = (statusDetail: string, pageCount: number | null = null): Extraction => ({
+const unsupported = (statusDetail: string, reason: ExtractionReason, pageCount: number | null = null): Extraction => ({
   status: "unsupported",
   statusDetail,
   text: "",
   pageCount,
+  reason,
 });
 
 export const TOO_LARGE_DETAIL =
@@ -91,6 +96,7 @@ export async function extractText(kind: DocumentKind, buf: Buffer, options: { ti
     case "image":
       return unsupported(
         "Image understanding is not available yet. The image passed validation, but Dash AI cannot read its contents.",
+        "image",
       );
   }
 }
@@ -103,7 +109,11 @@ export async function extractInProcess(kind: "pdf" | "docx", buf: Buffer): Promi
   if (kind === "pdf") {
     const budget = await checkPdfBudget(buf);
     if (!budget.ok) {
-      return unsupported(budget.reason === "too_large" ? TOO_LARGE_DETAIL : "This PDF uses features Dash AI cannot read safely.");
+      return budget.reason === "too_large"
+        ? unsupported(TOO_LARGE_DETAIL, "too_large")
+        : budget.reason === "encrypted"
+          ? unsupported("This PDF is encrypted or password-protected. Save an unprotected copy and upload that.", "encrypted")
+          : unsupported("This PDF uses features Dash AI cannot read safely.", "unsupported_feature");
     }
     try {
       const { extractText: extractPdf } = await import("unpdf");
@@ -114,18 +124,20 @@ export async function extractInProcess(kind: "pdf" | "docx", buf: Buffer): Promi
       }
       return result;
     } catch {
-      return unsupported("This PDF could not be read. It may be encrypted or damaged.");
+      return unsupported("This PDF could not be read. It may be encrypted or damaged.", "unreadable");
     }
   }
   const budget = await checkDocxBudget(buf);
   if (!budget.ok) {
-    return unsupported(budget.reason === "too_large" ? TOO_LARGE_DETAIL : "This DOCX file could not be read. It may be damaged or password protected.");
+    return budget.reason === "too_large"
+      ? unsupported(TOO_LARGE_DETAIL, "too_large")
+      : unsupported("This DOCX file could not be read. It may be damaged or password protected.", "unreadable");
   }
   try {
     const mammoth = (await import("mammoth")).default;
     const { value } = await mammoth.extractRawText({ buffer: buf });
     return ready(value, null);
   } catch {
-    return unsupported("This DOCX file could not be read. It may be damaged or password protected.");
+    return unsupported("This DOCX file could not be read. It may be damaged or password protected.", "unreadable");
   }
 }

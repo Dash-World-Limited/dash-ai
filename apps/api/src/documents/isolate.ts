@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { LIMITS } from "@dash-ai/contracts";
 import { z } from "zod";
-import { TOO_LARGE_DETAIL, type Extraction } from "./inspect.js";
+import { TOO_LARGE_DETAIL, type Extraction, type ExtractionReason } from "./inspect.js";
 
 /** Extraction processes running at once; further uploads wait their turn. */
 export const MAX_CONCURRENT_EXTRACTIONS = 2;
@@ -48,9 +48,10 @@ const ChildResult = z.object({
   statusDetail: z.string().max(300),
   text: z.string().max(LIMITS.maxExtractedChars),
   pageCount: z.number().int().nonnegative().max(1_000_000).nullable(),
+  reason: z.enum(["too_large", "encrypted", "unsupported_feature", "unreadable", "no_text", "timeout", "memory", "crashed", "image"]).optional(),
 });
 
-const failure = (statusDetail: string): Extraction => ({ status: "unsupported", statusDetail, text: "", pageCount: null });
+const failure = (statusDetail: string, reason: ExtractionReason): Extraction => ({ status: "unsupported", statusDetail, text: "", pageCount: null, reason });
 const TIMED_OUT = "This file took too long to read and was skipped. Try a smaller file, or save it as plain text.";
 const CRASHED = "This file could not be read safely.";
 
@@ -86,30 +87,30 @@ export async function extractIsolated(kind: "pdf" | "docx", buf: Buffer, timeout
         verdict ??= result;
         child.kill("SIGKILL");
       };
-      const timer = setTimeout(() => stop(failure(TIMED_OUT)), timeoutMs);
+      const timer = setTimeout(() => stop(failure(TIMED_OUT, "timeout")), timeoutMs);
       const watchdog = setInterval(() => {
         if (child.pid === undefined) return;
         void residentBytes(child.pid).then((rss) => {
-          if (rss !== undefined && rss > MAX_EXTRACTION_RSS_BYTES) stop(failure(TOO_LARGE_DETAIL));
+          if (rss !== undefined && rss > MAX_EXTRACTION_RSS_BYTES) stop(failure(TOO_LARGE_DETAIL, "memory"));
         });
       }, 100);
       child.stdout.on("data", (chunk: Buffer) => {
         outBytes += chunk.length;
-        if (outBytes > maxOutput) stop(failure(CRASHED));
+        if (outBytes > maxOutput) stop(failure(CRASHED, "crashed"));
         else out.push(chunk);
       });
       child.stdin.on("error", () => undefined); // the child may exit before reading everything
-      child.on("error", () => stop(failure(CRASHED)));
+      child.on("error", () => stop(failure(CRASHED, "crashed")));
       child.on("close", (code) => {
         clearTimeout(timer);
         clearInterval(watchdog);
         if (verdict) return resolve(verdict);
-        if (code !== 0) return resolve(failure(CRASHED));
+        if (code !== 0) return resolve(failure(CRASHED, "crashed"));
         try {
           const parsed = ChildResult.safeParse(JSON.parse(Buffer.concat(out).toString("utf8")));
-          resolve(parsed.success ? parsed.data : failure(CRASHED));
+          resolve(parsed.success ? parsed.data : failure(CRASHED, "crashed"));
         } catch {
-          resolve(failure(CRASHED));
+          resolve(failure(CRASHED, "crashed"));
         }
       });
       child.stdin.end(buf);
