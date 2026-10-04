@@ -1,0 +1,18 @@
+{
+  "results": [
+    {
+      "opId": "op-upload-0001",
+      "status": "applied",
+      "appended": 1,
+      "skipped": 0
+    },
+    {
+      "opId": "op-rename-0001",
+      "status": "conflict"
+    },
+    {
+      "opId": "op-delete-0001",
+      "status": "applied"
+    }
+  ]
+}

@@ -9,7 +9,8 @@
         "mode": "business",
         "createdAt": "2026-03-04T05:06:07.000Z",
         "updatedAt": "2026-03-04T05:08:09.000Z",
-        "titleIsCustom": false
+        "titleIsCustom": false,
+        "titleRev": 1
       },
       "messages": [
         {
@@ -45,7 +46,8 @@
         "mode": "general",
         "createdAt": "2026-03-01T00:00:00.000Z",
         "updatedAt": "2026-03-01T00:00:00.000Z",
-        "titleIsCustom": false
+        "titleIsCustom": false,
+        "titleRev": 0
       },
       "messages": []
     }

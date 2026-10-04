@@ -17,6 +17,7 @@ export interface RouteContext {
     api: RateLimiter;
     auth: RateLimiter;
     chat: RateLimiter;
+    sync: RateLimiter;
     upload: RateLimiter;
   };
   requireAuth: (request: FastifyRequest) => Promise<void>;

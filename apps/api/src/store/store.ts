@@ -93,6 +93,8 @@ export interface UsageRow {
  */
 export interface ConversationChange {
   seq: number;
+  /** Increases on every title change (see SyncConversation.titleRev). */
+  titleRev: number;
   deleted: boolean;
   conversation: ConversationRecord;
   messages: MessageRecord[];
@@ -102,6 +104,26 @@ export interface ConversationChangePage {
   changes: ConversationChange[];
   /** True when more changes exist after the last one returned. */
   hasMore: boolean;
+}
+
+/** Where a conversation id stands for one user. Another user's id is reported as "absent". */
+export type ConversationState = "live" | "deleted" | "absent";
+
+export interface PushConversationInput {
+  conversation: ConversationRecord;
+  /** User messages written on a device, oldest first. Assistant messages are never accepted from devices. */
+  messages: MessageRecord[];
+}
+
+export interface PushConversationResult {
+  /** created/merged: applied. deleted: the user's own tombstone. rejected: the id belongs to someone else. */
+  status: "created" | "merged" | "deleted" | "rejected";
+  appended: number;
+  skipped: number;
+}
+
+export interface RenameResult {
+  status: "applied" | "conflict" | "deleted" | "not_found";
 }
 
 /**
@@ -132,6 +154,23 @@ export interface Store {
   deleteConversation(userId: string, id: string): Promise<boolean>;
   /** Conversations (with messages) and tombstones whose seq is greater than afterSeq, oldest first. */
   listConversationChanges(userId: string, afterSeq: number, limit: number): Promise<ConversationChangePage>;
+
+  /** live, deleted (own tombstone) or absent (never existed, or belongs to another user). */
+  conversationState(userId: string, id: string): Promise<ConversationState>;
+
+  /**
+   * Device upload, atomic per conversation. Unknown id: creates it with the messages. The user's live
+   * conversation: appends only messages with unknown ids that are newer than the newest stored message
+   * (so truncated or replaced history is never resurrected). Own tombstone: nothing changes ("deleted").
+   * Someone else's id: nothing changes ("rejected").
+   */
+  pushConversation(userId: string, input: PushConversationInput): Promise<PushConversationResult>;
+
+  /**
+   * Compare-and-set rename. Applied when the title is already the requested one (idempotent), when the
+   * server title was never set by a user, or when baseTitleRev matches; otherwise "conflict".
+   */
+  renameConversationIfCurrent(userId: string, id: string, title: string, baseTitleRev: number | null, now: string): Promise<RenameResult>;
 
   /** The user's newest change number (0 when nothing has changed yet). */
   latestSyncSeq(userId: string): Promise<number>;

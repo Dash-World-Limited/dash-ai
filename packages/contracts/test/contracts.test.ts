@@ -16,6 +16,8 @@ import {
   ProvidersResponse,
   SMART_ROUTING,
   SyncConversationsResponse,
+  SyncPushRequest,
+  SyncPushResponse,
   ToolActivityResponse,
   UsageSummaryResponse,
   checkFile,
@@ -46,6 +48,8 @@ describe("JSON fixtures match the schemas", () => {
     ["plugins-response.json", PluginsResponse],
     ["tool-activity.json", ToolActivityResponse],
     ["sync-conversations.json", SyncConversationsResponse],
+    ["sync-push-request.json", SyncPushRequest],
+    ["sync-push-response.json", SyncPushResponse],
   ] as const)("%s", (name, schema) => {
     const result = schema.safeParse(json(name));
     expect(result.success, JSON.stringify(result.error?.issues)).toBe(true);
@@ -146,6 +150,25 @@ describe("plugin and tool schemas", () => {
       conversations: [], documents: [], usage: [],
     };
     expect(DataExportResponse.parse(base)).toMatchObject({ plugins: [], toolActivity: [] });
+  });
+});
+
+describe("sync push schema", () => {
+  const upload = (messages: unknown[]) => ({
+    operations: [{ opId: "op-12345678", type: "upload", conversation: { id: "conv-12345678", title: "t", titleIsCustom: false, mode: "general", createdAt: "2026-01-01T00:00:00.000Z" }, messages }],
+  });
+  it("never accepts assistant messages, provider labels or attachments in an upload", () => {
+    const parsed = SyncPushRequest.parse(upload([{ id: "msg-12345678", content: "hi", createdAt: "2026-01-01T00:00:00.000Z", role: "assistant", origin: "openai", attachmentIds: ["x"] }]));
+    const op = parsed.operations[0]!;
+    expect(op.type === "upload" && Object.keys(op.messages[0]!).sort()).toEqual(["content", "createdAt", "id"]);
+  });
+  it("bounds operations, messages and content", () => {
+    expect(SyncPushRequest.safeParse({ operations: [] }).success).toBe(false);
+    const msg = (i: number) => ({ id: `msg-${String(i).padStart(8, "0")}`, content: "x", createdAt: "2026-01-01T00:00:00.000Z" });
+    expect(SyncPushRequest.safeParse(upload(Array.from({ length: 101 }, (_, i) => msg(i)))).success).toBe(false);
+    expect(SyncPushRequest.safeParse(upload([{ ...msg(1), content: "x".repeat(LIMITS.maxMessageChars + 1) }])).success).toBe(false);
+    expect(SyncPushRequest.safeParse(upload([{ ...msg(1), content: "   " }])).success).toBe(false);
+    expect(SyncPushRequest.safeParse({ operations: [{ opId: "bad id!", type: "delete", conversationId: "conv-12345678" }] }).success).toBe(false);
   });
 });
 

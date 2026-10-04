@@ -17,7 +17,9 @@
     "migrate:built": "node --env-file-if-exists=.env dist/migrate-cli.js",
     "test:pg": "DASH_TEST_STORE=postgres vitest run",
     "smoke:live": "tsx --env-file-if-exists=.env src/smoke/main.ts",
-    "smoke:live:built": "node --env-file-if-exists=.env dist/smoke/main.js"
+    "smoke:live:built": "node --env-file-if-exists=.env dist/smoke/main.js",
+    "data:encrypt": "tsx --env-file-if-exists=.env src/data-cli.ts",
+    "data:encrypt:built": "node --env-file-if-exists=.env dist/data-cli.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",

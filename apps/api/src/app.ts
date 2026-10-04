@@ -87,6 +87,7 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
     api: new RateLimiter(config.rateLimits.apiPerMinute),
     auth: new RateLimiter(config.rateLimits.authPerMinute),
     chat: new RateLimiter(config.rateLimits.chatPerMinute),
+    sync: new RateLimiter(config.rateLimits.syncPerMinute),
     upload: new RateLimiter(config.rateLimits.uploadPerMinute),
   };
 

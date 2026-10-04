@@ -27,6 +27,7 @@ const EnvSchema = z.object({
   MAX_OUTPUT_TOKENS: int(2_048, 16, 32_000),
   FAKE_STREAM_DELAY_MS: int(25, 0, 5_000),
   RATE_LIMIT_CHAT_PER_MINUTE: int(20, 1, 10_000),
+  RATE_LIMIT_SYNC_PER_MINUTE: int(60, 1, 10_000),
   RATE_LIMIT_AUTH_PER_MINUTE: int(10, 1, 10_000),
   RATE_LIMIT_UPLOAD_PER_MINUTE: int(10, 1, 10_000),
   RATE_LIMIT_API_PER_MINUTE: int(240, 1, 100_000),
@@ -75,7 +76,7 @@ export interface AppConfig {
   providerIdleTimeoutMs: number;
   maxOutputTokens: number;
   fakeStreamDelayMs: number;
-  rateLimits: { chatPerMinute: number; authPerMinute: number; uploadPerMinute: number; apiPerMinute: number };
+  rateLimits: { chatPerMinute: number; authPerMinute: number; uploadPerMinute: number; apiPerMinute: number; syncPerMinute: number };
   maxConcurrentStreamsPerUser: number;
   sessionTtlDays: number;
   trustProxy: boolean;
@@ -115,6 +116,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     fakeStreamDelayMs: e.FAKE_STREAM_DELAY_MS,
     rateLimits: {
       chatPerMinute: e.RATE_LIMIT_CHAT_PER_MINUTE,
+      syncPerMinute: e.RATE_LIMIT_SYNC_PER_MINUTE,
       authPerMinute: e.RATE_LIMIT_AUTH_PER_MINUTE,
       uploadPerMinute: e.RATE_LIMIT_UPLOAD_PER_MINUTE,
       apiPerMinute: e.RATE_LIMIT_API_PER_MINUTE,

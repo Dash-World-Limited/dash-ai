@@ -132,4 +132,29 @@ CREATE TABLE tool_invocations (
 CREATE INDEX tool_invocations_user_idx ON tool_invocations (user_id, id DESC);
 `,
   },
+  {
+    id: 3,
+    name: "conversation_title_revision",
+    sql: `
+-- Increases on every title change, so a device's rename can carry the revision it last saw and the
+-- server can reject a stale one deterministically.
+ALTER TABLE conversations ADD COLUMN title_rev integer NOT NULL DEFAULT 0;
+`,
+  },
+  {
+    id: 4,
+    name: "encrypt_titles_and_message_content",
+    sql: `
+-- Titles and message content move to AES-256-GCM ciphertext (same keyring as documents).
+-- Phase 1 (this migration): add ciphertext columns and allow the plaintext columns to be NULL.
+-- New writes store ciphertext only. Existing plaintext rows are encrypted by the backfill
+-- (automatic at start-up outside production, or: pnpm --filter @dash-ai/api data:encrypt).
+-- Phase 2 (a later migration, once the backfill reports zero plaintext rows): drop the
+-- plaintext columns.
+ALTER TABLE conversations ALTER COLUMN title DROP NOT NULL;
+ALTER TABLE conversations ADD COLUMN title_enc bytea, ADD COLUMN title_key_id text;
+ALTER TABLE messages ALTER COLUMN content DROP NOT NULL;
+ALTER TABLE messages ADD COLUMN content_enc bytea, ADD COLUMN content_key_id text;
+`,
+  },
 ];

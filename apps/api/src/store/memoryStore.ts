@@ -2,6 +2,10 @@ import {
   summarizeDocument,
   type ConversationChangePage,
   type ConversationRecord,
+  type ConversationState,
+  type PushConversationInput,
+  type PushConversationResult,
+  type RenameResult,
   type DocumentRecord,
   type DocumentSummary,
   type MessageRecord,
@@ -15,6 +19,7 @@ import type { PluginSettingRecord, ToolInvocationRow } from "../tools/types.js";
 interface StoredConversation {
   record: ConversationRecord;
   seq: number;
+  titleRev: number;
   deleted: boolean;
 }
 
@@ -116,7 +121,8 @@ export class MemoryStore implements Store {
   async saveConversation(conversation: ConversationRecord): Promise<void> {
     const existing = this.conversations.get(conversation.id);
     if (existing && (existing.deleted || existing.record.userId !== conversation.userId)) return;
-    const stored = existing ?? { record: conversation, seq: 0, deleted: false };
+    const stored = existing ?? { record: conversation, seq: 0, titleRev: 0, deleted: false };
+    if (existing && existing.record.title !== conversation.title) stored.titleRev += 1;
     stored.record = { ...conversation };
     this.bump(stored);
     this.conversations.set(conversation.id, stored);
@@ -148,11 +154,56 @@ export class MemoryStore implements Store {
       hasMore: rows.length > limit,
       changes: page.map((c) => ({
         seq: c.seq,
+        titleRev: c.titleRev,
         deleted: c.deleted,
         conversation: { ...c.record },
         messages: c.deleted ? [] : this.cloneMessages(c.record.id),
       })),
     };
+  }
+
+  async conversationState(userId: string, id: string): Promise<ConversationState> {
+    const c = this.conversations.get(id);
+    if (!c || c.record.userId !== userId) return "absent";
+    return c.deleted ? "deleted" : "live";
+  }
+
+  async pushConversation(userId: string, input: PushConversationInput): Promise<PushConversationResult> {
+    const existing = this.conversations.get(input.conversation.id);
+    if (existing && existing.record.userId !== userId) return { status: "rejected", appended: 0, skipped: input.messages.length };
+    if (existing?.deleted) return { status: "deleted", appended: 0, skipped: input.messages.length };
+    const created = !existing;
+    const stored = existing ?? { record: { ...input.conversation, userId }, seq: 0, titleRev: 0, deleted: false };
+    this.conversations.set(stored.record.id, stored);
+    const list = this.messages.get(stored.record.id) ?? [];
+    const known = new Set(list.map((m) => m.id));
+    // Only the tail may grow: anything not newer than the newest stored message is ignored.
+    const baseline = list.reduce((max, m) => Math.max(max, Date.parse(m.createdAt)), Number.NEGATIVE_INFINITY);
+    let newest = "";
+    let appended = 0;
+    for (const m of input.messages) {
+      if (known.has(m.id) || Date.parse(m.createdAt) <= baseline) continue;
+      list.push({ ...m, conversationId: stored.record.id, attachmentIds: [] });
+      known.add(m.id);
+      if (m.createdAt > newest) newest = m.createdAt;
+      appended += 1;
+    }
+    this.messages.set(stored.record.id, list);
+    if (created || appended > 0) {
+      if (appended > 0 && stored.record.updatedAt < newest) stored.record = { ...stored.record, updatedAt: newest };
+      this.bump(stored);
+    }
+    return { status: created ? "created" : "merged", appended, skipped: input.messages.length - appended };
+  }
+
+  async renameConversationIfCurrent(userId: string, id: string, title: string, baseTitleRev: number | null, now: string): Promise<RenameResult> {
+    const c = this.conversations.get(id);
+    if (!c || c.record.userId !== userId) return { status: "not_found" };
+    if (c.deleted) return { status: "deleted" };
+    if (c.record.title === title && c.record.titleIsCustom) return { status: "applied" };
+    if (c.record.titleIsCustom && baseTitleRev !== c.titleRev) return { status: "conflict" };
+    await this.saveConversation({ ...c.record, title, titleIsCustom: true, updatedAt: now });
+    return { status: "applied" };
   }
 
   async latestSyncSeq(userId: string): Promise<number> {

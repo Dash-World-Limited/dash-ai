@@ -54,6 +54,11 @@ export class DataCipher {
     return this.currentKeyId;
   }
 
+  /** Every key id this cipher can decrypt (current and retired). */
+  get keyIds(): string[] {
+    return [...this.keys.keys()];
+  }
+
   encrypt(plaintext: string, aad: string): EncryptedValue {
     const iv = randomBytes(IV_BYTES);
     const cipher = createCipheriv("aes-256-gcm", this.keys.get(this.currentKeyId)!, iv, { authTagLength: TAG_BYTES });

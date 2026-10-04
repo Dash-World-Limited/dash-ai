@@ -7,9 +7,13 @@ import {
   type ConversationChange,
   type ConversationChangePage,
   type ConversationRecord,
+  type ConversationState,
   type DocumentRecord,
   type DocumentSummary,
   type MessageRecord,
+  type PushConversationInput,
+  type PushConversationResult,
+  type RenameResult,
   type SessionRecord,
   type Store,
   type UsageRow,
@@ -34,12 +38,15 @@ const num = (v: string | number | null): number | null => (v === null ? null : N
 
 interface UserRow { id: string; email: string; display_name: string; password_hash: string; created_at: Date }
 interface ConversationRow {
-  id: string; user_id: string; title: string; title_is_custom: boolean; mode: string;
-  created_at: Date; updated_at: Date; deleted_at: Date | null; sync_seq: string;
+  id: string; user_id: string; title_is_custom: boolean; mode: string;
+  created_at: Date; updated_at: Date; deleted_at: Date | null; sync_seq: string; title_rev: number;
+  /** Legacy plaintext (only rows written before migration 4 and not yet backfilled). */
+  title: string | null; title_enc: Buffer | null; title_key_id: string | null;
 }
 interface MessageRow {
-  id: string; conversation_id: string; role: string; content: string; origin: string | null; model: string | null;
+  id: string; conversation_id: string; role: string; origin: string | null; model: string | null;
   demo: boolean; status: string; compare_group_id: string | null; attachment_ids: string[]; created_at: Date;
+  content: string | null; content_enc: Buffer | null; content_key_id: string | null;
 }
 interface DocumentRow {
   id: string; user_id: string; name: string; kind: string; mime_type: string; size_bytes: string; status: string;
@@ -49,22 +56,18 @@ interface DocumentRow {
 const toUser = (r: UserRow): UserRecord => ({
   id: r.id, email: r.email, displayName: r.display_name, passwordHash: r.password_hash, createdAt: iso(r.created_at),
 });
-const toConversation = (r: ConversationRow): ConversationRecord => ({
-  id: r.id, userId: r.user_id, title: r.title, titleIsCustom: r.title_is_custom, mode: r.mode as AssistantMode,
-  createdAt: iso(r.created_at), updatedAt: iso(r.updated_at),
-});
-const toMessage = (r: MessageRow): MessageRecord => ({
-  id: r.id, conversationId: r.conversation_id, role: r.role as MessageRole, content: r.content,
-  origin: r.origin as ProviderId | null, model: r.model, demo: r.demo, status: r.status as MessageStatus,
-  compareGroupId: r.compare_group_id, attachmentIds: r.attachment_ids, createdAt: iso(r.created_at),
-});
 const toSummary = (r: DocumentRow): DocumentSummary => ({
   id: r.id, userId: r.user_id, name: r.name, kind: r.kind as DocumentKind, mimeType: r.mime_type,
   sizeBytes: Number(r.size_bytes), status: r.status as DocumentStatus, statusDetail: r.status_detail,
   extractedChars: r.extracted_chars, pageCount: r.page_count, createdAt: iso(r.created_at),
 });
 
+// Additional authenticated data binds every ciphertext to its row: copied elsewhere, it fails to decrypt.
 const documentAad = (userId: string, id: string) => `dash-ai:document:${userId}:${id}`;
+const titleAad = (conversationId: string) => `dash-ai:conversation-title:${conversationId}`;
+const contentAad = (conversationId: string, messageId: string) => `dash-ai:message:${conversationId}:${messageId}`;
+
+const MESSAGE_COLUMNS = "conversation_id, id, role, content_enc, content_key_id, origin, model, demo, status, compare_group_id, attachment_ids, created_at";
 
 /** PostgreSQL-backed store (the production implementation). */
 export class PostgresStore implements Store {
@@ -101,7 +104,23 @@ export class PostgresStore implements Store {
       await pool.end().catch(() => undefined);
       throw err;
     }
-    return new PostgresStore(pool, options.cipher);
+    const store = new PostgresStore(pool, options.cipher);
+    // Development convenience: finish any plaintext backfill / key rotation right away. Production runs
+    // it deliberately (pnpm --filter @dash-ai/api data:encrypt) and only gets a start-up report.
+    if (options.autoMigrate ?? true) await store.runEncryptionMaintenance();
+    return store;
+  }
+
+  /** Repeats encryptionMaintenanceBatch until nothing is left. Returns the totals changed. */
+  async runEncryptionMaintenance(batch = 200): Promise<{ titles: number; messages: number; documents: number }> {
+    const total = { titles: 0, messages: 0, documents: 0 };
+    for (;;) {
+      const n = await this.encryptionMaintenanceBatch(batch);
+      total.titles += n.titles;
+      total.messages += n.messages;
+      total.documents += n.documents;
+      if (n.titles + n.messages + n.documents === 0) return total;
+    }
   }
 
   /** Drops the isolated test schema created by `connect({ schema })`. */
@@ -197,14 +216,48 @@ export class PostgresStore implements Store {
     return res.rowCount ?? 0;
   }
 
-  // ---- conversations and messages --------------------------------------------------------------
+  // ---- conversations and messages (titles and content encrypted at rest) ------------------------
+
+  private titleOf(r: ConversationRow): string {
+    if (r.title_enc && r.title_key_id) return this.cipher.decrypt({ keyId: r.title_key_id, payload: r.title_enc }, titleAad(r.id));
+    return r.title ?? "";
+  }
+
+  private toConversation(r: ConversationRow): ConversationRecord {
+    return {
+      id: r.id, userId: r.user_id, title: this.titleOf(r), titleIsCustom: r.title_is_custom, mode: r.mode as AssistantMode,
+      createdAt: iso(r.created_at), updatedAt: iso(r.updated_at),
+    };
+  }
+
+  private toMessage(r: MessageRow): MessageRecord {
+    const content =
+      r.content_enc && r.content_key_id
+        ? this.cipher.decrypt({ keyId: r.content_key_id, payload: r.content_enc }, contentAad(r.conversation_id, r.id))
+        : (r.content ?? "");
+    return {
+      id: r.id, conversationId: r.conversation_id, role: r.role as MessageRole, content,
+      origin: r.origin as ProviderId | null, model: r.model, demo: r.demo, status: r.status as MessageStatus,
+      compareGroupId: r.compare_group_id, attachmentIds: r.attachment_ids, createdAt: iso(r.created_at),
+    };
+  }
+
+  private messageParams(m: MessageRecord): unknown[] {
+    const enc = this.cipher.encrypt(m.content, contentAad(m.conversationId, m.id));
+    return [m.conversationId, m.id, m.role, enc.payload, enc.keyId, m.origin, m.model, m.demo, m.status, m.compareGroupId, m.attachmentIds, m.createdAt];
+  }
+
+  private async lockConversation(client: pg.PoolClient, id: string): Promise<ConversationRow | undefined> {
+    const { rows } = await client.query<ConversationRow>("SELECT * FROM conversations WHERE id = $1 FOR UPDATE", [id]);
+    return rows[0];
+  }
 
   async getConversation(userId: string, id: string): Promise<ConversationRecord | undefined> {
     const { rows } = await this.pool.query<ConversationRow>(
       "SELECT * FROM conversations WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL",
       [id, userId],
     );
-    return rows[0] && toConversation(rows[0]);
+    return rows[0] && this.toConversation(rows[0]);
   }
 
   async conversationExists(id: string): Promise<boolean> {
@@ -212,17 +265,36 @@ export class PostgresStore implements Store {
     return (rowCount ?? 0) > 0;
   }
 
+  async conversationState(userId: string, id: string): Promise<ConversationState> {
+    const { rows } = await this.pool.query<{ deleted_at: Date | null }>(
+      "SELECT deleted_at FROM conversations WHERE id = $1 AND user_id = $2",
+      [id, userId],
+    );
+    if (!rows[0]) return "absent";
+    return rows[0].deleted_at ? "deleted" : "live";
+  }
+
   async saveConversation(c: ConversationRecord): Promise<void> {
     await this.tx(async (client) => {
-      const res = await client.query(
-        `INSERT INTO conversations (id, user_id, title, title_is_custom, mode, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
-         ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, title_is_custom = EXCLUDED.title_is_custom,
-           mode = EXCLUDED.mode, updated_at = EXCLUDED.updated_at
-         WHERE conversations.user_id = EXCLUDED.user_id AND conversations.deleted_at IS NULL`,
-        [c.id, c.userId, c.title, c.titleIsCustom, c.mode, c.createdAt, c.updatedAt],
+      const existing = await this.lockConversation(client, c.id);
+      if (existing && (existing.user_id !== c.userId || existing.deleted_at)) return;
+      const enc = this.cipher.encrypt(c.title, titleAad(c.id));
+      if (!existing) {
+        const res = await client.query(
+          `INSERT INTO conversations (id, user_id, title, title_enc, title_key_id, title_is_custom, mode, created_at, updated_at)
+           VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING`,
+          [c.id, c.userId, enc.payload, enc.keyId, c.titleIsCustom, c.mode, c.createdAt, c.updatedAt],
+        );
+        if (res.rowCount === 1) await this.touch(client, c.id);
+        return;
+      }
+      const titleChanged = this.titleOf(existing) !== c.title;
+      await client.query(
+        `UPDATE conversations SET title = NULL, title_enc = $2, title_key_id = $3, title_is_custom = $4, mode = $5,
+           updated_at = $6, title_rev = title_rev + $7 WHERE id = $1`,
+        [c.id, enc.payload, enc.keyId, c.titleIsCustom, c.mode, c.updatedAt, titleChanged ? 1 : 0],
       );
-      if (res.rowCount === 1) await this.touch(client, c.id);
+      await this.touch(client, c.id);
     });
   }
 
@@ -231,13 +303,14 @@ export class PostgresStore implements Store {
       "SELECT * FROM conversations WHERE user_id = $1 AND deleted_at IS NULL ORDER BY updated_at DESC, id",
       [userId],
     );
-    return rows.map(toConversation);
+    return rows.map((r) => this.toConversation(r));
   }
 
   async deleteConversation(userId: string, id: string): Promise<boolean> {
     return this.tx(async (client) => {
       const res = await client.query(
-        "UPDATE conversations SET deleted_at = now(), title = '' WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL",
+        `UPDATE conversations SET deleted_at = now(), title = NULL, title_enc = NULL, title_key_id = NULL
+         WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
         [id, userId],
       );
       if (res.rowCount !== 1) return false;
@@ -262,17 +335,88 @@ export class PostgresStore implements Store {
       );
       for (const m of messages.rows) {
         const list = byConversation.get(m.conversation_id) ?? [];
-        list.push(toMessage(m));
+        list.push(this.toMessage(m));
         byConversation.set(m.conversation_id, list);
       }
     }
     const changes: ConversationChange[] = page.map((r) => ({
       seq: Number(r.sync_seq),
+      titleRev: r.title_rev,
       deleted: r.deleted_at !== null,
-      conversation: toConversation(r),
+      conversation: this.toConversation(r),
       messages: byConversation.get(r.id) ?? [],
     }));
     return { changes, hasMore: rows.length > limit };
+  }
+
+  async pushConversation(userId: string, input: PushConversationInput): Promise<PushConversationResult> {
+    const c = input.conversation;
+    const skippedAll = (status: "deleted" | "rejected"): PushConversationResult => ({ status, appended: 0, skipped: input.messages.length });
+    return this.tx(async (client) => {
+      let row = await this.lockConversation(client, c.id);
+      let created = false;
+      if (!row) {
+        const enc = this.cipher.encrypt(c.title, titleAad(c.id));
+        const res = await client.query(
+          `INSERT INTO conversations (id, user_id, title, title_enc, title_key_id, title_is_custom, mode, created_at, updated_at)
+           VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING`,
+          [c.id, userId, enc.payload, enc.keyId, c.titleIsCustom, c.mode, c.createdAt, c.updatedAt],
+        );
+        created = res.rowCount === 1;
+        // Lost a race with a concurrent create: lock whatever won and judge it like any existing row.
+        row = await this.lockConversation(client, c.id);
+      }
+      if (!row || row.user_id !== userId) return skippedAll("rejected");
+      if (row.deleted_at) return skippedAll("deleted");
+
+      const ids = input.messages.map((m) => m.id);
+      const known = new Set(
+        (await client.query<{ id: string }>("SELECT id FROM messages WHERE conversation_id = $1 AND id = ANY($2)", [c.id, ids])).rows.map((r) => r.id),
+      );
+      const { rows: [newestRow] } = await client.query<{ newest: Date | null }>(
+        "SELECT max(created_at) AS newest FROM messages WHERE conversation_id = $1",
+        [c.id],
+      );
+      // Only the tail may grow: anything not newer than the newest stored message is ignored.
+      const baseline = newestRow?.newest ? newestRow.newest.getTime() : Number.NEGATIVE_INFINITY;
+      let appended = 0;
+      let newest = 0;
+      for (const m of input.messages) {
+        const at = Date.parse(m.createdAt);
+        if (known.has(m.id) || at <= baseline) continue;
+        await client.query(
+          `INSERT INTO messages (${MESSAGE_COLUMNS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (conversation_id, id) DO NOTHING`,
+          this.messageParams({ ...m, conversationId: c.id, attachmentIds: [] }),
+        );
+        known.add(m.id);
+        newest = Math.max(newest, at);
+        appended += 1;
+      }
+      if (appended > 0) {
+        await client.query("UPDATE conversations SET updated_at = GREATEST(updated_at, $2) WHERE id = $1", [c.id, new Date(newest).toISOString()]);
+      }
+      if (created || appended > 0) await this.touch(client, c.id);
+      return { status: created ? "created" : "merged", appended, skipped: input.messages.length - appended };
+    });
+  }
+
+  async renameConversationIfCurrent(userId: string, id: string, title: string, baseTitleRev: number | null, now: string): Promise<RenameResult> {
+    return this.tx(async (client) => {
+      const row = await this.lockConversation(client, id);
+      if (!row || row.user_id !== userId) return { status: "not_found" };
+      if (row.deleted_at) return { status: "deleted" };
+      const current = this.titleOf(row);
+      if (current === title && row.title_is_custom) return { status: "applied" };
+      if (row.title_is_custom && baseTitleRev !== row.title_rev) return { status: "conflict" };
+      const enc = this.cipher.encrypt(title, titleAad(id));
+      await client.query(
+        `UPDATE conversations SET title = NULL, title_enc = $2, title_key_id = $3, title_is_custom = true, updated_at = $4,
+           title_rev = title_rev + $5 WHERE id = $1`,
+        [id, enc.payload, enc.keyId, now, current === title ? 0 : 1],
+      );
+      await this.touch(client, id);
+      return { status: "applied" };
+    });
   }
 
   async latestSyncSeq(userId: string): Promise<number> {
@@ -286,20 +430,21 @@ export class PostgresStore implements Store {
        WHERE m.conversation_id = $1 AND c.deleted_at IS NULL ORDER BY m.position`,
       [conversationId],
     );
-    return rows.map(toMessage);
+    return rows.map((r) => this.toMessage(r));
   }
 
   async saveMessage(m: MessageRecord): Promise<void> {
     await this.tx(async (client) => {
       const res = await client.query(
-        `INSERT INTO messages (conversation_id, id, role, content, origin, model, demo, status, compare_group_id, attachment_ids, created_at)
-         SELECT $1::text,$2::text,$3::text,$4::text,$5::text,$6::text,$7::boolean,$8::text,$9::text,$10::text[],$11::timestamptz
+        `INSERT INTO messages (${MESSAGE_COLUMNS})
+         SELECT $1::text,$2::text,$3::text,$4::bytea,$5::text,$6::text,$7::text,$8::boolean,$9::text,$10::text,$11::text[],$12::timestamptz
          WHERE EXISTS (SELECT 1 FROM conversations WHERE id = $1 AND deleted_at IS NULL)
-         ON CONFLICT (conversation_id, id) DO UPDATE SET role = EXCLUDED.role, content = EXCLUDED.content,
+         ON CONFLICT (conversation_id, id) DO UPDATE SET role = EXCLUDED.role, content = NULL,
+           content_enc = EXCLUDED.content_enc, content_key_id = EXCLUDED.content_key_id,
            origin = EXCLUDED.origin, model = EXCLUDED.model, demo = EXCLUDED.demo, status = EXCLUDED.status,
            compare_group_id = EXCLUDED.compare_group_id, attachment_ids = EXCLUDED.attachment_ids,
            created_at = EXCLUDED.created_at`,
-        [m.conversationId, m.id, m.role, m.content, m.origin, m.model, m.demo, m.status, m.compareGroupId, m.attachmentIds, m.createdAt],
+        this.messageParams(m),
       );
       if (res.rowCount === 1) await this.touch(client, m.conversationId);
     });
@@ -314,6 +459,69 @@ export class PostgresStore implements Store {
       );
       if ((res.rowCount ?? 0) > 0) await this.touch(client, conversationId);
     });
+  }
+
+  // ---- encryption maintenance (backfill and key rotation) -----------------------------------------
+
+  /**
+   * Encrypts up to `limit` legacy plaintext titles and messages (rows written before migration 4) and
+   * re-encrypts up to `limit` rows of each kind still under a retired key. Returns how many rows changed;
+   * call until it returns 0. Safe to run while the server is serving traffic (row locks, SKIP LOCKED).
+   */
+  async encryptionMaintenanceBatch(limit = 200): Promise<{ titles: number; messages: number; documents: number }> {
+    const current = this.cipher.keyId;
+    // Rows under a key this server does not hold are left alone (reading them fails clearly instead).
+    const retired = this.cipher.keyIds.filter((k) => k !== current);
+    return this.tx(async (client) => {
+      // Tombstones keep no title at all.
+      await client.query("UPDATE conversations SET title = NULL WHERE deleted_at IS NOT NULL AND title IS NOT NULL");
+      const convs = await client.query<ConversationRow>(
+        `SELECT * FROM conversations WHERE deleted_at IS NULL AND (title IS NOT NULL OR title_key_id = ANY($1))
+         ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED`,
+        [retired, limit],
+      );
+      for (const r of convs.rows) {
+        const enc = this.cipher.encrypt(this.titleOf(r), titleAad(r.id));
+        await client.query("UPDATE conversations SET title = NULL, title_enc = $2, title_key_id = $3 WHERE id = $1", [r.id, enc.payload, enc.keyId]);
+      }
+      const msgs = await client.query<MessageRow>(
+        `SELECT * FROM messages WHERE content IS NOT NULL OR content_key_id = ANY($1)
+         ORDER BY conversation_id, id LIMIT $2 FOR UPDATE SKIP LOCKED`,
+        [retired, limit],
+      );
+      for (const r of msgs.rows) {
+        const enc = this.cipher.encrypt(this.toMessage(r).content, contentAad(r.conversation_id, r.id));
+        await client.query(
+          "UPDATE messages SET content = NULL, content_enc = $3, content_key_id = $4 WHERE conversation_id = $1 AND id = $2",
+          [r.conversation_id, r.id, enc.payload, enc.keyId],
+        );
+      }
+      const docs = await client.query<{ id: string; user_id: string; extracted_text_enc: Buffer; enc_key_id: string }>(
+        "SELECT id, user_id, extracted_text_enc, enc_key_id FROM documents WHERE enc_key_id = ANY($1) ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED",
+        [retired, limit],
+      );
+      for (const d of docs.rows) {
+        const text = this.cipher.decrypt({ keyId: d.enc_key_id, payload: d.extracted_text_enc }, documentAad(d.user_id, d.id));
+        const enc = this.cipher.encrypt(text, documentAad(d.user_id, d.id));
+        await client.query("UPDATE documents SET extracted_text_enc = $2, enc_key_id = $3 WHERE id = $1", [d.id, enc.payload, enc.keyId]);
+      }
+      return { titles: convs.rowCount ?? 0, messages: msgs.rowCount ?? 0, documents: docs.rowCount ?? 0 };
+    });
+  }
+
+  /** Rows still holding plaintext content, or ciphertext under a retired key. */
+  async encryptionStatus(): Promise<{ plaintextTitles: number; plaintextMessages: number; retiredKeyRows: number }> {
+    const current = this.cipher.keyId;
+    const { rows } = await this.pool.query<{ t: string; m: string; r: string }>(
+      `SELECT
+         (SELECT count(*) FROM conversations WHERE title IS NOT NULL) AS t,
+         (SELECT count(*) FROM messages WHERE content IS NOT NULL) AS m,
+         (SELECT count(*) FROM conversations WHERE title_key_id IS NOT NULL AND title_key_id <> $1)
+         + (SELECT count(*) FROM messages WHERE content_key_id IS NOT NULL AND content_key_id <> $1)
+         + (SELECT count(*) FROM documents WHERE enc_key_id <> $1) AS r`,
+      [current],
+    );
+    return { plaintextTitles: Number(rows[0]!.t), plaintextMessages: Number(rows[0]!.m), retiredKeyRows: Number(rows[0]!.r) };
   }
 
   // ---- documents (text encrypted at rest) ------------------------------------------------------

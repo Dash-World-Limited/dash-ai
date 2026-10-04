@@ -246,6 +246,66 @@ function storeContract(name: string, make: () => Promise<Store>, teardown?: () =
       expect(rows[0]).toEqual(row);
     });
 
+    it("tracks a title revision that changes only when the title changes", async () => {
+      const u = user();
+      await store.createUser(u);
+      const c = conversation(u.id);
+      await store.saveConversation(c);
+      const revOf = async () => (await store.listConversationChanges(u.id, 0, 10)).changes[0]!.titleRev;
+      expect(await revOf()).toBe(0);
+      await store.saveConversation({ ...c, updatedAt: t(5), mode: "writing" });
+      expect(await revOf()).toBe(0);
+      await store.saveConversation({ ...c, title: "Renamed" });
+      expect(await revOf()).toBe(1);
+    });
+
+    it("reports conversation state without revealing other users' ids", async () => {
+      const a = user();
+      const b = user();
+      await store.createUser(a);
+      await store.createUser(b);
+      const c = conversation(a.id);
+      await store.saveConversation(c);
+      expect(await store.conversationState(a.id, c.id)).toBe("live");
+      expect(await store.conversationState(b.id, c.id)).toBe("absent");
+      expect(await store.conversationState(a.id, "conv-unknown-1")).toBe("absent");
+      await store.deleteConversation(a.id, c.id);
+      expect(await store.conversationState(a.id, c.id)).toBe("deleted");
+    });
+
+    it("pushConversation creates, appends only a newer tail, and refuses tombstones and foreign ids", async () => {
+      const a = user();
+      const b = user();
+      await store.createUser(a);
+      await store.createUser(b);
+      const c = conversation(a.id);
+      const m1 = message(c.id, { createdAt: t(10) });
+      const m2 = message(c.id, { createdAt: t(20) });
+      expect(await store.pushConversation(a.id, { conversation: c, messages: [m1, m2] })).toEqual({ status: "created", appended: 2, skipped: 0 });
+      expect(await store.pushConversation(a.id, { conversation: c, messages: [m1, m2] })).toEqual({ status: "merged", appended: 0, skipped: 2 });
+      const older = message(c.id, { createdAt: t(15) });
+      const newer = message(c.id, { createdAt: t(30) });
+      expect(await store.pushConversation(a.id, { conversation: c, messages: [older, newer] })).toEqual({ status: "merged", appended: 1, skipped: 1 });
+      expect((await store.listMessages(c.id)).map((m) => m.id)).toEqual([m1.id, m2.id, newer.id]);
+      expect(await store.pushConversation(b.id, { conversation: { ...c, userId: b.id }, messages: [message(c.id, { createdAt: t(40) })] })).toEqual({ status: "rejected", appended: 0, skipped: 1 });
+      await store.deleteConversation(a.id, c.id);
+      expect(await store.pushConversation(a.id, { conversation: c, messages: [m1] })).toEqual({ status: "deleted", appended: 0, skipped: 1 });
+      expect(await store.listMessages(c.id)).toEqual([]);
+    });
+
+    it("renameConversationIfCurrent is compare-and-set and idempotent", async () => {
+      const u = user();
+      await store.createUser(u);
+      const c = conversation(u.id);
+      await store.saveConversation(c);
+      expect(await store.renameConversationIfCurrent(u.id, c.id, "A", null, t(1))).toEqual({ status: "applied" }); // generated title
+      expect(await store.renameConversationIfCurrent(u.id, c.id, "B", 0, t(2))).toEqual({ status: "conflict" }); // stale base
+      expect(await store.renameConversationIfCurrent(u.id, c.id, "A", 0, t(3))).toEqual({ status: "applied" }); // already true
+      expect(await store.renameConversationIfCurrent(u.id, c.id, "B", 1, t(4))).toEqual({ status: "applied" });
+      expect((await store.getConversation(u.id, c.id))?.title).toBe("B");
+      expect(await store.renameConversationIfCurrent("someone-else", c.id, "C", 2, t(5))).toEqual({ status: "not_found" });
+    });
+
     it("stores per-user plugin settings and upserts them", async () => {
       const a = user();
       const b = user();

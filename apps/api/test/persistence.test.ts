@@ -186,14 +186,121 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL", () => {
     await s1.close();
 
     const rotated = await PostgresStore.connect({
-      connectionString: TEST_DATABASE_URL!, schema, cipher: DataCipher.fromConfig(b64(k2), "k2", `k1:${b64(k1)}`),
+      connectionString: TEST_DATABASE_URL!, schema, autoMigrate: false, cipher: DataCipher.fromConfig(b64(k2), "k2", `k1:${b64(k1)}`),
     });
     expect((await rotated.getDocument("user-rot-0001", "doc-rotated1"))?.extractedText).toBe("old");
     await rotated.close();
 
+    // Even with auto-maintenance on, a row under a key the server lacks is left alone (start-up must not crash).
     const lost = await PostgresStore.connect({ connectionString: TEST_DATABASE_URL!, schema, cipher: DataCipher.fromConfig(b64(k2), "k2") });
     await expect(lost.getDocument("user-rot-0001", "doc-rotated1")).rejects.toThrow(/key id "k1"/);
     await lost.close();
+  });
+
+  async function seedConversation(store: PostgresStore, secret: string) {
+    const userId = `user-${randomBytes(4).toString("hex")}`;
+    const now = new Date().toISOString();
+    await store.createUser({ id: userId, email: `${userId}@example.com`, displayName: "E", passwordHash: "h", createdAt: now });
+    const conv = { id: `conv-${randomBytes(4).toString("hex")}`, userId, title: `Title ${secret}`, titleIsCustom: true, mode: "general" as const, createdAt: now, updatedAt: now };
+    await store.saveConversation(conv);
+    const message = (id: string, role: "user" | "assistant", content: string) => ({
+      id, conversationId: conv.id, role, content, origin: role === "user" ? null : ("openai" as const), model: role === "user" ? null : "m",
+      demo: false, status: "complete" as const, compareGroupId: null, attachmentIds: [], createdAt: now,
+    });
+    await store.saveMessage(message("msg-user-0001", "user", `User says ${secret}`));
+    await store.saveMessage(message("msg-asst-0001", "assistant", `Assistant echoes ${secret}`));
+    return { userId, conv };
+  }
+
+  it("encrypts conversation titles and both user and assistant message content at rest", async () => {
+    const { store, pool } = await freshPool();
+    const secret = "CANARY-PRIVATE-7f3a";
+    const { userId, conv } = await seedConversation(store, secret);
+    // Uploads from devices go through a different write path; check it too.
+    await store.pushConversation(userId, {
+      conversation: { ...conv, id: "conv-pushed-0001", title: `Pushed ${secret}` },
+      messages: [{ id: "msg-push-0001", conversationId: "conv-pushed-0001", role: "user", content: `Offline ${secret}`, origin: null, model: null, demo: false, status: "complete", compareGroupId: null, attachmentIds: [], createdAt: conv.createdAt }],
+    });
+    await store.renameConversationIfCurrent(userId, conv.id, `Renamed ${secret}`, 0, new Date().toISOString());
+
+    for (const table of ["conversations", "messages"]) {
+      const { rows } = await pool.query(`SELECT * FROM ${table}`);
+      const dump = rows.map((r) => JSON.stringify(r, (_k, v) => (v && v.type === "Buffer" ? Buffer.from(v.data).toString("latin1") : v))).join("\n");
+      expect(dump, table).not.toContain(secret);
+    }
+    const { rows } = await pool.query("SELECT title, title_key_id FROM conversations");
+    expect(rows.every((r) => r.title === null && r.title_key_id === "t1")).toBe(true);
+    expect((await store.getConversation(userId, conv.id))?.title).toBe(`Renamed ${secret}`);
+    expect((await store.listMessages(conv.id)).map((m) => m.content)).toEqual([`User says ${secret}`, `Assistant echoes ${secret}`]);
+    const changes = await store.listConversationChanges(userId, 0, 10);
+    expect(changes.changes.flatMap((c) => c.messages.map((m) => m.content))).toContain(`Offline ${secret}`);
+    expect(await store.encryptionStatus()).toEqual({ plaintextTitles: 0, plaintextMessages: 0, retiredKeyRows: 0 });
+  });
+
+  it("binds message and title ciphertext to their row", async () => {
+    const { store, pool } = await freshPool();
+    const { conv } = await seedConversation(store, "x");
+    await pool.query(
+      "UPDATE messages SET content_enc = (SELECT content_enc FROM messages WHERE id = 'msg-user-0001') WHERE id = 'msg-asst-0001'",
+    );
+    await expect(store.listMessages(conv.id)).rejects.toThrow(DataKeyError);
+    const { conv: other, userId } = await seedConversation(store, "y");
+    await pool.query("UPDATE conversations SET title_enc = (SELECT title_enc FROM conversations WHERE id = $1) WHERE id = $2", [conv.id, other.id]);
+    await expect(store.getConversation(userId, other.id)).rejects.toThrow(DataKeyError);
+  });
+
+  it("deleting a conversation leaves no title ciphertext or message rows behind", async () => {
+    const { store, pool } = await freshPool();
+    const { userId, conv } = await seedConversation(store, "gone");
+    await store.deleteConversation(userId, conv.id);
+    const { rows } = await pool.query("SELECT title, title_enc, title_key_id FROM conversations WHERE id = $1", [conv.id]);
+    expect(rows[0]).toEqual({ title: null, title_enc: null, title_key_id: null });
+    expect((await pool.query("SELECT 1 FROM messages WHERE conversation_id = $1", [conv.id])).rowCount).toBe(0);
+  });
+
+  it("backfills plaintext rows written before migration 4, readable throughout", async () => {
+    const { store, pool } = await freshPool();
+    const { userId, conv } = await seedConversation(store, "legacy");
+    // Simulate rows written by the previous server version (plaintext columns, no ciphertext).
+    await pool.query("UPDATE conversations SET title = 'Legacy title', title_enc = NULL, title_key_id = NULL WHERE id = $1", [conv.id]);
+    await pool.query("UPDATE messages SET content = 'Legacy text', content_enc = NULL, content_key_id = NULL WHERE conversation_id = $1", [conv.id]);
+    expect((await store.getConversation(userId, conv.id))?.title).toBe("Legacy title");
+    expect(await store.encryptionStatus()).toMatchObject({ plaintextTitles: 1, plaintextMessages: 2 });
+
+    expect(await store.runEncryptionMaintenance(1)).toEqual({ titles: 1, messages: 2, documents: 0 });
+    expect(await store.encryptionStatus()).toEqual({ plaintextTitles: 0, plaintextMessages: 0, retiredKeyRows: 0 });
+    expect((await store.getConversation(userId, conv.id))?.title).toBe("Legacy title");
+    expect((await store.listMessages(conv.id)).map((m) => m.content)).toEqual(["Legacy text", "Legacy text"]);
+    const raw = await pool.query("SELECT content FROM messages WHERE conversation_id = $1", [conv.id]);
+    expect(raw.rows.every((r) => r.content === null)).toBe(true);
+  });
+
+  it("rotates every encrypted field to a new key; the old key can then be retired", async () => {
+    const k1 = key();
+    const k2 = key();
+    const schema = `t_${randomBytes(6).toString("hex")}`;
+    const s1 = await PostgresStore.connect({ connectionString: TEST_DATABASE_URL!, schema, cipher: DataCipher.fromConfig(b64(k1), "k1") });
+    disposers.push(async () => {
+      await s1.dropSchema(schema).catch(() => undefined);
+    });
+    const { userId, conv } = await seedConversation(s1, "rotate-me");
+    await s1.saveDocument({
+      id: "doc-rotate01", userId, name: "a.txt", kind: "txt", mimeType: "text/plain", sizeBytes: 3, status: "ready",
+      statusDetail: "", extractedText: "doc text", pageCount: null, createdAt: new Date().toISOString(),
+    });
+    await s1.close();
+
+    const both = await PostgresStore.connect({ connectionString: TEST_DATABASE_URL!, schema, autoMigrate: false, cipher: DataCipher.fromConfig(b64(k2), "k2", `k1:${b64(k1)}`) });
+    expect((await both.encryptionStatus()).retiredKeyRows).toBe(4); // 1 title + 2 messages + 1 document
+    expect(await both.runEncryptionMaintenance()).toEqual({ titles: 1, messages: 2, documents: 1 });
+    expect((await both.encryptionStatus()).retiredKeyRows).toBe(0);
+    await both.close();
+
+    const onlyNew = await PostgresStore.connect({ connectionString: TEST_DATABASE_URL!, schema, cipher: DataCipher.fromConfig(b64(k2), "k2") });
+    expect((await onlyNew.getConversation(userId, conv.id))?.title).toBe("Title rotate-me");
+    expect((await onlyNew.listMessages(conv.id)).map((m) => m.content)).toEqual(["User says rotate-me", "Assistant echoes rotate-me"]);
+    expect((await onlyNew.getDocument(userId, "doc-rotate01"))?.extractedText).toBe("doc text");
+    await onlyNew.close();
   });
 
   it("keeps accounts, sessions, conversations, documents and usage across a server restart", async () => {

@@ -94,6 +94,6 @@ export const toPluginSetting = (s: PluginSettingRecord): PluginSetting => ({
 export const toSyncChange = (c: ConversationChange): SyncChange => ({
   seq: c.seq,
   deleted: c.deleted,
-  conversation: { ...toConversation(c.conversation), titleIsCustom: c.conversation.titleIsCustom },
+  conversation: { ...toConversation(c.conversation), titleIsCustom: c.conversation.titleIsCustom, titleRev: c.titleRev },
   messages: c.messages.map(toMessage),
 });
