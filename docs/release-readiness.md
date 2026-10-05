@@ -1,6 +1,6 @@
 # Release readiness
 
-Status of every release gate after the final pre-staging hardening (branch `claude/epic-fermi-fmpda0`).
+Status of every release gate after the native UI/UX milestone (branch `claude/epic-fermi-fmpda0`).
 Nothing is deployed and nothing paid has been provisioned. "Verified" means it ran and passed in the
 authoring environment; "not verified" means it has not run anywhere yet, and why.
 
@@ -12,13 +12,14 @@ authoring environment; "not verified" means it has not run anywhere yet, and why
 | TypeScript lint + typecheck + build | ✅ verified locally | `pnpm lint`, `pnpm typecheck`, `pnpm build` |
 | Contracts tests | ✅ 37 / 37 | `pnpm test` |
 | API tests, in-memory store | ✅ 378 passed, 11 skipped | the 11 are PostgreSQL-only tests, which run in the next row |
-| API tests, PostgreSQL 16 + Redis 7 | ✅ 410 / 410, 0 skipped | `REQUIRE_DB_TESTS=1 REQUIRE_REDIS_TESTS=1 pnpm --filter @dash-ai/api test:pg` (store contract runs on both stores here) |
+| API tests, PostgreSQL 16 + Redis 7 | ✅ 410 / 410, 0 skipped | `REQUIRE_DB_TESTS=1 REQUIRE_REDIS_TESTS=1 pnpm --filter @dash-ai/api test:pg` (store contract runs on both stores here). Backend code is unchanged in the UI milestone; one run against an already-running shared Redis had 2 failures that did not reproduce in 3 further runs |
 | Shared rate limiting | ✅ verified against a real Redis | two API instances share limits; 60 concurrent requests on 3 instances get exactly the capacity; outage and recovery |
 | Migrations from zero, re-run, encryption maintenance | ✅ verified locally | built `migrate-cli` twice (5 applied, then up to date) and `data-cli` (0 plaintext rows) on a fresh database |
 | Production start-up | ✅ verified | built server with `NODE_ENV=production`, PostgreSQL and Redis: `/ready` ready, `/metrics` 401 without the token, only the expected warnings for deliberately insecure local settings |
-| Kotlin core (unit + contract + live API on PostgreSQL) | ✅ 124 / 124, 0 skipped (10 live contract tests) | `DASH_API_BASE_URL=… ../gradlew test` against the built API with `PROVIDER_MODE=fake` |
+| Kotlin core (unit + contract + UI state logic + live API on PostgreSQL) | ✅ 148 / 148, 0 skipped (11 live contract tests, incl. Tools & Connections) | `DASH_API_BASE_URL=… ../gradlew test` against the built API with `PROVIDER_MODE=fake` |
 | Shared-device sign-out (core) | ✅ verified | 13 core tests + live two-account test; mutation-checked |
-| Android app module compile, Robolectric/Room tests, lint, APK | ❌ **not verified** | Google Maven (`dl.google.com`) is blocked by this environment's network policy. Only `AppServices`, `ChatViewModel`, `PrefsSyncStateStore` and `PrefsLocalOwnerStore` were type-checked, against the real core and stubbed Android types; the `AuthScreen`/`AccountScreen` edits are not compiled. The `-PdashServerUrl` build-script logic was checked in a plain Gradle project. **No APK was built; there is no APK checksum.** |
+| Android app UI on the JVM (`apps/android/jvm-ui`) | ✅ compiled; 20 / 20 UI tests; screens rendered | The real UI source compiled against Compose Multiplatform 1.7.3 with Android-only APIs stubbed; the app's Compose UI tests run on the desktop test runtime; mutation-checked (a hard-coded name, an end-to-end-encryption claim, not remembering the provider, and a hidden recovery card were each caught) |
+| Android app module compile (AGP), Robolectric/Room tests, lint, APK | ❌ **not verified** | Google Maven (`dl.google.com`) is blocked by this environment's network policy: the Android Gradle plugin cannot even be resolved (attempted once this milestone). **No APK was built; there is no APK checksum.** `android.yml` does all of this once Actions runs |
 | Demo Mode | ✅ usable | Demo conversations and documents still work after a sign-out (core tests); app UI tests are Demo Mode and unaffected (not run here) |
 | OpenAI / Anthropic adapters, mocked | ✅ verified | real SDKs against scripted wire formats, plus retries/outages (`provider-resilience.test.ts`) |
 | OpenAI live smoke | ❌ **not run** | no API key available |
@@ -28,8 +29,18 @@ authoring environment; "not verified" means it has not run anywhere yet, and why
 | Hostile and encrypted documents | ✅ verified | budgets, isolated extraction, encrypted-PDF preflight with a real RC4 fixture (19 tests) |
 | Observability without sensitive data | ✅ verified | canary test over every instrumented path |
 | Mutation checks | ✅ | every security-critical protection added in this milestone was reverted once; a test failed each time |
-| Workflow lint | ✅ verified locally | actionlint 1.7.7 on all five workflows |
+| Workflow lint | ✅ verified locally | actionlint 1.7.7 on all workflows (incl. the new `jvm-ui` job) |
 | GitHub Actions | ❌ **not running** | every job on this branch still fails within seconds without a runner (no logs, `runner_id` 0), consistent with an account-level Actions restriction (billing or spending limit) |
+
+## Android UI: what is verified, and how far
+
+| Level | Status |
+| --- | --- |
+| Implemented | ✅ All screens in [android-navigation.md](android-navigation.md), on the design system in [ui-design-system.md](ui-design-system.md) |
+| Compiled | ✅ against Compose Multiplatform 1.7.3 on the JVM (same Compose 1.7 / Material 3 APIs); ❌ not with the Android Gradle plugin / Android SDK |
+| Behaviour tested | ✅ 20 Compose UI tests on the JVM test runtime (stubbed navigation, lifecycle and platform); ✅ UI state logic in 16 core tests; ❌ Robolectric not run |
+| Visually checked | ✅ 19 screens rendered by the desktop Skia renderer and inspected (light and dark; see [screenshots](screenshots/android/README.md)); two defects found and fixed (markdown tables, brand mark size). Fonts and system bars differ from Android |
+| Device-verified | ❌ Not run on any emulator or phone: insets/keyboard on real devices, TalkBack, font scaling at 200 %, Samsung One UI, file picker, share sheet, system back and predictive back are unverified |
 
 ## What you need to provide
 
@@ -48,6 +59,6 @@ authoring environment; "not verified" means it has not run anywhere yet, and why
 ## Known limitations that do not block a staging test
 
 See the residual risks in [threat-model.md](threat-model.md) and the table in [roadmap.md](roadmap.md):
-no session list / sign-out-everywhere button in the app, encrypted PDFs refused (users upload an
+no server-side session list, encrypted PDFs refused (users upload an
 unprotected copy), no automatic provider failover (by design, ADR 0011), no write tools or external
 plugins, images and scanned PDFs not read. No application-level blocker remains for a staging test.

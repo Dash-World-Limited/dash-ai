@@ -80,7 +80,7 @@ defects found by the new tests or the audit; each has a regression test that fai
   someone else" reveals that an id exists. Ids are random UUIDs in the app; the API also accepts shorter ids.
   Registration also reveals whether an email has an account (sign-in does not).
 - **Email and display name** are plaintext personal data (see [data-inventory.md](data-inventory.md)).
-- **No session list**, no "sign out everywhere" button in the app yet (the API and Kotlin core support it),
+- **No session list** (the server keeps no device list; the app offers "Sign out everywhere" instead),
   no password change or reset, no refresh-token rotation (sessions are fixed-lifetime opaque tokens).
 - **Whoever runs the server holds the key**: field encryption protects dumps and backups, not a compromised host.
   An attacker with database *write* access can mint sessions or replace password hashes, and can roll a

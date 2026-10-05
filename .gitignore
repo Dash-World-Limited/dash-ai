@@ -34,3 +34,7 @@ Thumbs.db
 
 # Local data written by the API in development
 apps/api/.data/
+
+# Local Redis snapshots (test servers started in the repo)
+dump.rdb
+*.rdb

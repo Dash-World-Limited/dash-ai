@@ -30,7 +30,7 @@ The staging procedure is prepared in [staging-runbook.md](staging-runbook.md) (n
   batch failures, concurrent devices; PostgreSQL pulls read one consistent snapshot ([sync.md](sync.md)).
 - **Hostile documents** are measured and parsed in an isolated, resource-limited process (a 357 KB file
   could previously cost the server gigabytes).
-- **Credentials**: OWASP scrypt cost with upgrade at sign-in; sign out everywhere (API + Kotlin core).
+- **Credentials**: OWASP scrypt cost with upgrade at sign-in; sign out everywhere (API, Kotlin core and the app's Account screen).
 - **Configuration**: `.env.example` kept in sync by a test; strict encryption-key parsing; production
   warnings for deliberate opt-outs; pinned migration checksums.
 - **CI**: manual, credential-gated live-smoke workflow; actionlint job; release gates and APK checksums.
@@ -69,8 +69,8 @@ The staging procedure is prepared in [staging-runbook.md](staging-runbook.md) (n
 | **GitHub Actions** | Every job on this branch fails before it starts (no runner is assigned, no logs), which points at an account-level Actions restriction (billing or spending limit). None of the workflows has been observed running; all pass actionlint locally. |
 | External plugins (GitHub, Gmail, Calendar, web search, Dash World services) | **Do not exist.** The only external-style plugin is `mock-github` inside the tests (canned data). No connector framework, OAuth flow or per-user secret store exists. |
 | Write tools | Can be declared but are refused by the executor; needs a per-call confirmation flow. |
-| Android plugin/tool UI | None. The app ignores `tool.*` events; manage plugins via the API. |
-| Android app module build | **Not built.** The account-guard wiring (`AppServices`, `PrefsLocalOwnerStore`) is type-checked only; `AuthScreen`/`AccountScreen` changes are not compiled. The Android SDK and Google Maven are unreachable from the authoring environment, so no APK exists and Robolectric/Room/lint have not run on this branch. The sync wiring files (`PrefsSyncStateStore`, `AppServices`, `ChatViewModel`) were type-checked with the real Kotlin compiler against the real core module and stubbed Android types only. `android.yml` compiles, tests, lints and builds the debug APK once Actions runs. No Room-level sync test exists yet. |
+| Android plugin/tool UI | Tools & Connections lists the server's registry and switches plugins; chats show tool names and outcomes. No external plugins exist yet, and past tool activity is not shown for reopened chats. |
+| Android app module build | **Not built with the Android Gradle plugin.** Google Maven is unreachable from the authoring environment, so no APK exists and Robolectric/Room/lint have not run. The UI code is compiled and its UI tests run on the JVM against Compose Multiplatform 1.7.3 (`apps/android/jvm-ui`), with Android-only APIs stubbed; `android.yml` builds the real module once Actions runs. |
 | Document/prompt/settings sync, background sync | Not implemented. Sync runs at sign-in, app start and when connectivity returns. |
 | Production database | A local PostgreSQL 16 was used for tests. No managed database, backups, point-in-time recovery, TLS configuration or key management exists; you must provide them. |
 | Encryption of document names, emails, display names | Not done (plaintext; see [data-inventory.md](data-inventory.md)). Titles, messages and document text are encrypted. |
@@ -97,8 +97,7 @@ Everything left unverified needs things this environment does not have:
    a secret manager for `DATA_ENCRYPTION_KEY` and provider keys, HTTPS reverse proxy with `TRUST_PROXY`,
    the deliberate `migrate` + `data:encrypt` deploy steps, a shared rate limiter if more than one instance
    runs, and a real phone (Samsung A55) syncing against it.
-4. **Small product decisions** the threat model surfaced: a "sign out everywhere" button, and whether
-   signing out should remove that account's conversations from the device.
+4. **Small product decisions** the threat model surfaced: whether to add a server-side session list.
 
 ## Later
 - Plugins: a connector/secret/consent design, a first read-only real plugin (web search with citations is

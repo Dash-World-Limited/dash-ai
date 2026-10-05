@@ -128,7 +128,7 @@ recorded as `other`, so free text cannot leak into metrics. `GET /ready` reports
 
 ## Known limitations
 See [roadmap.md](roadmap.md#security-follow-ups) and the residual risks in
-[threat-model.md](threat-model.md). Not done: email verification and password reset, a session list and an
-in-app "sign out everywhere" button, TLS termination and deployment (prepared in
+[threat-model.md](threat-model.md). Not done: email verification and password reset, a session list (the app
+has "Sign out everywhere" in Account), TLS termination and deployment (prepared in
 [staging-runbook.md](staging-runbook.md), not executed), a secrets/consent design for external plugins, a
 confirmation flow for write tools, and app-level encryption of on-device data.
