@@ -38,6 +38,9 @@ class SyncTracker(private val clock: Clock = Clock.System) {
         if (s.userId == userId) s.copy(running = false, lastSuccessAt = clock.now(), lastError = null) else s
     }
 
+    /** The sync was postponed (an answer is streaming): nothing changed, nothing is claimed. */
+    fun deferred(userId: String) = state.update { s -> if (s.userId == userId) s.copy(running = false) else s }
+
     fun failed(userId: String, message: String) = state.update { s ->
         if (s.userId == userId) s.copy(running = false, lastError = message) else s
     }

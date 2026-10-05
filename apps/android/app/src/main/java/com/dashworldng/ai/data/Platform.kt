@@ -11,15 +11,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-interface ConnectivityMonitor {
-    val isOnline: StateFlow<Boolean>
-}
-
-class FixedConnectivity(online: Boolean = true) : ConnectivityMonitor {
-    val state = MutableStateFlow(online)
-    override val isOnline: StateFlow<Boolean> = state.asStateFlow()
-}
-
 class AndroidConnectivityMonitor(context: Context) : ConnectivityMonitor {
     private val manager = context.getSystemService(ConnectivityManager::class.java)
     private val state = MutableStateFlow(currentlyOnline())

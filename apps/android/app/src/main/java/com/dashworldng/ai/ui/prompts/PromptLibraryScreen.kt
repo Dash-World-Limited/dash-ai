@@ -64,7 +64,7 @@ import com.dashworldng.ai.di.AppServices
 import com.dashworldng.ai.di.ComposerPrefill
 import com.dashworldng.ai.ui.components.EmptyState
 import com.dashworldng.ai.ui.dashViewModel
-import com.dashworldng.ai.ui.theme.DashColors
+import com.dashworldng.ai.ui.theme.DashTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -169,12 +169,12 @@ fun PromptLibraryScreen(services: AppServices, onBack: () -> Unit, onUsePrompt: 
     var deleting by remember { mutableStateOf<PromptItem?>(null) }
 
     Scaffold(
-        containerColor = DashColors.Black,
+        containerColor = DashTheme.colors.background,
         topBar = {
             TopAppBar(
                 title = { Text("Prompt library") },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back") } },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = DashColors.Black),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = DashTheme.colors.background),
             )
         },
         floatingActionButton = {
@@ -182,8 +182,8 @@ fun PromptLibraryScreen(services: AppServices, onBack: () -> Unit, onUsePrompt: 
                 onClick = vm::startNew,
                 icon = { Icon(Icons.Rounded.Add, contentDescription = null) },
                 text = { Text("New prompt") },
-                containerColor = DashColors.Gold,
-                contentColor = DashColors.Black,
+                containerColor = DashTheme.colors.accent,
+                contentColor = DashTheme.colors.onAccent,
                 modifier = Modifier.testTag("new_prompt"),
             )
         },
@@ -209,8 +209,8 @@ fun PromptLibraryScreen(services: AppServices, onBack: () -> Unit, onUsePrompt: 
                         onClick = { vm.setFilter(f) },
                         label = { Text(filterLabel(f)) },
                         colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = DashColors.GoldContainer,
-                            selectedLabelColor = DashColors.GoldLight,
+                            selectedContainerColor = DashTheme.colors.accentContainer,
+                            selectedLabelColor = DashTheme.colors.accentInk,
                         ),
                     )
                 }
@@ -218,7 +218,7 @@ fun PromptLibraryScreen(services: AppServices, onBack: () -> Unit, onUsePrompt: 
             if (state.prompts.isEmpty()) {
                 EmptyState(
                     title = if (state.filter == PromptFilter.Favorites) "No favourites yet" else "No prompts found",
-                    body = if (state.filter == PromptFilter.Favorites) "Tap the star on a prompt to save it here." else "Try another search or create your own prompt.",
+                    message = if (state.filter == PromptFilter.Favorites) "Tap the star on a prompt to save it here." else "Try another search or create your own prompt.",
                     icon = Icons.Rounded.Bookmarks,
                 )
             }
@@ -255,10 +255,10 @@ fun PromptLibraryScreen(services: AppServices, onBack: () -> Unit, onUsePrompt: 
                 TextButton(onClick = {
                     vm.delete(prompt)
                     deleting = null
-                }) { Text("Delete", color = DashColors.Error) }
+                }) { Text("Delete", color = DashTheme.colors.error) }
             },
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
-            containerColor = DashColors.SurfaceHigh,
+            containerColor = DashTheme.colors.surfaceMuted,
         )
     }
 }
@@ -281,42 +281,42 @@ private fun PromptCard(
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
-        color = DashColors.Surface,
-        border = BorderStroke(1.dp, DashColors.OutlineSoft),
+        color = DashTheme.colors.surface,
+        border = BorderStroke(1.dp, DashTheme.colors.outline),
         modifier = Modifier.testTag("prompt_card"),
     ) {
         Column(Modifier.fillMaxWidth().padding(start = 14.dp, top = 10.dp, end = 4.dp, bottom = 6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(prompt.title, style = MaterialTheme.typography.titleSmall, color = DashColors.White)
+                    Text(prompt.title, style = MaterialTheme.typography.titleSmall, color = DashTheme.colors.ink)
                     Text(
                         if (prompt.isCustom) "${prompt.category.label} · My prompt" else prompt.category.label,
                         style = MaterialTheme.typography.labelSmall,
-                        color = DashColors.Gold,
+                        color = DashTheme.colors.accentInk,
                     )
                 }
                 IconButton(onClick = onFavorite) {
                     Icon(
                         if (favorite) Icons.Rounded.Star else Icons.Rounded.StarBorder,
                         contentDescription = if (favorite) "Remove from favourites" else "Add to favourites",
-                        tint = if (favorite) DashColors.Gold else DashColors.Grey,
+                        tint = if (favorite) DashTheme.colors.accentInk else DashTheme.colors.inkSecondary,
                     )
                 }
             }
             Text(
                 prompt.body,
                 style = MaterialTheme.typography.bodySmall,
-                color = DashColors.Grey,
+                color = DashTheme.colors.inkSecondary,
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(end = 10.dp, top = 4.dp),
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onUse, modifier = Modifier.testTag("use_prompt")) { Text("Use prompt", color = DashColors.Gold) }
+                TextButton(onClick = onUse, modifier = Modifier.testTag("use_prompt")) { Text("Use prompt", color = DashTheme.colors.accentInk) }
                 Spacer(Modifier.weight(1f))
                 if (prompt.isCustom) {
-                    IconButton(onClick = onEdit) { Icon(Icons.Rounded.Edit, contentDescription = "Edit prompt", tint = DashColors.Grey) }
-                    IconButton(onClick = onDelete) { Icon(Icons.Rounded.Delete, contentDescription = "Delete prompt", tint = DashColors.Grey) }
+                    IconButton(onClick = onEdit) { Icon(Icons.Rounded.Edit, contentDescription = "Edit prompt", tint = DashTheme.colors.inkSecondary) }
+                    IconButton(onClick = onDelete) { Icon(Icons.Rounded.Delete, contentDescription = "Delete prompt", tint = DashTheme.colors.inkSecondary) }
                 }
             }
         }
@@ -365,11 +365,11 @@ private fun PromptEditorDialog(
                     maxLines = 8,
                     modifier = Modifier.fillMaxWidth().testTag("prompt_body_input"),
                 )
-                editor.error?.let { Text(it, color = DashColors.Error, style = MaterialTheme.typography.bodySmall) }
+                editor.error?.let { Text(it, color = DashTheme.colors.error, style = MaterialTheme.typography.bodySmall) }
             }
         },
-        confirmButton = { TextButton(onClick = onSave, modifier = Modifier.testTag("save_prompt")) { Text("Save", color = DashColors.Gold) } },
+        confirmButton = { TextButton(onClick = onSave, modifier = Modifier.testTag("save_prompt")) { Text("Save", color = DashTheme.colors.accentInk) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        containerColor = DashColors.SurfaceHigh,
+        containerColor = DashTheme.colors.surfaceMuted,
     )
 }

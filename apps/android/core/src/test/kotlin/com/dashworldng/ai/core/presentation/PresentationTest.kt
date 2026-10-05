@@ -167,6 +167,10 @@ class PresentationTest {
 
         tracker.started("u1")
         assertEquals(SyncStatusKind.SYNCING, SyncStatuses.derive(tracker.snapshot.value, "u1", true).kind)
+        // A postponed sync (answer streaming) never claims to be synced.
+        tracker.deferred("u1")
+        assertEquals(SyncStatusKind.WAITING, SyncStatuses.derive(tracker.snapshot.value, "u1", true).kind)
+        tracker.started("u1")
         now = 5_000L
         tracker.succeeded("u1")
         val synced = SyncStatuses.derive(tracker.snapshot.value, "u1", true)

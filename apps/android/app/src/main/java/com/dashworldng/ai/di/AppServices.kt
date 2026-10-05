@@ -19,6 +19,8 @@ import com.dashworldng.ai.core.documents.DemoDocumentGateway
 import com.dashworldng.ai.core.documents.DocumentGateway
 import com.dashworldng.ai.core.model.AssistantMode
 import com.dashworldng.ai.core.model.DocumentItem
+import com.dashworldng.ai.core.presentation.SyncTracker
+import com.dashworldng.ai.core.tools.ToolsService
 import com.dashworldng.ai.core.remote.DashApiClient
 import com.dashworldng.ai.core.remote.RemoteChatGateway
 import com.dashworldng.ai.core.remote.RemoteDocumentGateway
@@ -109,6 +111,12 @@ interface AppServices {
 
     /** Pulls the signed-in account's conversations into Room. Null when no valid server is configured. */
     fun syncService(): ConversationSyncService?
+
+    /** The server's plugin registry and this account's tool choices. Null when no valid server is configured. */
+    fun toolsService(): ToolsService?
+
+    /** What this app session knows about sync (shown as Synced / Syncing / Offline / Sync issue). */
+    val syncTracker: SyncTracker
 }
 
 /** Returned when no valid server is configured, so the failure is explained instead of crashing. */
@@ -168,6 +176,10 @@ abstract class BaseServices : AppServices {
     }
 
     override fun authService(): AuthService? = apiClient()?.let { client -> AuthService { client } }
+
+    override fun toolsService(): ToolsService? = apiClient()?.let { client -> ToolsService { client } }
+
+    override val syncTracker: SyncTracker by lazy { SyncTracker(clock) }
 
     @Volatile
     override var syncGuard: () -> Boolean = { true }
