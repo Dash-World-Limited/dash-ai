@@ -38,3 +38,4 @@ apps/api/.data/
 # Local Redis snapshots (test servers started in the repo)
 dump.rdb
 *.rdb
+*.whl
