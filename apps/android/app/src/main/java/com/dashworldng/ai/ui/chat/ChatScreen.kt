@@ -1,5 +1,6 @@
 package com.dashworldng.ai.ui.chat
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -146,6 +147,8 @@ fun ChatContent(state: ChatUiState, events: ChatEvents, drawer: DrawerCallbacks,
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
+    // System Back closes the open history drawer first, before leaving the screen.
+    BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
     var editing by remember { mutableStateOf<ChatMessage?>(null) }
     var providerSheet by rememberSaveable { mutableStateOf(false) }
     var modeSheet by rememberSaveable { mutableStateOf(false) }

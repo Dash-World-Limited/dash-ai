@@ -14,6 +14,13 @@ data class ApiError(val code: String, val message: String, val retryable: Boolea
         )
 
         val unexpected = ApiError("internal_error", "Something went wrong. Please try again.", retryable = true)
+
+        /** Same wording as the web app. */
+        val connectionLost = ApiError(
+            code = "network",
+            message = "The connection was lost before the answer finished. What arrived is kept; try again when you're back online.",
+            retryable = true,
+        )
     }
 }
 

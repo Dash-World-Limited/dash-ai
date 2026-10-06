@@ -322,6 +322,35 @@ class ChatSessionTest {
     }
 
     @Test
+    fun `a lost connection ends the streaming answer at once as failed, keeping its text and offering retry`() = runTest {
+        val gateway = ScriptedGateway { request ->
+            emit(ChatStreamEvent.Started("s", request.conversationId, null, listOf(StreamTarget("x", ProviderId.OPENAI, "m", false)), "r"))
+            emit(ChatStreamEvent.Delta("x", "Part one"))
+            emit(ChatStreamEvent.ToolCalled("x", "call_1", "dash-demo", "current_time"))
+            awaitCancellation()
+        }
+        val session = session(gateway)
+        session.send("Tell me", ModelChoice.OPENAI, AssistantMode.GENERAL)
+        advanceUntilIdle()
+        assertTrue(session.state.value.isGenerating)
+        session.connectionLost()
+        advanceUntilIdle()
+        val state = session.state.value
+        assertFalse(state.isGenerating)
+        val answer = state.messages.last()
+        assertEquals(MessageStatus.FAILED, answer.status)
+        assertEquals("Part one", answer.content)
+        assertTrue(answer.errorRetryable)
+        assertEquals(ApiError.connectionLost, state.error)
+        assertEquals(ToolCallStatus.ERROR, state.toolUses.getValue("x").single().status)
+        assertTrue(gateway.cancelledStreams.isEmpty()) // the server cannot be reached; nothing is sent
+        // Kept as failed after a restart too.
+        assertEquals(MessageStatus.FAILED, repository.getMessages(state.conversation!!.id).last().status)
+        session.connectionLost() // nothing streaming: no effect
+        assertEquals(state.messages, session.state.value.messages)
+    }
+
+    @Test
     fun `stopping closes tools that were still running`() = runTest {
         val gateway = ScriptedGateway { request ->
             emit(ChatStreamEvent.Started("s", request.conversationId, null, listOf(StreamTarget("x", ProviderId.OPENAI, "m", false)), "r"))

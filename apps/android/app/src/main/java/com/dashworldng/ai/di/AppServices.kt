@@ -17,6 +17,7 @@ import com.dashworldng.ai.core.data.PromptRepository
 import com.dashworldng.ai.core.demo.DemoChatGateway
 import com.dashworldng.ai.core.documents.DemoDocumentGateway
 import com.dashworldng.ai.core.documents.DocumentGateway
+import com.dashworldng.ai.core.documents.UploadSource
 import com.dashworldng.ai.core.model.AssistantMode
 import com.dashworldng.ai.core.model.DocumentItem
 import com.dashworldng.ai.core.presentation.SyncTracker
@@ -80,6 +81,29 @@ class PrefillBus {
     fun consume(): ComposerPrefill? = state.getAndUpdate { null }
 }
 
+/**
+ * Something another app shared with DASH AI ("Share → DASH AI"): text for the composer and files to
+ * attach. [refused] counts items that were not accepted (unsupported or unsafe sources), so the chat
+ * can say so instead of dropping them silently.
+ */
+data class IncomingShare(
+    val text: String? = null,
+    val files: List<UploadSource> = emptyList(),
+    val refused: Int = 0,
+)
+
+/** Holds a share until the app can show it (after onboarding and sign-in). */
+class ShareInbox {
+    private val state = MutableStateFlow<IncomingShare?>(null)
+    val pending: StateFlow<IncomingShare?> = state.asStateFlow()
+
+    fun post(share: IncomingShare) {
+        state.value = share
+    }
+
+    fun consume(): IncomingShare? = state.getAndUpdate { null }
+}
+
 /** Everything the screens need. The real app and UI tests provide different implementations. */
 interface AppServices {
     val settings: SettingsRepository
@@ -89,6 +113,7 @@ interface AppServices {
     val tokens: TokenStore
     val connectivity: ConnectivityMonitor
     val prefill: PrefillBus
+    val shares: ShareInbox
     val clock: Clock
     val syncState: SyncStateStore
 
@@ -217,6 +242,7 @@ class AppContainer(context: Context) : BaseServices() {
     override val tokens: TokenStore = KeystoreTokenStore(context)
     override val connectivity: ConnectivityMonitor = AndroidConnectivityMonitor(context)
     override val prefill: PrefillBus = PrefillBus()
+    override val shares: ShareInbox = ShareInbox()
     override val clock: Clock = Clock.System
     override val syncState: SyncStateStore = PrefsSyncStateStore(context)
 
@@ -246,6 +272,7 @@ class InMemoryServices(
     override val tokens: TokenStore = InMemoryTokenStore()
     override val connectivity: ConnectivityMonitor = fixedConnectivity
     override val prefill: PrefillBus = PrefillBus()
+    override val shares: ShareInbox = ShareInbox()
     override val clock: Clock = Clock.System
     override val syncState: SyncStateStore = InMemorySyncStateStore()
     override val demoDocuments: DocumentGateway = documentGatewayOverride ?: DemoDocumentGateway(stepDelayMillis = 0)

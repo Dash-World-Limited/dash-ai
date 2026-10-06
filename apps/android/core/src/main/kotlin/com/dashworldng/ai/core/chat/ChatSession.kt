@@ -148,6 +148,20 @@ class ChatSession(
         }
     }
 
+    /**
+     * The device lost its connection while an answer was streaming. A dropped connection can keep the
+     * request open until the read timeout (90 s), so the answer ends now as failed, with what arrived
+     * kept and Retry offered. Nothing is sent to the server (it cannot be reached). Callers skip this
+     * in Demo Mode, which needs no connection.
+     */
+    fun connectionLost() {
+        val current = job ?: return
+        if (!_state.value.isGenerating) return
+        current.cancel(ConnectionLost())
+    }
+
+    private class ConnectionLost : CancellationException("Connection lost")
+
     /** Generates the answer to [assistantMessageId]'s question again (replacing it). */
     fun regenerate(assistantMessageId: String, choiceOverride: ModelChoice? = null): Boolean {
         val messages = _state.value.messages
@@ -279,7 +293,9 @@ class ChatSession(
                 // A well-behaved stream ends every answer; anything still streaming ended unexpectedly.
                 finish(generation, MessageStatus.FAILED, "The response ended unexpectedly.")
             } catch (e: CancellationException) {
-                withContext(NonCancellable) { finish(generation, MessageStatus.STOPPED, null) }
+                withContext(NonCancellable) {
+                    if (e is ConnectionLost) failRequest(generation, ApiError.connectionLost) else finish(generation, MessageStatus.STOPPED, null)
+                }
                 throw e
             } catch (e: ApiException) {
                 failRequest(generation, e.error)
@@ -384,7 +400,7 @@ class ChatSession(
         if (persist) repository.upsertMessage(updated)
     }
 
-    private suspend fun finish(generation: Generation, status: MessageStatus, error: String?) {
+    private suspend fun finish(generation: Generation, status: MessageStatus, error: String?, retryable: Boolean = status == MessageStatus.FAILED) {
         val streaming = generation.answers.values.filter { it.status == MessageStatus.STREAMING }.map { it.id }
         // A tool still "running" when its answer ends will never report: show it as stopped or failed.
         val ended = if (status == MessageStatus.STOPPED) ToolCallStatus.CANCELLED else ToolCallStatus.ERROR
@@ -393,12 +409,14 @@ class ChatSession(
             if (calls.any(ToolUse::running)) setTools(generation, id, calls.map { if (it.running) it.copy(status = ended) else it })
         }
         for (id in streaming) {
-            updateAnswer(generation, id, persist = true) { it.copy(status = status, errorMessage = error ?: it.errorMessage) }
+            updateAnswer(generation, id, persist = true) {
+                it.copy(status = status, errorMessage = error ?: it.errorMessage, errorRetryable = if (status == MessageStatus.FAILED) retryable else it.errorRetryable)
+            }
         }
     }
 
     private suspend fun failRequest(generation: Generation, error: ApiError) {
-        finish(generation, MessageStatus.FAILED, error.message)
+        finish(generation, MessageStatus.FAILED, error.message, error.retryable)
         applyToState(generation) { it.copy(error = error) }
     }
 

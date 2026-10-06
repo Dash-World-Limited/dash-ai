@@ -21,6 +21,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.dashworldng.ai.core.chat.ChatGateway
 import com.dashworldng.ai.core.chat.ChatRequest
 import com.dashworldng.ai.core.demo.DemoChatGateway
+import com.dashworldng.ai.core.documents.UploadSource
 import com.dashworldng.ai.core.model.AssistantMode
 import com.dashworldng.ai.core.model.ChatMessage
 import com.dashworldng.ai.core.model.Conversation
@@ -31,6 +32,7 @@ import com.dashworldng.ai.core.stream.StreamTarget
 import com.dashworldng.ai.data.settings.AccountInfo
 import com.dashworldng.ai.data.settings.AppSettings
 import com.dashworldng.ai.di.InMemoryServices
+import com.dashworldng.ai.di.IncomingShare
 import com.dashworldng.ai.ui.DashAiApp
 import com.dashworldng.ai.ui.Routes
 import com.dashworldng.ai.core.demo.DemoFailure
@@ -42,16 +44,18 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.io.ByteArrayInputStream
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** A gateway that starts an answer and never finishes it, so tests can press Stop. */
-private class HangingGateway : ChatGateway {
-    override val isDemo: Boolean = true
+private class HangingGateway(demo: Boolean = true) : ChatGateway {
+    override val isDemo: Boolean = demo
     val cancelled = mutableListOf<String>()
 
     override fun stream(request: ChatRequest): Flow<ChatStreamEvent> = flow {
-        emit(ChatStreamEvent.Started("stream-1", request.conversationId, null, listOf(StreamTarget("answer-1", ProviderId.OPENAI, "demo-openai", true)), "test"))
+        emit(ChatStreamEvent.Started("stream-1", request.conversationId, null, listOf(StreamTarget("answer-1", ProviderId.OPENAI, "demo-openai", isDemo)), "test"))
         emit(ChatStreamEvent.Delta("answer-1", "Partial answer"))
         awaitCancellation()
     }
@@ -319,6 +323,58 @@ class DashAiUiTest {
         compose.onAllNodes(hasTestTag("use_prompt"))[0].performClick()
         waitForTag("composer_input")
         compose.onNodeWithTag("composer_input").assertTextContains("SWOT analysis", substring = true)
+    }
+
+    @Test
+    fun sharedTextAndFilesOpenANewChatReadyToEdit() {
+        val services = InMemoryServices(signedInDemo)
+        val notes = "Quarterly notes. Revenue grew.".toByteArray()
+        services.shares.post(
+            IncomingShare(
+                text = "Summarise this for my team",
+                files = listOf(UploadSource("notes.txt", "text/plain", notes.size.toLong()) { ByteArrayInputStream(notes) }),
+                refused = 1,
+            ),
+        )
+        compose.mainClock.autoAdvance = true
+        launch(services, Routes.SPLASH)
+        waitForTag("composer_input")
+        compose.onNodeWithTag("composer_input").assertTextContains("Summarise this for my team")
+        waitForTag("attachment_chip")
+        compose.onNodeWithText("notes.txt").assertExists()
+        waitForText("One shared item couldn't be added.")
+        assertNull(services.shares.pending.value)
+        // Nothing was sent: the person decides.
+        assertEquals(0, compose.onAllNodesWithTag("user_message").fetchSemanticsNodes().size)
+    }
+
+    @Test
+    fun aShareWaitsUntilOnboardingAndSignInAreDone() {
+        val services = InMemoryServices()
+        services.shares.post(IncomingShare(text = "Shared before signing in"))
+        launch(services, Routes.ONBOARDING)
+        waitForTag("onboarding")
+        compose.waitForIdle()
+        assertEquals("Shared before signing in", services.shares.pending.value?.text)
+        assertEquals(0, compose.onAllNodesWithTag("composer_input").fetchSemanticsNodes().size)
+    }
+
+    @Test
+    fun losingTheConnectionEndsAStreamingAnswerWithRetryInsteadOfHanging() {
+        val gateway = HangingGateway(demo = false)
+        val live = signedInDemo.copy(demoMode = false, account = AccountInfo("user-1", "ada@example.com", "Ada", isDemo = false))
+        val services = InMemoryServices(live, chatGatewayOverride = gateway)
+        launch(services, Routes.CHAT)
+        compose.onNodeWithTag("composer_input").performTextInput("Write a long story")
+        compose.onNodeWithTag("send_button").performClick()
+        waitForTag("stop_button")
+        waitForText("Partial answer")
+
+        services.fixedConnectivity.state.value = false
+        waitForTag("send_button")
+        waitForText("connection was lost")
+        compose.onNodeWithText("Partial answer").assertExists()
+        assertEquals(emptyList<String>(), gateway.cancelled) // the server cannot be reached
     }
 
     @Test

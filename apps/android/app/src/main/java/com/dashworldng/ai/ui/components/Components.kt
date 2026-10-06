@@ -46,16 +46,17 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathFillType
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -73,6 +74,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dashworldng.ai.core.presentation.StatusLabel
 import com.dashworldng.ai.core.presentation.StatusTone
+import com.dashworldng.ai.ui.brand.DashBrand
 import com.dashworldng.ai.ui.theme.DashTheme
 import com.dashworldng.ai.ui.theme.Radii
 import com.dashworldng.ai.ui.theme.Sizing
@@ -81,32 +83,23 @@ import com.dashworldng.ai.ui.theme.Spacing
 // ---- Brand -------------------------------------------------------------------------------------
 
 /**
- * The DASH AI mark: a gold "D" drawn in code (same geometry as res/drawable/ic_splash_mark.xml).
- * Temporary typographic mark until the official Dash World asset is supplied.
+ * The DASH AI mark, drawn from [DashBrand.MARK_PATH] (the same geometry as the launcher and splash
+ * icons) and scaled to fit [size]. Replace the mark in DashBrand, not here.
  */
 @Composable
 fun BrandMark(size: Dp, modifier: Modifier = Modifier) {
     val c = DashTheme.colors
     val gold = Brush.linearGradient(listOf(c.accent, c.accentInk))
-    Canvas(modifier.size(size).semantics { contentDescription = "DASH AI" }) {
-        // The glyph occupies x 37..73 and y 33..75 of the drawable's 108-unit viewport; scale that
-        // box (plus a hairline margin) to this size and centre it.
-        val s = this.size.minDimension / 44f
-        translate(left = (this.size.width - 36f * s) / 2f - 37f * s, top = (this.size.height - 42f * s) / 2f - 33f * s) {
-        val outer = Path().apply {
-            moveTo(37f * s, 33f * s)
-            lineTo(52f * s, 33f * s)
-            arcTo(Rect(Offset(31f * s, 33f * s), Offset(73f * s, 75f * s)), -90f, 180f, false)
-            lineTo(37f * s, 75f * s)
-            close()
-            moveTo(44.5f * s, 40.5f * s)
-            lineTo(52f * s, 40.5f * s)
-            arcTo(Rect(Offset(38.5f * s, 40.5f * s), Offset(65.5f * s, 67.5f * s)), -90f, 180f, false)
-            lineTo(44.5f * s, 67.5f * s)
-            close()
-            fillType = PathFillType.EvenOdd
-        }
-        drawPath(outer, gold)
+    val mark = remember { PathParser().parsePathString(DashBrand.MARK_PATH).toPath().apply { fillType = PathFillType.EvenOdd } }
+    Canvas(modifier.size(size).semantics { contentDescription = DashBrand.NAME }) {
+        val (left, top, right, bottom) = DashBrand.MARK_BOUNDS
+        val width = right - left
+        val height = bottom - top
+        val factor = this.size.minDimension / (maxOf(width, height) + 8f)
+        translate(left = (this.size.width - width * factor) / 2f, top = (this.size.height - height * factor) / 2f) {
+            scale(factor, pivot = Offset.Zero) {
+                translate(left = -left, top = -top) { drawPath(mark, gold) }
+            }
         }
     }
 }
@@ -118,10 +111,10 @@ fun BrandWordmark(modifier: Modifier = Modifier, fontSize: TextUnit = 15.sp, onD
     val ink = if (onDark) c.brandInk else c.ink
     Text(
         buildAnnotatedString {
-            withStyle(SpanStyle(color = ink, fontWeight = FontWeight.SemiBold)) { append("DASH") }
-            withStyle(SpanStyle(color = if (onDark) c.accent else c.accentInk, fontWeight = FontWeight.Medium)) { append(" AI") }
+            withStyle(SpanStyle(color = ink, fontWeight = FontWeight.SemiBold)) { append(DashBrand.WORDMARK_PRIMARY) }
+            withStyle(SpanStyle(color = if (onDark) c.accent else c.accentInk, fontWeight = FontWeight.Medium)) { append(" ${DashBrand.WORDMARK_ACCENT}") }
         },
-        modifier = modifier.semantics { contentDescription = "DASH AI" },
+        modifier = modifier.semantics { contentDescription = DashBrand.NAME },
         fontSize = fontSize,
         letterSpacing = (fontSize.value * 0.22f).sp,
         maxLines = 1,
