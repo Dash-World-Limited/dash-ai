@@ -76,10 +76,13 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
   }
 
   let conversation = await ctx.store.getConversation(userId, request.conversationId);
+  if (!conversation && (await ctx.store.conversationExists(request.conversationId))) {
+    // The id is taken. It may be this user's own new conversation, created a moment ago by a
+    // concurrent first request (another server or a retried stream): read it again, by user.
+    conversation = await ctx.store.getConversation(userId, request.conversationId);
+    if (!conversation) throw new AppError("not_found", "Conversation not found.");
+  }
   if (!conversation) {
-    if (await ctx.store.conversationExists(request.conversationId)) {
-      throw new AppError("not_found", "Conversation not found.");
-    }
     const now = ctx.now().toISOString();
     conversation = {
       id: request.conversationId,
