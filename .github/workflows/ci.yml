@@ -54,7 +54,7 @@ jobs:
           /tmp/actionlint -color
 
   backend:
-    name: Backend (lint, typecheck, unit + API tests on the in-memory store, build)
+    name: Backend and web (lint, typecheck, unit + API tests on the in-memory store, build)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -185,3 +185,63 @@ jobs:
       - name: API log
         if: failure()
         run: cat /tmp/api.log || true
+
+  web-e2e:
+    name: Web app in Chromium against the real API (fake providers, PostgreSQL) + screenshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: dash_web
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Install Chromium for Playwright
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+      - name: Start the API (fake providers) and the built web app
+        run: |
+          export DATABASE_URL=postgres://postgres@127.0.0.1:5432/dash_web
+          DATA_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+          export DATA_ENCRYPTION_KEY
+          node apps/api/dist/migrate-cli.js
+          PROVIDER_MODE=fake PORT=8787 FAKE_STREAM_DELAY_MS=5 LOG_LEVEL=warn RATE_LIMIT_AUTH_PER_MINUTE=100 node apps/api/dist/index.js > /tmp/api.log 2>&1 &
+          (cd apps/web && npx vite preview --host 127.0.0.1 --port 4173 > /tmp/web.log 2>&1 &)
+          for _ in $(seq 1 30); do curl -sf http://127.0.0.1:4173/health && break; sleep 1; done
+          curl -sf http://127.0.0.1:4173/health
+      - name: End-to-end tests (phone and desktop sizes)
+        working-directory: apps/web
+        env:
+          DASH_SHOTS_DIR: ${{ github.workspace }}/apps/web/test-results/screenshots
+        run: |
+          mkdir -p "$DASH_SHOTS_DIR"
+          npx playwright test
+      - name: Upload screenshots and the Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-e2e-report
+          path: |
+            apps/web/test-results/
+            apps/web/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: API log
+        if: failure()
+        run: cat /tmp/api.log /tmp/web.log || true

@@ -4,13 +4,13 @@
 
 Dash AI is Dash World's premium, multi-model AI assistant for general conversations, business
 planning, professional writing, document analysis and research. This repository contains the
-native Android app, the secure backend it talks to, and the contracts shared between them.
+web app, the native Android app, the secure backend they talk to, and the contracts shared between them.
 
 > Status: final production hardening before staging (PostgreSQL persistence with encrypted
 > conversation content, Redis-shared rate limits, optional plugin/tool layer with at-most-once
 > actions, two-way sync, account-scoped device data, provider retries without silent failover,
 > isolated document parsing, metrics without user content). Not deployed. The live OpenAI/Anthropic
-> APIs have **not** been exercised yet, and the Android app module has not been built on this branch.
+> APIs have **not** been exercised yet. The Android app module is built by GitHub Actions (`android.yml`); the web app is tested in Chromium by `ci.yml`.
 > See [docs/release-readiness.md](docs/release-readiness.md) for every gate and
 > [docs/roadmap.md](docs/roadmap.md) for what is real, what is mocked and what comes next.
 
@@ -18,6 +18,7 @@ native Android app, the secure backend it talks to, and the contracts shared bet
 
 | Path | What it is |
 | --- | --- |
+| `apps/web` | Web app — React, TypeScript, Vite. Same features and design as Android, same API. See [docs/web-app.md](docs/web-app.md). |
 | `apps/android` | Native Android app — Kotlin, Jetpack Compose, Material 3, Room. Application ID `com.dashworldng.ai`. |
 | `apps/android/core` | Pure-Kotlin core used by the app: chat state machine, routing, streaming client, Demo Mode, Markdown parser, prompt library. Builds and tests without Google's Android repositories. |
 | `apps/api` | Secure TypeScript backend (Fastify). Holds the provider keys, routes prompts to OpenAI and/or Anthropic Claude, streams answers over SSE, persists to PostgreSQL, hosts the optional plugin/tool layer and conversation sync. |

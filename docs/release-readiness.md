@@ -1,6 +1,6 @@
 # Release readiness
 
-Status of every release gate after the native UI/UX milestone (branch `claude/epic-fermi-fmpda0`).
+Status of every release gate after the native UI/UX milestone and the web app (branch `claude/epic-fermi-fmpda0`, PR #1).
 Nothing is deployed and nothing paid has been provisioned. "Verified" means it ran and passed in the
 authoring environment; "not verified" means it has not run anywhere yet, and why.
 
@@ -19,7 +19,9 @@ authoring environment; "not verified" means it has not run anywhere yet, and why
 | Kotlin core (unit + contract + UI state logic + live API on PostgreSQL) | ✅ 148 / 148, 0 skipped (11 live contract tests, incl. Tools & Connections) | `DASH_API_BASE_URL=… ../gradlew test` against the built API with `PROVIDER_MODE=fake` |
 | Shared-device sign-out (core) | ✅ verified | 13 core tests + live two-account test; mutation-checked |
 | Android app UI on the JVM (`apps/android/jvm-ui`) | ✅ compiled; 20 / 20 UI tests; screens rendered | The real UI source compiled against Compose Multiplatform 1.7.3 with Android-only APIs stubbed; the app's Compose UI tests run on the desktop test runtime; mutation-checked (a hard-coded name, an end-to-end-encryption claim, not remembering the provider, and a hidden recovery card were each caught) |
-| Android app module compile (AGP), Robolectric/Room tests, lint, APK | ❌ **not verified** | Google Maven (`dl.google.com`) is blocked by this environment's network policy: the Android Gradle plugin cannot even be resolved (attempted once this milestone). **No APK was built; there is no APK checksum.** `android.yml` does all of this once Actions runs |
+| Android app module compile (AGP), Robolectric/Room tests, lint, APK | ✅ **verified in GitHub Actions** | `android.yml` job "Android app" on PR #1: `./gradlew :app:compileDebugKotlin :app:compileDebugUnitTestKotlin`, `:app:testDebugUnitTest` (22/22 Robolectric + Room), `:app:lintDebug`, `:app:assembleDebug`, APK key/endpoint check; artifact `dash-ai-debug-apk` (debug build, not signed for release). Not buildable in the authoring environment (Google Maven blocked) |
+| Web app: lint, typecheck, unit tests, build | ✅ 15 / 15 | `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build` (Vite production build with a strict CSP) |
+| Web app end to end in Chromium | ✅ 14 / 14 locally (7 flows × phone and desktop sizes) | Playwright against the built API (`PROVIDER_MODE=fake`, PostgreSQL) and `vite preview`; CI job `web-e2e` uploads screenshots. Safari and Firefox not tested |
 | Demo Mode | ✅ usable | Demo conversations and documents still work after a sign-out (core tests); app UI tests are Demo Mode and unaffected (not run here) |
 | OpenAI / Anthropic adapters, mocked | ✅ verified | real SDKs against scripted wire formats, plus retries/outages (`provider-resilience.test.ts`) |
 | OpenAI live smoke | ❌ **not run** | no API key available |
@@ -40,6 +42,7 @@ authoring environment; "not verified" means it has not run anywhere yet, and why
 | Compiled | ✅ against Compose Multiplatform 1.7.3 on the JVM (same Compose 1.7 / Material 3 APIs); ❌ not with the Android Gradle plugin / Android SDK |
 | Behaviour tested | ✅ 20 Compose UI tests on the JVM test runtime (stubbed navigation, lifecycle and platform); ✅ UI state logic in 16 core tests; ❌ Robolectric not run |
 | Visually checked | ✅ 19 screens rendered by the desktop Skia renderer and inspected (light and dark; see [screenshots](screenshots/android/README.md)); two defects found and fixed (markdown tables, brand mark size). Fonts and system bars differ from Android |
+| Built for Android | ✅ the real module compiles, passes Robolectric/Room tests and lint, and produces a debug APK in GitHub Actions |
 | Device-verified | ❌ Not run on any emulator or phone: insets/keyboard on real devices, TalkBack, font scaling at 200 %, Samsung One UI, file picker, share sheet, system back and predictive back are unverified |
 
 ## What you need to provide
