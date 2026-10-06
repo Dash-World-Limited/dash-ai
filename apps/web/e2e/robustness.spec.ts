@@ -41,7 +41,10 @@ test("stop keeps what arrived; a lost connection ends the answer with Retry, whi
   // Mid-answer the connection drops: the answer ends now (not minutes later), the text is kept.
   await page.getByTestId("composer-input").fill("[[fake:slow]] And about Abuja?");
   await page.getByTestId("send").click();
-  const second = page.getByTestId("assistant-message").last();
+  // Cut the connection only once the second answer has started arriving.
+  await expect(page.getByTestId("assistant-message")).toHaveCount(2);
+  const second = page.getByTestId("assistant-message").nth(1);
+  await expect(second).not.toBeEmpty();
   await expect(page.getByTestId("stop")).toBeVisible();
   await context.setOffline(true);
   await expect(page.getByTestId("offline-banner")).toBeVisible();

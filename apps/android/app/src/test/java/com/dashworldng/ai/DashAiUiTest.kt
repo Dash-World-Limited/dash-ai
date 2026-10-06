@@ -1,6 +1,7 @@
 package com.dashworldng.ai
 
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasTestTag
@@ -178,8 +179,9 @@ class DashAiUiTest {
         launch(services, Routes.AUTH)
         compose.onNodeWithTag("continue_demo").performScrollTo().performClick()
         waitForTag("home_screen")
-        // Demo users get no invented name.
-        compose.onNodeWithTag("home_greeting").assertTextContains("Good", substring = true)
+        // Demo users get no invented name: the greeting is the time-of-day salutation alone.
+        val greeting = compose.onNodeWithTag("home_greeting").fetchSemanticsNode().config[SemanticsProperties.Text].joinToString("") { it.text }
+        assertTrue(greeting in setOf("Good morning", "Good afternoon", "Good evening", "Hello"), "greeting was '$greeting'")
         assertEquals(0, compose.onAllNodes(hasText("Demo user", substring = true)).fetchSemanticsNodes().size)
         assertEquals(true, services.settings.settings.value.account?.isDemo)
         compose.onNodeWithTag("quick_write").performClick()
