@@ -1,6 +1,7 @@
 package com.dashworldng.ai.data.local
 
 import com.dashworldng.ai.core.chat.AttachmentCodec
+import com.dashworldng.ai.core.chat.ToolUseCodec
 import com.dashworldng.ai.core.data.ConversationRepository
 import com.dashworldng.ai.core.data.DocumentRepository
 import com.dashworldng.ai.core.data.PromptRepository
@@ -167,6 +168,7 @@ private fun MessageEntity.toModel() = ChatMessage(
     errorRetryable = errorRetryable,
     finishReason = finishReason?.let { FinishReason.fromWire(it) },
     routingReason = routingReason,
+    tools = ToolUseCodec.decode(toolsJson),
 )
 
 private fun ChatMessage.toEntity() = MessageEntity(
@@ -187,4 +189,5 @@ private fun ChatMessage.toEntity() = MessageEntity(
     errorRetryable = errorRetryable,
     finishReason = finishReason?.wire,
     routingReason = routingReason,
+    toolsJson = ToolUseCodec.encode(tools),
 )

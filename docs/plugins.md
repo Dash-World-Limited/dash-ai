@@ -132,6 +132,13 @@ stateless (`store:false`) replay does not do. The live smoke test's tool round t
 - `GET /v1/tools/activity` → the last 100 tool calls (metadata only)
 - Stream events `tool.call` and `tool.result` (plugin, tool, status, duration; never arguments or results)
 - `GET /v1/me/export` includes plugin choices and tool activity; `DELETE /v1/me` removes them
+- `GET /v1/conversations/:id` and sync changes carry `toolActivity`: the recorded calls of the
+  conversation's messages (message id, call id, plugin, tool, status, duration, time), oldest first.
+  Clients show them again when a conversation is reopened, on web and Android. Only stored rows are
+  returned, and only for messages that still exist: a regenerated or edited answer takes its calls with
+  it, deleting a conversation deletes its rows, and older answers without records show nothing.
+  Android keeps them with each message (Room schema version 2, column `toolsJson`; calls still running
+  when an answer ended are closed as stopped or failed, never invented as successful).
 
 ## Adding a plugin
 

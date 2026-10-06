@@ -35,6 +35,26 @@
           "compareGroupId": null,
           "createdAt": "2026-03-04T05:06:12.000Z"
         }
+      ],
+      "toolActivity": [
+        {
+          "messageId": "e5555555-5555-4555-8555-555555555555",
+          "callId": "call_1",
+          "plugin": "dash-demo",
+          "tool": "current_time",
+          "status": "ok",
+          "durationMs": 2,
+          "createdAt": "2026-03-04T05:06:10.000Z"
+        },
+        {
+          "messageId": "e5555555-5555-4555-8555-555555555555",
+          "callId": "call_2",
+          "plugin": "dash-demo",
+          "tool": "text_stats",
+          "status": "timeout",
+          "durationMs": 5000,
+          "createdAt": "2026-03-04T05:06:11.000Z"
+        }
       ]
     },
     {
@@ -49,7 +69,8 @@
         "titleIsCustom": false,
         "titleRev": 0
       },
-      "messages": []
+      "messages": [],
+      "toolActivity": []
     }
   ],
   "cursor": "4",

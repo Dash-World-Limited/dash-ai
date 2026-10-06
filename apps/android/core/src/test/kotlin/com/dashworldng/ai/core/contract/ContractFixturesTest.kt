@@ -63,6 +63,8 @@ class ContractFixturesTest {
         strict.decodeFromString(ConversationDetailDto.serializer(), Fixtures.text("conversation-detail.json")).also {
             assertEquals(null, it.messages.first().origin)
             assertEquals("openai", it.messages.last().origin)
+            assertEquals(listOf("text_stats"), it.toolActivity.map { a -> a.tool })
+            assertEquals(it.messages.last().id, it.toolActivity.single().messageId)
         }
         strict.decodeFromString(DocumentResponseDto.serializer(), Fixtures.text("document-response.json"))
         strict.decodeFromString(ErrorResponseDto.serializer(), Fixtures.text("error-response.json")).also {

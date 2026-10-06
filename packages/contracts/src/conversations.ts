@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AssistantMode, Id, IsoDateTime, LIMITS, MessageRole, ProviderId } from "./common.js";
+import { ToolCallStatus } from "./tools.js";
 
 export const Conversation = z.object({
   id: Id,
@@ -45,8 +46,26 @@ export const ConversationListResponse = z.object({
 });
 export type ConversationListResponse = z.infer<typeof ConversationListResponse>;
 
+/**
+ * A tool call recorded while an assistant message was written, as clients show it when a
+ * conversation is reopened. Only what the server stored: names, outcome and timing, never arguments
+ * or results. Clients never invent entries for messages that have none.
+ */
+export const MessageToolActivity = z.object({
+  messageId: Id,
+  callId: z.string().regex(/^[A-Za-z0-9_.:-]{1,64}$/),
+  plugin: z.string(),
+  tool: z.string(),
+  status: ToolCallStatus,
+  durationMs: z.number().int().nonnegative(),
+  createdAt: IsoDateTime,
+});
+export type MessageToolActivity = z.infer<typeof MessageToolActivity>;
+
 export const ConversationDetailResponse = z.object({
   conversation: Conversation,
   messages: z.array(ConversationMessage),
+  /** Recorded tool calls of these messages, oldest first. Absent from older servers: treat as none. */
+  toolActivity: z.array(MessageToolActivity).default([]),
 });
 export type ConversationDetailResponse = z.infer<typeof ConversationDetailResponse>;

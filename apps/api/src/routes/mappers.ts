@@ -2,6 +2,7 @@ import type {
   Conversation,
   ConversationMessage,
   DocumentResponse,
+  MessageToolActivity,
   PluginSetting,
   SyncChange,
   ToolActivity,
@@ -84,6 +85,17 @@ export const toToolActivity = (t: ToolInvocationRow): ToolActivity => ({
   createdAt: t.createdAt,
 });
 
+/** What a client shows for a recorded tool call: names, outcome and timing only. */
+export const toMessageToolActivity = (t: ToolInvocationRow): MessageToolActivity => ({
+  messageId: t.messageId,
+  callId: t.callId,
+  plugin: t.plugin,
+  tool: t.tool,
+  status: t.status,
+  durationMs: t.durationMs,
+  createdAt: t.createdAt,
+});
+
 export const toPluginSetting = (s: PluginSettingRecord): PluginSetting => ({
   pluginId: s.pluginId,
   enabled: s.enabled,
@@ -96,4 +108,5 @@ export const toSyncChange = (c: ConversationChange): SyncChange => ({
   deleted: c.deleted,
   conversation: { ...toConversation(c.conversation), titleIsCustom: c.conversation.titleIsCustom, titleRev: c.titleRev },
   messages: c.messages.map(toMessage),
+  toolActivity: c.tools.map(toMessageToolActivity),
 });

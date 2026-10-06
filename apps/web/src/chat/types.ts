@@ -1,4 +1,13 @@
-import type { AssistantMode, ChatStreamRequest, Conversation, ConversationMessage, ModelChoice, ProviderId, StreamEvent } from "@dash-ai/contracts";
+import type {
+  AssistantMode,
+  ChatStreamRequest,
+  Conversation,
+  ConversationMessage,
+  MessageToolActivity,
+  ModelChoice,
+  ProviderId,
+  StreamEvent,
+} from "@dash-ai/contracts";
 import type { ToolUse } from "../logic/presentation";
 
 export type MsgStatus = "streaming" | "complete" | "stopped" | "failed";
@@ -34,7 +43,8 @@ export interface ChatMsg {
 export interface ChatBackend {
   readonly demo: boolean;
   list(): Promise<Conversation[]>;
-  get(id: string): Promise<{ conversation: Conversation; messages: ConversationMessage[] } | null>;
+  /** A saved conversation, with the tool calls recorded for its answers (none from older servers). */
+  get(id: string): Promise<{ conversation: Conversation; messages: ConversationMessage[]; toolActivity?: MessageToolActivity[] } | null>;
   stream(request: ChatStreamRequest, signal: AbortSignal): AsyncGenerator<StreamEvent>;
   cancel(streamId: string): Promise<void>;
   rename(id: string, title: string): Promise<void>;

@@ -175,6 +175,30 @@ test("live: documents upload, detail, ask about it; tools from the server regist
   await expect(page.getByTestId("auth")).toBeVisible();
 });
 
+test("live: tool activity is recorded with the answer and shown again after a reload", async ({ page }) => {
+  await register(page, "Tunde Bakare");
+  await openMenuIfNeeded(page);
+  await page.getByTestId("nav-tools").click();
+  await page.getByTestId("tool-switch-dash-demo").click({ force: true });
+  await expect(page.getByTestId("tool-connection").filter({ hasText: "Dash demo tools" })).toContainText("Connected");
+  await openMenuIfNeeded(page);
+  await page.getByTestId("new-chat").click();
+  // The fake provider asks for the built-in text_stats tool when it sees this marker.
+  await page.getByTestId("composer-input").fill('[[fake:tool dash-demo__text_stats {"text":"one two three"}]]');
+  await page.getByTestId("send").click();
+  await expect(page.getByTestId("send")).toBeVisible({ timeout: 30_000 });
+  const activity = page.getByTestId("assistant-message").getByTestId("tool-activity");
+  await expect(activity).toContainText("Text stats");
+
+  await page.reload();
+  await expect(page.getByTestId("user-message")).toBeVisible();
+  const restored = page.getByTestId("assistant-message").getByTestId("tool-activity");
+  await expect(restored).toContainText("Text stats");
+  await restored.getByRole("button").click();
+  await expect(restored).not.toContainText("one two three"); // names and outcomes only
+  await shot(page, "14-tool-history");
+});
+
 test("settings: theme switches to dark and is remembered; security wording is accurate", async ({ page }) => {
   await enterDemo(page);
   await page.goto("/settings");

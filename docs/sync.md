@@ -19,7 +19,8 @@ Demo Mode is never synced. Documents, prompts and settings are **not** synced.
 
 ### Pull — `GET /v1/sync/conversations?cursor&limit`
 Changes in per-user `seq` order. Each live change carries the **whole** conversation (all messages) plus
-`titleIsCustom` and `titleRev`; a deletion is a **tombstone** (no title, no messages). `seq` is assigned
+`titleIsCustom` and `titleRev` and the recorded tool activity of its messages (`toolActivity`, names and
+outcomes only; see docs/plugins.md); a deletion is a **tombstone** (no title, no messages). `seq` is assigned
 inside the write transaction under the user's row lock, so a cursor never skips a change. `latest` lets a
 device detect restored server data (cursor beyond it → start again from `0`).
 

@@ -55,6 +55,19 @@ describe("JSON fixtures match the schemas", () => {
     expect(result.success, JSON.stringify(result.error?.issues)).toBe(true);
   });
 
+  it("tool activity in history is optional for older servers and refers only to listed messages in the fixtures", () => {
+    const { toolActivity: _omit, ...older } = json("conversation-detail.json") as Record<string, unknown>;
+    expect(ConversationDetailResponse.parse(older).toolActivity).toEqual([]);
+    const detail = ConversationDetailResponse.parse(json("conversation-detail.json"));
+    for (const t of detail.toolActivity) expect(detail.messages.map((m) => m.id)).toContain(t.messageId);
+    const sync = SyncConversationsResponse.parse(json("sync-conversations.json"));
+    for (const c of sync.changes) {
+      for (const t of c.toolActivity) expect(c.messages.map((m) => m.id)).toContain(t.messageId);
+    }
+    // Names and outcomes only: never arguments or results.
+    expect(Object.keys(detail.toolActivity[0]!).sort()).toEqual(["callId", "createdAt", "durationMs", "messageId", "plugin", "status", "tool"]);
+  });
+
   it("smart-routing.json mirrors SMART_ROUTING", () => {
     expect(json("smart-routing.json")).toEqual(SMART_ROUTING);
   });

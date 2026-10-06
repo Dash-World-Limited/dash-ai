@@ -14,6 +14,7 @@ import com.dashworldng.ai.core.model.ModelChoice
 import com.dashworldng.ai.core.model.ProviderId
 import com.dashworldng.ai.core.model.FinishReason
 import com.dashworldng.ai.core.model.ToolCallStatus
+import com.dashworldng.ai.core.model.ToolUse
 import com.dashworldng.ai.core.nextId
 import com.dashworldng.ai.core.stream.ApiError
 import com.dashworldng.ai.core.stream.ApiException
@@ -274,6 +275,50 @@ class ChatSessionTest {
         // call_2 never reported; the answer completed, so it is shown as running until a stop/failure closes it.
         assertNull(uses.getValue("x")[1].status)
         assertEquals("Done", session.state.value.messages.last().content)
+    }
+
+    @Test
+    fun `reopening a conversation shows the tools its answers used, as recorded`() = runTest {
+        val gateway = ScriptedGateway { request ->
+            emit(ChatStreamEvent.Started("s", request.conversationId, null, listOf(StreamTarget("x", ProviderId.OPENAI, "m", false)), "r"))
+            emit(ChatStreamEvent.ToolCalled("x", "call_1", "dash-demo", "text_stats"))
+            emit(ChatStreamEvent.ToolFinished("x", "call_1", "dash-demo", "text_stats", ToolCallStatus.OK, 3))
+            emit(ChatStreamEvent.ToolCalled("x", "call_2", "dash-demo", "current_time")) // never reports an outcome
+            emit(ChatStreamEvent.Delta("x", "Done"))
+            emit(ChatStreamEvent.MessageEnded("x", FinishReason.STOP, 1, 1))
+            emit(ChatStreamEvent.Ended("s"))
+        }
+        val first = session(gateway)
+        first.send("Count my words", ModelChoice.OPENAI, AssistantMode.GENERAL)
+        advanceUntilIdle()
+        val conversationId = first.state.value.conversation!!.id
+
+        // A later visit (another screen, or after the app restarted) reads the saved conversation.
+        val later = session(gateway)
+        later.open(conversationId)
+        val restored = later.state.value.toolUses
+        assertEquals(setOf("x"), restored.keys)
+        // Only the call with a recorded outcome comes back; nothing is invented for the other one.
+        assertEquals(listOf(ToolUse("call_1", "dash-demo", "text_stats", ToolCallStatus.OK, 3)), restored.getValue("x"))
+        // The user's message has no tool activity.
+        assertTrue(later.state.value.messages.first { it.isUser }.tools.isEmpty())
+    }
+
+    @Test
+    fun `a stopped answer keeps its stopped tools when reopened`() = runTest {
+        val gateway = ScriptedGateway { request ->
+            emit(ChatStreamEvent.Started("s", request.conversationId, null, listOf(StreamTarget("x", ProviderId.OPENAI, "m", false)), "r"))
+            emit(ChatStreamEvent.ToolCalled("x", "call_1", "dash-demo", "current_time"))
+            awaitCancellation()
+        }
+        val first = session(gateway)
+        first.send("Time?", ModelChoice.OPENAI, AssistantMode.GENERAL)
+        advanceUntilIdle()
+        first.stop()
+        advanceUntilIdle()
+        val later = session(gateway)
+        later.open(first.state.value.conversation!!.id)
+        assertEquals(ToolCallStatus.CANCELLED, later.state.value.toolUses.getValue("x").single().status)
     }
 
     @Test

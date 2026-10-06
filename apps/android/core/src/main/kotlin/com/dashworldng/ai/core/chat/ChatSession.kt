@@ -87,7 +87,9 @@ class ChatSession(
         val messages = repository.getMessages(conversationId).map { m ->
             if (m.status == MessageStatus.STREAMING) m.copy(status = MessageStatus.STOPPED).also { repository.upsertMessage(it) } else m
         }
-        _state.value = ChatSessionState(conversation = conversation, messages = messages)
+        // Tool activity recorded with each answer comes back with it; nothing is shown for answers without any.
+        val tools = messages.filter { it.tools.isNotEmpty() }.associate { it.id to it.tools }
+        _state.value = ChatSessionState(conversation = conversation, messages = messages, toolUses = tools)
     }
 
     fun newChat() {
@@ -224,6 +226,8 @@ class ChatSession(
         val choice: ModelChoice,
     ) {
         val answers = LinkedHashMap<String, ChatMessage>()
+        /** Tools each answer used, kept here so they are saved with it even when it is not on screen. */
+        val tools = HashMap<String, List<ToolUse>>()
         val isCurrent: Boolean get() = currentGeneration == id
     }
 
@@ -336,22 +340,15 @@ class ChatSession(
                 }
             }
             is ChatStreamEvent.ToolCalled -> if (generation.answers.containsKey(event.messageId)) {
-                applyToState(generation) { s ->
-                    val calls = s.toolUses[event.messageId].orEmpty()
-                    if (calls.any { it.callId == event.callId }) {
-                        s
-                    } else {
-                        s.copy(toolUses = s.toolUses + (event.messageId to calls + ToolUse(event.callId, event.plugin, event.tool)))
-                    }
+                val calls = generation.tools[event.messageId].orEmpty()
+                if (calls.none { it.callId == event.callId }) {
+                    setTools(generation, event.messageId, calls + ToolUse(event.callId, event.plugin, event.tool))
                 }
             }
             is ChatStreamEvent.ToolFinished -> if (generation.answers.containsKey(event.messageId)) {
-                applyToState(generation) { s ->
-                    val calls = s.toolUses[event.messageId].orEmpty()
-                    val done = ToolUse(event.callId, event.plugin, event.tool, event.status, event.durationMs)
-                    val updated = if (calls.any { it.callId == event.callId }) calls.map { if (it.callId == event.callId) done else it } else calls + done
-                    s.copy(toolUses = s.toolUses + (event.messageId to updated))
-                }
+                val calls = generation.tools[event.messageId].orEmpty()
+                val done = ToolUse(event.callId, event.plugin, event.tool, event.status, event.durationMs)
+                setTools(generation, event.messageId, if (calls.any { it.callId == event.callId }) calls.map { if (it.callId == event.callId) done else it } else calls + done)
             }
             is ChatStreamEvent.TitleChanged -> {
                 val c = generation.conversation
@@ -367,6 +364,11 @@ class ChatSession(
         }
     }
 
+    private fun setTools(generation: Generation, messageId: String, calls: List<ToolUse>) {
+        generation.tools[messageId] = calls
+        applyToState(generation) { s -> s.copy(toolUses = s.toolUses + (messageId to calls)) }
+    }
+
     private suspend fun updateAnswer(
         generation: Generation,
         id: String,
@@ -374,7 +376,9 @@ class ChatSession(
         change: (ChatMessage) -> ChatMessage,
     ) {
         val current = generation.answers[id] ?: return
-        val updated = change(current)
+        val changed = change(current)
+        // Keep the tools this answer used with it, so they show again when the conversation is reopened.
+        val updated = if (persist) changed.copy(tools = generation.tools[id].orEmpty().filterNot(ToolUse::running)) else changed
         generation.answers[id] = updated
         applyToState(generation) { s -> s.copy(messages = s.messages.map { m -> if (m.id == id) updated else m }) }
         if (persist) repository.upsertMessage(updated)
@@ -384,12 +388,9 @@ class ChatSession(
         val streaming = generation.answers.values.filter { it.status == MessageStatus.STREAMING }.map { it.id }
         // A tool still "running" when its answer ends will never report: show it as stopped or failed.
         val ended = if (status == MessageStatus.STOPPED) ToolCallStatus.CANCELLED else ToolCallStatus.ERROR
-        applyToState(generation) { s ->
-            if (streaming.none { s.toolUses[it].orEmpty().any(ToolUse::running) }) {
-                s
-            } else {
-                s.copy(toolUses = s.toolUses.mapValues { (id, calls) -> if (id in streaming) calls.map { if (it.running) it.copy(status = ended) else it } else calls })
-            }
+        for (id in streaming) {
+            val calls = generation.tools[id].orEmpty()
+            if (calls.any(ToolUse::running)) setTools(generation, id, calls.map { if (it.running) it.copy(status = ended) else it })
         }
         for (id in streaming) {
             updateAnswer(generation, id, persist = true) { it.copy(status = status, errorMessage = error ?: it.errorMessage) }

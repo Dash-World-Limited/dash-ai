@@ -2,7 +2,7 @@ import type { DataExportResponse, MeResponse, ProviderId, UsageSummaryResponse }
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { currentUser } from "../auth/requireAuth.js";
 import type { RouteContext } from "./context.js";
-import { toConversation, toDocument, toMessage, toPluginSetting, toToolActivity, toUsage, toUser } from "./mappers.js";
+import { toConversation, toDocument, toMessage, toPluginSetting, toMessageToolActivity, toToolActivity, toUsage, toUser } from "./mappers.js";
 
 export function accountRoutes(app: FastifyInstance, ctx: RouteContext): void {
   const auth = { preHandler: ctx.requireAuth };
@@ -26,6 +26,7 @@ export function accountRoutes(app: FastifyInstance, ctx: RouteContext): void {
       conversations.map(async (c) => ({
         conversation: toConversation(c),
         messages: (await ctx.store.listMessages(c.id)).map(toMessage),
+        toolActivity: (await ctx.store.listConversationToolInvocations(user.id, c.id)).map(toMessageToolActivity),
       })),
     );
     return {

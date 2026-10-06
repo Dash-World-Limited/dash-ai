@@ -112,7 +112,24 @@ data class ConversationMessageDto(
 )
 
 @Serializable
-data class ConversationDetailDto(val conversation: ConversationDto, val messages: List<ConversationMessageDto>)
+data class ConversationDetailDto(
+    val conversation: ConversationDto,
+    val messages: List<ConversationMessageDto>,
+    /** Absent from older servers: read as none. */
+    val toolActivity: List<MessageToolActivityDto> = emptyList(),
+)
+
+/** A recorded tool call of one message: names, outcome and timing only. */
+@Serializable
+data class MessageToolActivityDto(
+    val messageId: String,
+    val callId: String,
+    val plugin: String,
+    val tool: String,
+    val status: String,
+    val durationMs: Long,
+    val createdAt: String,
+)
 
 @Serializable
 data class ConversationListDto(val conversations: List<ConversationDto>)
@@ -142,6 +159,7 @@ data class SyncChangeDto(
     val deleted: Boolean,
     val conversation: SyncConversationDto,
     val messages: List<ConversationMessageDto>,
+    val toolActivity: List<MessageToolActivityDto> = emptyList(),
 )
 
 @Serializable

@@ -1,7 +1,16 @@
-import type { AssistantMode, ChatStreamRequest, Conversation, HistoryMessage, ModelChoice, StreamEvent } from "@dash-ai/contracts";
+import type {
+  AssistantMode,
+  ChatStreamRequest,
+  Conversation,
+  ConversationMessage,
+  HistoryMessage,
+  MessageToolActivity,
+  ModelChoice,
+  StreamEvent,
+} from "@dash-ai/contracts";
 import { LIMITS } from "@dash-ai/contracts";
 import { ApiError } from "../api/client";
-import type { ToolStatus } from "../logic/presentation";
+import type { ToolStatus, ToolUse } from "../logic/presentation";
 import type { Attachment, ChatBackend, ChatMsg } from "./types";
 
 export interface ChatState {
@@ -34,7 +43,18 @@ export function buildHistory(earlier: ChatMsg[]): HistoryMessage[] {
   return recent;
 }
 
-function fromServer(m: { id: string; role: "user" | "assistant"; content: string; origin: ChatMsg["origin"]; model: string | null; demo: boolean; status: "complete" | "stopped" | "failed"; compareGroupId: string | null; createdAt: string }): ChatMsg {
+/** Recorded tool calls by message, in the order they happened. Only what the server stored is shown. */
+export function toolsByMessage(activity: readonly MessageToolActivity[] | undefined): Map<string, ToolUse[]> {
+  const map = new Map<string, ToolUse[]>();
+  for (const a of activity ?? []) {
+    const list = map.get(a.messageId) ?? [];
+    if (!list.some((t) => t.callId === a.callId)) list.push({ callId: a.callId, plugin: a.plugin, tool: a.tool, status: a.status, durationMs: a.durationMs });
+    map.set(a.messageId, list);
+  }
+  return map;
+}
+
+function fromServer(m: ConversationMessage, tools: ToolUse[] = []): ChatMsg {
   return {
     ...m,
     replyToId: null,
@@ -42,7 +62,7 @@ function fromServer(m: { id: string; role: "user" | "assistant"; content: string
     attachments: [],
     errorMessage: m.status === "failed" ? "This answer was not completed." : null,
     retryable: m.status === "failed",
-    tools: [],
+    tools: m.role === "assistant" ? tools : [],
     finishReason: null,
   };
 }
@@ -93,7 +113,8 @@ export class ChatEngine {
     try {
       const detail = await this.backend.get(id);
       if (!detail) return this.set(() => EMPTY, gen);
-      this.set(() => ({ ...EMPTY, conversation: detail.conversation, messages: detail.messages.map(fromServer) }), gen);
+      const tools = toolsByMessage(detail.toolActivity);
+      this.set(() => ({ ...EMPTY, conversation: detail.conversation, messages: detail.messages.map((m) => fromServer(m, tools.get(m.id))) }), gen);
     } catch (e) {
       this.set(() => ({ ...EMPTY, error: e instanceof ApiError ? e : ApiError.network() }), gen);
     }

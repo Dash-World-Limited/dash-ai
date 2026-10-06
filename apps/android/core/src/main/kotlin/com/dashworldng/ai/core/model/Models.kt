@@ -96,6 +96,8 @@ data class ChatMessage(
     val errorRetryable: Boolean = false,
     val finishReason: FinishReason? = null,
     val routingReason: String? = null,
+    /** Tools used while writing this answer, as recorded (names and outcomes only). Kept with the message. */
+    val tools: List<ToolUse> = emptyList(),
 ) {
     val isUser: Boolean get() = role == MessageRole.USER
     val isAssistant: Boolean get() = role == MessageRole.ASSISTANT

@@ -23,7 +23,7 @@ Production (`NODE_ENV=production`) **refuses to start** without `DATABASE_URL`
 | `documents` | metadata + **encrypted** extracted text | Raw uploaded bytes are never stored. |
 | `usage_records` | provider, model, token counts per answer | |
 | `plugin_settings` | a user's plugin choices | No row = never configured = disabled. |
-| `tool_invocations` | tool-call audit rows | Metadata only: never arguments or results. |
+| `tool_invocations` | tool-call audit rows | Metadata only: never arguments or results. Shown again with the conversation; deleted with it. |
 | `schema_migrations` | applied migrations with checksums | |
 
 Everything owned by a user cascades from `users`, so `DELETE /v1/me` removes it all.
