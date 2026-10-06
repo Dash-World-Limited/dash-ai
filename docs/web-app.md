@@ -39,7 +39,7 @@ pnpm --filter @dash-ai/web dev               # http://127.0.0.1:5173
 | Command | What runs |
 | --- | --- |
 | `pnpm --filter @dash-ai/web test` | Unit tests (Vitest + jsdom): UI logic, the SSE parser against the shared contract fixtures, the chat engine (streaming, tool activity, recovery without automatic switching, stop, request failures, history filtering, Demo Mode) |
-| `pnpm --filter @dash-ai/web e2e` | Playwright in Chromium at phone (Pixel 7) and desktop sizes against a running API (`PROVIDER_MODE=fake`, PostgreSQL) and `vite preview`. Set `DASH_SHOTS_DIR` to save screenshots. CI job: `web-e2e` in `ci.yml` |
+| `pnpm --filter @dash-ai/web e2e` | Playwright in Chromium at phone (Pixel 7) and desktop sizes against a running API (`PROVIDER_MODE=fake`, PostgreSQL) and `vite preview`; with `DASH_E2E_FIREFOX=1` (after `npx playwright install firefox`) also in Firefox at both sizes. `e2e/app.spec.ts` covers the product flows, `e2e/robustness.spec.ts` real-world conditions: stop, a connection lost mid-answer (ends at once, text kept, Retry once back online), an expired session, unusable files, keyboard-only use. Set `DASH_SHOTS_DIR` to save screenshots. CI job: `web-e2e` in `ci.yml` runs Chromium and Firefox |
 
 ## Deploying (prepared, not done)
 
@@ -76,8 +76,23 @@ SSE needs proxy buffering off for `/v1/chat/stream` (Caddy streams by default; f
 - Demo Mode chats and document details stay in this browser's `localStorage`, separate from any
   account; Settings → "Delete Demo Mode data" removes them.
 
+## Behaviour under real-world conditions
+
+- **Offline:** an offline banner; sending is disabled (Demo Mode keeps working). An answer that was
+  streaming when the connection dropped ends at once as failed, keeps what arrived and offers Retry
+  (never an automatic retry or provider switch). Back online, the chat list and providers refresh.
+- **Session expiry** (signed out elsewhere, revoked or expired): any request that gets 401 signs this
+  browser out, removes the token and explains why.
+- **Stop:** keeps the partial answer, marks unfinished tools stopped and cancels the stream on the server.
+- **Attachments:** type, size and empty files are checked before upload; a refused file shows why on its
+  chip and never blocks sending the message.
+- **Keyboard:** skip link, visible focus, dialogs and sheets keep focus inside and close on Escape
+  (focus returns to what opened them), the phone sidebar closes on Escape, Enter sends and Shift+Enter
+  adds a line.
+- **Loading and errors:** chat list, documents and tools show loading, empty and error states with Retry.
+
 ## Known limits
 
 - Custom prompts and favourites are kept per device (browser or phone); the API does not sync them yet.
-- Not tested in Safari or Firefox; Playwright runs Chromium only.
+- Tested in Chromium and Firefox (CI). Not tested in Safari/WebKit: no claim is made for it until it has been run.
 - The "D" brand mark is temporary until the official Dash World asset is supplied.

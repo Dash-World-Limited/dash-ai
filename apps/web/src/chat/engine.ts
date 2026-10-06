@@ -151,6 +151,16 @@ export class ChatEngine {
     if (streamId) void this.backend.cancel(streamId).catch(() => undefined);
   }
 
+  /**
+   * The browser lost its connection while an answer was streaming. A dropped connection can leave the
+   * request hanging for minutes, so the answer is ended now as failed (with Retry) instead of waiting.
+   * What arrived so far is kept. Demo Mode needs no connection and is not affected.
+   */
+  connectionLost(): void {
+    if (!this.state.generating || this.backend.demo) return;
+    this.controller?.abort(ApiError.connectionLost());
+  }
+
   /** Answers the same question again, optionally with an explicitly chosen provider. */
   regenerate(answerId: string, choiceOverride?: ModelChoice): boolean {
     const messages = this.state.messages;
@@ -216,7 +226,11 @@ export class ChatEngine {
       }
       this.finishStreaming(gen, answers, "failed", "The response ended unexpectedly.");
     } catch (e) {
-      if (controller.signal.aborted) {
+      const lost = controller.signal.aborted && controller.signal.reason instanceof ApiError ? controller.signal.reason : null;
+      if (lost) {
+        this.finishStreaming(gen, answers, "failed", lost.message);
+        this.set((s) => ({ ...s, error: lost }), gen);
+      } else if (controller.signal.aborted) {
         this.finishStreaming(gen, answers, "stopped", null);
       } else {
         const error = e instanceof ApiError ? e : new ApiError("internal_error", "Something went wrong. Please try again.", true);

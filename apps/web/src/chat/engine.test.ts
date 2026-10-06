@@ -112,6 +112,26 @@ describe("ChatEngine", () => {
     expect(backend.cancelled).toEqual(["stream0001"]);
   });
 
+  it("a lost connection ends a streaming answer at once as failed, keeping the text and offering Retry", async () => {
+    const backend = new Scripted(async function* (_r, signal): AsyncGenerator<StreamEvent> {
+      yield { event: "stream.start", data: { streamId: "stream0001", conversationId: "c", modelChoice: "openai", compareGroupId: null, targets: [{ messageId: "answer0001", provider: "openai", model: "gpt", demo: false }], routingReason: "r" } };
+      yield { event: "message.delta", data: { messageId: "answer0001", text: "Part one" } };
+      // A dropped connection: nothing more arrives, and the request would hang until the browser gives up.
+      await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    });
+    const engine = new ChatEngine(backend);
+    engine.send("Tell me", "openai", "general");
+    await new Promise((r) => setTimeout(r, 5));
+    expect(engine.value.generating).toBe(true);
+    engine.connectionLost();
+    await idle(engine);
+    const answer = engine.value.messages.at(-1)!;
+    expect(answer).toMatchObject({ content: "Part one", status: "failed", retryable: true });
+    expect(answer.errorMessage).toContain("connection was lost");
+    expect(engine.value.error?.code).toBe("network");
+    expect(backend.cancelled).toEqual([]); // nothing to tell a server we cannot reach
+  });
+
   it("request failures keep the question and show the error", async () => {
     const backend = new Scripted(async function* () {
       throw new ApiError("network", "Offline.", true);

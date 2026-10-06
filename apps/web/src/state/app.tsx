@@ -205,6 +205,22 @@ export class AppModel {
     navigate("/chat");
   }
 
+  /** The browser lost its connection: an answer that was streaming ends now (kept, with Retry). */
+  wentOffline(): void {
+    this.online.set(false);
+    this.engine.connectionLost();
+  }
+
+  /** Back online: bring what may have changed meanwhile (other devices, the server) up to date. */
+  backOnline(): void {
+    const was = this.online.value;
+    this.online.set(true);
+    if (was || !this.live) return;
+    if (this.engine.value.error?.code === "network") this.engine.dismissError();
+    void this.refreshConversations();
+    void this.refreshProviders();
+  }
+
   /** "Use prompt": a new chat in the prompt's mode with its text ready to edit and send. */
   usePrompt(prompt: PromptItem): void {
     this.engine.newChat();
@@ -223,8 +239,8 @@ const Ctx = createContext<AppModel | null>(null);
 
 export function AppProvider({ model, children }: { model: AppModel; children: ReactNode }) {
   useEffect(() => {
-    const on = () => model.online.set(true);
-    const off = () => model.online.set(false);
+    const on = () => model.backOnline();
+    const off = () => model.wentOffline();
     window.addEventListener("online", on);
     window.addEventListener("offline", off);
     void model.refreshConversations();

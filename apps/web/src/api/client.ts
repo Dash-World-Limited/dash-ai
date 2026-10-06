@@ -27,6 +27,10 @@ export class ApiError extends Error {
   static network(): ApiError {
     return new ApiError("network", "Couldn't reach the DASH AI server. Check your connection and try again.", true);
   }
+
+  static connectionLost(): ApiError {
+    return new ApiError("network", "The connection was lost before the answer finished. What arrived is kept; try again when you're back online.", true);
+  }
 }
 
 /** Where the session token lives. "remember" keeps it across browser restarts; otherwise only this tab session. */
