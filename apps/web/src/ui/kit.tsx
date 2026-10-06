@@ -1,27 +1,17 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
 import type { Tone } from "../logic/presentation";
+import { BRAND } from "../brand/brand";
 import { Icon, type IconName } from "./icons";
 
-/** The DASH AI mark: the gold "D" (temporary until the official Dash World asset is supplied). */
+/** The DASH AI mark, from the single brand asset (src/brand/mark.svg). */
 export function BrandMark({ size = 28 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="31 30 46 48" role="img" aria-label="DASH AI">
-      <defs>
-        <linearGradient id="dash-gold" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#E3C989" />
-          <stop offset="0.55" stopColor="#C9A75B" />
-          <stop offset="1" stopColor="#8F6C22" />
-        </linearGradient>
-      </defs>
-      <path fill="url(#dash-gold)" fillRule="evenodd" d="M37 33h15a21 21 0 0 1 0 42H37Zm7.5 7.5H52a13.5 13.5 0 0 1 0 27h-7.5Z" />
-    </svg>
-  );
+  return <img src={BRAND.markUrl} width={size} height={size} alt={BRAND.name} draggable={false} style={{ display: "block", flex: "none" }} />;
 }
 
 export function Wordmark() {
   return (
-    <span className="wordmark" aria-label="DASH AI">
-      <b>DASH</b> <span>AI</span>
+    <span className="wordmark" aria-label={BRAND.name}>
+      <b>{BRAND.wordmark[0]}</b> <span>{BRAND.wordmark[1]}</span>
     </span>
   );
 }
