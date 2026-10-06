@@ -64,8 +64,9 @@ describe("no lost or duplicated messages under concurrency and failures", () => 
     const streaming = fetch(`${address}/v1/chat/stream`, {
       method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify(body),
     }).then((r) => r.text());
-    // Pull while the answer is still being generated.
-    await waitFor(async () => (await pull(app, auth)).changes.length > 0);
+    // Pull while the answer is still being generated. The conversation row can be visible a moment
+    // before its user message (separate writes), so wait for the message itself.
+    await waitFor(async () => ((await pull(app, auth)).changes[0]?.messages.length ?? 0) > 0);
     const during = await pull(app, auth);
     expect(during.changes[0]!.messages.map((m) => m.role)).toEqual(["user"]);
     await streaming;

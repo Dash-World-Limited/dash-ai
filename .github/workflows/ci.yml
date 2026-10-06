@@ -122,7 +122,8 @@ jobs:
         run: |
           psql "postgres://postgres@127.0.0.1:5432/postgres" -c "CREATE DATABASE dash_fresh"
           export DATABASE_URL=postgres://postgres@127.0.0.1:5432/dash_fresh
-          export DATA_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+          DATA_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+          export DATA_ENCRYPTION_KEY
           node apps/api/dist/migrate-cli.js
           node apps/api/dist/migrate-cli.js
           node apps/api/dist/data-cli.js
@@ -161,11 +162,12 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
           export DATABASE_URL=postgres://postgres@127.0.0.1:5432/dash_live
-          export DATA_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+          DATA_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+          export DATA_ENCRYPTION_KEY
           # Every live contract test signs up a fresh account from one IP, so the CI-only server
           # allows more sign-ins per minute than the production default (10).
           PROVIDER_MODE=fake PORT=8787 FAKE_STREAM_DELAY_MS=2 LOG_LEVEL=warn RATE_LIMIT_AUTH_PER_MINUTE=60 node apps/api/dist/index.js > /tmp/api.log 2>&1 &
-          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8787/health && break; sleep 1; done
+          for _ in $(seq 1 30); do curl -sf http://127.0.0.1:8787/health && break; sleep 1; done
           curl -sf http://127.0.0.1:8787/health
       - name: Core unit, contract and live contract tests
         working-directory: apps/android/core

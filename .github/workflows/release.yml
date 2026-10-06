@@ -54,10 +54,10 @@ jobs:
             ./gradlew :app:assembleRelease --no-daemon --stacktrace
           fi
       - name: Check the APK contains no provider keys or endpoints
-        run: scripts/check-apk.sh "$(ls apps/android/app/build/outputs/apk/release/*.apk | head -n 1)"
+        run: scripts/check-apk.sh "$(find apps/android/app/build/outputs/apk/release -name '*.apk' | head -n 1)"
       - name: Record the APK checksum
         run: |
-          apk="$(ls apps/android/app/build/outputs/apk/release/*.apk | head -n 1)"
+          apk="$(find apps/android/app/build/outputs/apk/release -name '*.apk' | head -n 1)"
           { echo "### Release APK (unsigned)"; echo '```'; sha256sum "$apk"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the unsigned release APK
         uses: actions/upload-artifact@v4

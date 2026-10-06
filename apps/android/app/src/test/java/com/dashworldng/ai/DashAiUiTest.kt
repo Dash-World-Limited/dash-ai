@@ -218,7 +218,7 @@ class DashAiUiTest {
 
         compose.onNodeWithTag("model_selector").performClick()
         waitForTag("provider_sheet")
-        compose.onNodeWithTag("model_option_claude").performClick()
+        compose.onNodeWithTag("model_option_claude").performSemanticsAction(SemanticsActions.OnClick)
         compose.waitForIdle()
         compose.onNodeWithTag("selected_model", useUnmergedTree = true).assertTextContains("Claude")
         // The choice is remembered for new chats.
@@ -226,7 +226,7 @@ class DashAiUiTest {
 
         compose.onNodeWithTag("model_selector").performClick()
         waitForTag("provider_sheet")
-        compose.onNodeWithTag("model_option_compare").performClick()
+        compose.onNodeWithTag("model_option_compare").performSemanticsAction(SemanticsActions.OnClick)
         compose.waitForIdle()
         compose.onNodeWithText("Compare uses both providers").assertIsDisplayed()
         compose.onNodeWithText("two requests", substring = true).assertExists()
@@ -247,7 +247,7 @@ class DashAiUiTest {
         launch(services, Routes.CHAT)
         compose.onNodeWithTag("mode_selector").performClick()
         waitForTag("mode_sheet")
-        compose.onNodeWithTag("mode_research").performClick()
+        compose.onNodeWithTag("mode_research").performSemanticsAction(SemanticsActions.OnClick)
         compose.waitForIdle()
         compose.onNodeWithTag("mode_limitation").assertExists()
         compose.onNodeWithText("Live web research is not connected", substring = true).assertExists()
@@ -342,7 +342,7 @@ class DashAiUiTest {
         compose.onNodeWithTag("recovery_later").assertExists()
         // Nothing switched on its own: the composer still targets the original choice.
         compose.onNodeWithTag("selected_model", useUnmergedTree = true).assertTextContains("Dash Smart")
-        compose.onNodeWithTag("recovery_change_provider").performClick()
+        compose.onNodeWithTag("recovery_change_provider").performSemanticsAction(SemanticsActions.OnClick)
         waitForTag("alternative_sheet")
     }
 
