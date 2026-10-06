@@ -8,3 +8,4 @@ export * from "./documents.js";
 export * from "./account.js";
 export * from "./tools.js";
 export * from "./sync.js";
+export * from "./prompts.js";

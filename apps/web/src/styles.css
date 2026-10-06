@@ -304,3 +304,4 @@ a { color: var(--accent-ink); }
 .switch input:focus-visible + span { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
 
 .toast { position: fixed; left: 50%; bottom: var(--s-5); transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: var(--s-3) var(--s-4); border-radius: var(--r-md); z-index: 90; font-size: 14px; box-shadow: var(--shadow); }
+.chip-row { flex-wrap: wrap; gap: var(--s-2); }

@@ -14,6 +14,8 @@ import com.dashworldng.ai.core.model.ModelChoice
 import com.dashworldng.ai.core.model.ProviderId
 import com.dashworldng.ai.core.model.ToolCallStatus
 import com.dashworldng.ai.core.presentation.ConnectionState
+import com.dashworldng.ai.core.prompts.PromptCategory
+import com.dashworldng.ai.core.prompts.PromptLibrary
 import com.dashworldng.ai.core.presentation.ToolConnections
 import com.dashworldng.ai.core.remote.PluginsResponseDto
 import com.dashworldng.ai.core.remote.ToolActivityResponseDto
@@ -37,6 +39,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlin.test.Test
@@ -173,6 +176,25 @@ class ContractFixturesTest {
             val routed = SmartRouting.resolve(ModelChoice.SMART, mode, ProviderId.entries.toSet())
             assertEquals(expected.first(), assertIs<RoutingResult.Routed>(routed).providers.single())
         }
+    }
+
+    @Test
+    fun `the prompt library matches the shared copy the web app uses`() {
+        val json = Json.parseToJsonElement(Fixtures.text("prompt-library.json")).jsonObject
+        val categories = json.getValue("categories").jsonArray.map { it.jsonObject }
+        assertEquals(PromptCategory.entries.map { it.name.lowercase() }, categories.map { it.getValue("id").jsonPrimitive.content })
+        assertEquals(PromptCategory.entries.map { it.label }, categories.map { it.getValue("label").jsonPrimitive.content })
+        assertEquals(PromptCategory.entries.map { it.mode.wire }, categories.map { it.getValue("mode").jsonPrimitive.content })
+        val limits = json.getValue("limits").jsonObject
+        assertEquals(null, PromptLibrary.validate("t".repeat(limits.getValue("maxTitleChars").jsonPrimitive.int), "b"))
+        assertTrue(PromptLibrary.validate("t".repeat(limits.getValue("maxTitleChars").jsonPrimitive.int + 1), "b") != null)
+        assertEquals(null, PromptLibrary.validate("t", "b".repeat(limits.getValue("maxBodyChars").jsonPrimitive.int)))
+        assertTrue(PromptLibrary.validate("t", "b".repeat(limits.getValue("maxBodyChars").jsonPrimitive.int + 1)) != null)
+        val starters = json.getValue("starters").jsonArray.map { it.jsonObject }
+        assertEquals(
+            starters.map { listOf(it.getValue("id"), it.getValue("category"), it.getValue("title"), it.getValue("body")).map { v -> v.jsonPrimitive.content } },
+            PromptLibrary.starters.map { listOf(it.id, it.category.name.lowercase(), it.title, it.body) },
+        )
     }
 
     @Test

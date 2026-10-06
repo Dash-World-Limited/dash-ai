@@ -154,6 +154,7 @@ function Sidebar({ onClose }: { onClose: () => void }) {
       <div className="sidebar-foot">
         <NavItem icon="home" label="Home" to="/" testId="nav-home" />
         <NavItem icon="folder" label="Documents" to="/documents" testId="nav-documents" />
+        <NavItem icon="library" label="Prompt library" to="/prompts" testId="nav-prompts" />
         <NavItem icon="puzzle" label="Tools & Connections" to="/tools" testId="nav-tools" />
         <NavItem icon="settings" label="Settings" to="/settings" testId="nav-settings" />
         <button className="nav-item" onClick={() => navigate("/account")} aria-current={location.pathname === "/account" ? "page" : undefined} data-testid="nav-account">

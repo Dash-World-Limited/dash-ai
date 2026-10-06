@@ -2,6 +2,13 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  AssistantMode,
+  PROMPT_CATEGORIES,
+  PROMPT_LIMITS,
+  STARTER_PROMPTS,
+  filterPrompts,
+  validatePrompt,
+  type PromptItem,
   AuthResponse,
   ChatStreamRequest,
   ConversationDetailResponse,
@@ -66,6 +73,34 @@ describe("JSON fixtures match the schemas", () => {
     }
     // Names and outcomes only: never arguments or results.
     expect(Object.keys(detail.toolActivity[0]!).sort()).toEqual(["callId", "createdAt", "durationMs", "messageId", "plugin", "status", "tool"]);
+  });
+
+  it("prompt-library.json mirrors the prompt library both apps ship", () => {
+    const fixture = json("prompt-library.json") as { categories: unknown; limits: unknown; starters: unknown };
+    expect(fixture.categories).toEqual(PROMPT_CATEGORIES);
+    expect(fixture.limits).toEqual(PROMPT_LIMITS);
+    expect(fixture.starters).toEqual(STARTER_PROMPTS);
+    expect(new Set(STARTER_PROMPTS.map((p) => p.id)).size).toBe(STARTER_PROMPTS.length);
+    for (const c of PROMPT_CATEGORIES) expect(AssistantMode.options).toContain(c.mode);
+  });
+
+  it("prompt filtering and validation follow the Android rules", () => {
+    const mine: PromptItem = { id: "custom-1", title: "Zebra pitch", body: "Pitch [x]", category: "business", isCustom: true };
+    const all = [...STARTER_PROMPTS, mine];
+    const favs = new Set(["starter-pp-week"]);
+    expect(filterPrompts(all, favs, { kind: "all" }, "")[0]!.id).toBe("starter-pp-week");
+    expect(filterPrompts(all, favs, { kind: "favorites" }, "").map((p) => p.id)).toEqual(["starter-pp-week"]);
+    expect(filterPrompts(all, favs, { kind: "mine" }, "").map((p) => p.id)).toEqual(["custom-1"]);
+    expect(filterPrompts(all, new Set(), { kind: "category", category: "business" }, "").map((p) => p.title)).toEqual([
+      "Board update outline", "Competitor snapshot", "One-page business plan", "Pricing strategy", "SWOT analysis", "Zebra pitch",
+    ]);
+    expect(filterPrompts(all, new Set(), { kind: "all" }, "  SWOT ").map((p) => p.id)).toEqual(["starter-biz-swot"]);
+    expect(filterPrompts(all, new Set(), { kind: "all" }, "personal productivity")).toHaveLength(4); // matches the category label
+    expect(validatePrompt(" ", "x")).toBe("Give the prompt a title.");
+    expect(validatePrompt("t".repeat(81), "x")).toBe("Titles can be up to 80 characters.");
+    expect(validatePrompt("Title", "  ")).toBe("Write the prompt text.");
+    expect(validatePrompt("Title", "b".repeat(4001))).toBe("Prompts can be up to 4,000 characters.");
+    expect(validatePrompt("Title", "Body")).toBeNull();
   });
 
   it("smart-routing.json mirrors SMART_ROUTING", () => {

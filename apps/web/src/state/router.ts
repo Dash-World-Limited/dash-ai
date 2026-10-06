@@ -1,6 +1,6 @@
 import { Store, useStore } from "./store";
 
-/** Paths: /, /welcome, /sign-in, /chat, /chat/:id, /documents, /documents/:id, /tools, /account, /settings. */
+/** Paths: /, /welcome, /sign-in, /chat, /chat/:id, /documents, /documents/:id, /prompts, /tools, /account, /settings. */
 export const route = new Store<string>(typeof location === "undefined" ? "/" : location.pathname);
 
 if (typeof window !== "undefined") {

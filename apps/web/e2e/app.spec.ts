@@ -199,6 +199,41 @@ test("live: tool activity is recorded with the answer and shown again after a re
   await shot(page, "14-tool-history");
 });
 
+test("prompt library: same starters as Android, favourites, my prompts, use a prompt; kept per account", async ({ page }) => {
+  await enterDemo(page);
+  await openMenuIfNeeded(page);
+  await page.getByTestId("nav-prompts").click();
+  await expect(page.getByTestId("prompt-card")).toHaveCount(29);
+  await page.getByTestId("prompt-search").fill("swot");
+  await expect(page.getByTestId("prompt-card")).toHaveCount(1);
+  await page.getByTestId("prompt-favorite").click();
+  await page.getByTestId("prompt-search").fill("");
+  await page.getByRole("button", { name: "Favourites", exact: true }).click();
+  await expect(page.getByTestId("prompt-card")).toHaveCount(1);
+  await expect(page.getByTestId("prompt-card")).toContainText("SWOT analysis");
+
+  // A prompt of my own: validated like on Android, kept in this browser.
+  await page.getByTestId("new-prompt").click();
+  await page.getByTestId("save-prompt").click();
+  await expect(page.getByTestId("prompt-error")).toHaveText("Give the prompt a title.");
+  await page.getByTestId("prompt-title-input").fill("Supplier follow-up");
+  await page.getByTestId("prompt-category").selectOption("writing");
+  await page.getByTestId("prompt-body-input").fill("Write a polite follow-up to [supplier] about the late [order].");
+  await page.getByTestId("save-prompt").click();
+  await page.getByRole("button", { name: "My prompts", exact: true }).click();
+  await expect(page.getByTestId("prompt-card")).toHaveCount(1);
+  await expect(page.getByTestId("prompt-card")).toContainText("Writing · My prompt");
+  await shot(page, "15-prompts");
+  await page.reload();
+  await page.getByRole("button", { name: "My prompts", exact: true }).click();
+  await expect(page.getByTestId("prompt-card")).toContainText("Supplier follow-up");
+
+  // Use it: a new chat in the prompt's mode with the text ready to edit.
+  await page.getByTestId("use-prompt").click();
+  await expect(page.getByTestId("composer-input")).toHaveValue("Write a polite follow-up to [supplier] about the late [order].");
+  await expect(page.getByTestId("mode-chip")).toContainText("Writing");
+});
+
 test("settings: theme switches to dark and is remembered; security wording is accurate", async ({ page }) => {
   await enterDemo(page);
   await page.goto("/settings");

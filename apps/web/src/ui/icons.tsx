@@ -44,18 +44,19 @@ const PATHS = {
   library: "M5 4h4v16H5zM10 4h4v16h-4zM15 5l3.5-1 3 15-3.5 1z",
   download: "M12 4v12M6 11l6 6 6-6M5 20h14",
   check: "M5 12l5 5 9-10",
+  star: "M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z",
 } as const;
 
 export type IconName = keyof typeof PATHS;
 
-export function Icon({ name, size = 20, label }: { name: IconName; size?: number; label?: string }) {
+export function Icon({ name, size = 20, label, filled = false }: { name: IconName; size?: number; label?: string; filled?: boolean }) {
   return (
     <svg
       className="icon"
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      fill="none"
+      fill={filled ? "currentColor" : "none"}
       stroke="currentColor"
       strokeWidth={1.8}
       strokeLinecap="round"
