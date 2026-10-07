@@ -30,13 +30,8 @@ export function systemRoutes(app: FastifyInstance, ctx: RouteContext): void {
     };
   });
 
-  /**
-   * Prometheus metrics, only when METRICS_TOKEN is configured, and only with that bearer token.
-   * Without a token configured the route answers 404 like any unknown path.
-   */
-  /** True when the request carries the operator token (METRICS_TOKEN). Constant-time comparison. */
-  const isOperator = (request: FastifyRequest): boolean => {
-    const token = ctx.config.metricsToken;
+  /** True when the request's bearer token is exactly `token` (configured). Constant-time comparison. */
+  const bearerMatches = (request: FastifyRequest, token: string | undefined): boolean => {
     if (!token) return false;
     const given = request.headers.authorization?.startsWith("Bearer ") ? request.headers.authorization.slice(7).trim() : "";
     const a = createHash("sha256").update(given).digest();
@@ -50,7 +45,7 @@ export function systemRoutes(app: FastifyInstance, ctx: RouteContext): void {
    */
   app.get("/metrics", async (request: FastifyRequest, reply: FastifyReply) => {
     if (!ctx.config.metricsToken) throw new AppError("not_found", "Not found.");
-    if (!isOperator(request)) throw new AppError("unauthorized", "Not authorized.");
+    if (!bearerMatches(request, ctx.config.metricsToken)) throw new AppError("unauthorized", "Not authorized.");
     reply.type("text/plain; version=0.0.4");
     return ctx.metrics.render();
   });
@@ -68,10 +63,11 @@ export function systemRoutes(app: FastifyInstance, ctx: RouteContext): void {
 
   /**
    * OPERATOR VIEW of the internal provider configuration. With provider details hidden (production)
-   * it needs the operator token and is otherwise indistinguishable from an unknown path.
+   * it needs the operator token (OPERATOR_TOKEN, never METRICS_TOKEN or a user session) and is
+   * otherwise indistinguishable from an unknown path.
    */
   app.get("/v1/providers", async (request: FastifyRequest): Promise<ProvidersResponse> => {
-    if (hideProviders(ctx.config) && !isOperator(request)) throw new AppError("not_found", "Not found.");
+    if (hideProviders(ctx.config) && !bearerMatches(request, ctx.config.operatorToken)) throw new AppError("not_found", "Not found.");
     const configured = ctx.providers.configured();
     return {
       providers: ctx.providers.status(),

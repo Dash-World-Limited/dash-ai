@@ -145,14 +145,53 @@ describe("consumer responses never name a provider or model", () => {
     expect(openai.requests).toHaveLength(3);
   });
 
-  it("the operator view of providers needs the operator token; consumers get a neutral status", async () => {
-    const { app, auth } = await setup(new Scripted("openai", "OpenAI", "m1"), new Scripted("anthropic", "Claude", "m2"), {
-      METRICS_TOKEN: "operator-token-for-tests-0123456789",
+  describe("the operator view of providers (GET /v1/providers) needs its own operator credential", () => {
+    const METRICS = "metrics-token-for-tests-0123456789abcdef";
+    const OPERATOR = "operator-token-for-tests-0123456789abcdef";
+    const providers = (app: FastifyInstance, authorization?: string) =>
+      app.inject({ method: "GET", url: "/v1/providers", ...(authorization ? { headers: { authorization } } : {}) });
+
+    it("the operator token sees the internal configuration", async () => {
+      const { app } = await setup(new Scripted("openai", "OpenAI", "m1"), new Scripted("anthropic", "Claude", "m2"), {
+        METRICS_TOKEN: METRICS,
+        OPERATOR_TOKEN: OPERATOR,
+      });
+      const operator = await providers(app, `Bearer ${OPERATOR}`);
+      expect(operator.statusCode).toBe(200);
+      expect(operator.json().providers.map((p: { id: string; model: string }) => [p.id, p.model])).toEqual([["openai", "m1"], ["anthropic", "m2"]]);
+      // The operator credential is not a metrics credential either.
+      expect((await app.inject({ method: "GET", url: "/metrics", headers: { authorization: `Bearer ${OPERATOR}` } })).statusCode).toBe(401);
     });
-    expect((await app.inject({ method: "GET", url: "/v1/providers", headers: auth })).statusCode).toBe(404);
-    const operator = await app.inject({ method: "GET", url: "/v1/providers", headers: { authorization: "Bearer operator-token-for-tests-0123456789" } });
-    expect(operator.statusCode).toBe(200);
-    expect(operator.json().providers.map((p: { id: string; model: string }) => [p.id, p.model])).toEqual([["openai", "m1"], ["anthropic", "m2"]]);
+
+    it("ordinary signed-in users, anonymous requests, wrong tokens and the metrics token are refused", async () => {
+      const { app, auth } = await setup(new Scripted("openai", "OpenAI", "m1"), new Scripted("anthropic", "Claude", "m2"), {
+        METRICS_TOKEN: METRICS,
+        OPERATOR_TOKEN: OPERATOR,
+      });
+      for (const authorization of [auth.authorization, undefined, `Bearer ${METRICS}`, `Bearer ${OPERATOR}x`, OPERATOR, "Bearer "]) {
+        const res = await providers(app, authorization);
+        expect(res.statusCode, String(authorization)).toBe(404);
+        expect(res.body).not.toMatch(/openai|anthropic|m1|m2/i);
+      }
+      // The metrics token still does its own job.
+      expect((await app.inject({ method: "GET", url: "/metrics", headers: { authorization: `Bearer ${METRICS}` } })).statusCode).toBe(200);
+      // Consumers get the neutral status instead.
+      expect(AssistantStatusResponse.parse((await app.inject({ method: "GET", url: "/v1/assistant", headers: auth })).json())).toMatchObject({ available: true, demo: false });
+    });
+
+    it("with only a metrics token configured there is no operator access at all", async () => {
+      const { app, auth } = await setup(new Scripted("openai", "OpenAI", "m1"), new Scripted("anthropic", "Claude", "m2"), {
+        METRICS_TOKEN: METRICS,
+      });
+      for (const authorization of [`Bearer ${METRICS}`, auth.authorization, undefined]) {
+        expect((await providers(app, authorization)).statusCode, String(authorization)).toBe(404);
+      }
+    });
+
+    it("refuses to start when the operator token reuses the metrics token, or is too short", () => {
+      expect(() => testConfig({ METRICS_TOKEN: OPERATOR, OPERATOR_TOKEN: OPERATOR })).toThrow(/OPERATOR_TOKEN must be a different secret from METRICS_TOKEN/);
+      expect(() => testConfig({ OPERATOR_TOKEN: "too-short-operator-token" })).toThrow(/OPERATOR_TOKEN/);
+    });
   });
 });
 

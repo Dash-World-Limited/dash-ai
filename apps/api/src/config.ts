@@ -76,6 +76,12 @@ const EnvSchema = z.object({
   TOOL_MAX_RESULT_CHARS: int(20_000, 100, 200_000),
   /** Bearer token for GET /metrics. Unset = the metrics endpoint does not exist. Secret. */
   METRICS_TOKEN: z.preprocess(emptyToUndefined, z.string().trim().min(24).optional()),
+  /**
+   * Bearer token for the operator view of the internal provider configuration (GET /v1/providers).
+   * A separate credential from METRICS_TOKEN: a metrics scraper never gets operator access. Unset = no
+   * operator access when provider details are hidden. Secret.
+   */
+  OPERATOR_TOKEN: z.preprocess(emptyToUndefined, z.string().trim().min(32).optional()),
   /** Production refuses to start on the in-memory store unless this is "true". */
   ALLOW_MEMORY_STORE: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("false")),
 });
@@ -117,6 +123,8 @@ export interface AppConfig {
     redisUrl: string | undefined;
   };
   metricsToken: string | undefined;
+  /** Operator credential for GET /v1/providers; never the same value as metricsToken. */
+  operatorToken: string | undefined;
   maxConcurrentStreamsPerUser: number;
   sessionTtlDays: number;
   trustProxy: boolean;
@@ -145,6 +153,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (e.RATE_LIMIT_BACKEND === "redis" && !e.REDIS_URL) {
     throw new ConfigError("Invalid configuration: REDIS_URL is required when RATE_LIMIT_BACKEND=redis.");
   }
+  if (e.OPERATOR_TOKEN && e.OPERATOR_TOKEN === e.METRICS_TOKEN) {
+    throw new ConfigError("Invalid configuration: OPERATOR_TOKEN must be a different secret from METRICS_TOKEN.");
+  }
   return {
     nodeEnv: e.NODE_ENV,
     host: e.HOST,
@@ -171,6 +182,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       redisUrl: e.REDIS_URL,
     },
     metricsToken: e.METRICS_TOKEN,
+    operatorToken: e.OPERATOR_TOKEN,
     maxConcurrentStreamsPerUser: e.MAX_CONCURRENT_STREAMS_PER_USER,
     sessionTtlDays: e.SESSION_TTL_DAYS,
     trustProxy: e.TRUST_PROXY === "true",

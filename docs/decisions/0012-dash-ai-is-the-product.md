@@ -36,5 +36,11 @@ product; OpenAI, Anthropic, Gemini and future DASH models are infrastructure DAS
 
 **Consequences.** Clients are simpler (no selector, no Compare, two recovery actions). A provider outage
 before output is invisible to the person. Model independence: a future DASH model is one more adapter in
-the route, with no client change. Requires Director approval of: the export no longer including provider
-identity, cross-provider plain-text history, and the operator token reusing `METRICS_TOKEN`.
+the route, with no client change.
+
+**Director decisions (2026-10-07).** Approved: the export no longer including provider identity
+(internal observability keeps provider attribution for diagnostics, cost, routing and analytics) and
+cross-provider plain-text history, with data minimization (only the context the request needs). Not
+approved: reusing `METRICS_TOKEN` as the operator token. `/v1/providers` therefore needs a separate
+`OPERATOR_TOKEN`; the server refuses to start if the two match, and tests prove that signed-in users
+and the metrics token are refused.

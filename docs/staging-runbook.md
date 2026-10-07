@@ -9,7 +9,7 @@ repository: every `<…>` below is yours to choose.
 | Kind | Where | Examples |
 | --- | --- | --- |
 | **Safe to commit** | `deploy/staging/staging.env.example`, these docs | `NODE_ENV=production`, limits, timeouts, `DATABASE_SSL=require`, `RATE_LIMIT_BACKEND=redis`, `TRUST_PROXY=true`, model ids |
-| **Secrets: never committed, never pasted into tickets or chats** | your platform's secret manager | `DATABASE_URL`, `DATA_ENCRYPTION_KEY` (and `DATA_ENCRYPTION_PREVIOUS_KEYS`), `REDIS_URL`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `METRICS_TOKEN` |
+| **Secrets: never committed, never pasted into tickets or chats** | your platform's secret manager | `DATABASE_URL`, `DATA_ENCRYPTION_KEY` (and `DATA_ENCRYPTION_PREVIOUS_KEYS`), `REDIS_URL`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `METRICS_TOKEN`, `OPERATOR_TOKEN` |
 | **Infrastructure prerequisites** | provisioned by you | managed PostgreSQL 14+ with TLS and backups; Redis 7 with TLS and a password; an HTTPS reverse proxy / load balancer; a secret manager; a Node 22 runtime (container or VM) |
 | **Manual steps (need you)** | §8 | creating accounts and infrastructure, generating and storing keys, provider billing, DNS/TLS certificates, approving the live smoke run, signing the Android build |
 
@@ -44,6 +44,7 @@ are supplied.
 | `GET /health` | the process is up (no dependencies checked) | liveness probe |
 | `GET /ready` | 200 `ready` / 200 `degraded` (database up, shared rate-limit backend down) / 503 `not_ready` (database down) | readiness probe and load-balancer health check |
 | `GET /metrics` | Prometheus text; exists only when `METRICS_TOKEN` is set; needs `Authorization: Bearer <METRICS_TOKEN>` | scraper; keep it off the public internet if you can |
+| `GET /v1/providers` | internal provider configuration; exists for callers with `Authorization: Bearer <OPERATOR_TOKEN>` only (404 for everyone else, including the metrics token) | operators only |
 
 Probes are not rate limited. Metrics never contain prompts, answers, document text, tool payloads,
 emails, tokens or keys (a test proves it). Key series: `dash_ai_request_seconds`,
@@ -58,7 +59,8 @@ emails, tokens or keys (a test proves it). Key series: `dash_ai_request_seconds`
    `openssl rand -base64 32` → `DATA_ENCRYPTION_KEY`, with `DATA_ENCRYPTION_KEY_ID=k1`. Store a second
    copy in an offline/escrow location: **losing it makes every stored conversation and document
    unreadable**. Never reuse the development key.
-3. **Generate** `METRICS_TOKEN` (`openssl rand -hex 24`) and store it with the scraper's config.
+3. **Generate** `METRICS_TOKEN` (`openssl rand -hex 24`) and store it with the scraper's config, and a
+   separate `OPERATOR_TOKEN` (`openssl rand -hex 32`) kept for operators only. Never reuse one for the other.
 4. **Configure** the environment: the safe values from `deploy/staging/staging.env.example`, the
    secrets from the secret manager, and the model ids you want (`OPENAI_MODEL`, `ANTHROPIC_MODEL`).
 5. **Migrate** (deliberate step; the server refuses to start on an unmigrated schema):
@@ -141,7 +143,7 @@ endpoint is ever bundled.
 1. Choose a hosting platform and create PostgreSQL, Redis, the proxy/TLS certificate and the secret
    manager (§2); give the API instances network access to the database and Redis only.
 2. Create staging provider API keys with spending limits; choose model ids.
-3. Generate and store `DATA_ENCRYPTION_KEY` (with an escrow copy) and `METRICS_TOKEN`.
+3. Generate and store `DATA_ENCRYPTION_KEY` (with an escrow copy), `METRICS_TOKEN` and a separate `OPERATOR_TOKEN`.
 4. Resolve the GitHub Actions account restriction so CI and the Android build run, then create the
    protected `live-smoke` environment with the staging keys and approve a run.
 5. Set up Android release signing in a protected environment.

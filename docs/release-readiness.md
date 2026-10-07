@@ -18,9 +18,11 @@ Started from `1c37e91` (head of `feature/release-hardening-parity`), PR #3. GitH
 | Physical device (Samsung A55) | ❌ not run |
 | Voice | ❌ **not implemented** (architecture only: [voice.md](voice.md)) |
 
-Director approvals needed: the working faceted-diamond mark and the splash as built ([branding.md](branding.md));
-the export no longer containing provider identity; cross-provider plain-text history; reusing
-`METRICS_TOKEN` as the operator token for `/v1/providers` ([ADR 0012](decisions/0012-dash-ai-is-the-product.md)).
+Director decisions (2026-10-07): the faceted-diamond mark and the cinematic splash are approved
+([branding.md](branding.md)); the export without provider identity is approved, with provider
+attribution kept in internal observability; cross-provider plain-text history is approved with data
+minimization; reusing `METRICS_TOKEN` for `/v1/providers` was **not approved**, so the operator view now
+needs its own `OPERATOR_TOKEN` ([ADR 0012](decisions/0012-dash-ai-is-the-product.md)).
 
 ## Release hardening and parity milestone (`feature/release-hardening-parity`, PR #2)
 

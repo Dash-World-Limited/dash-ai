@@ -51,7 +51,7 @@ are routed the same way in hidden mode.
 | `tool_invocations` | Provider per tool call (names and outcomes only) |
 | Logs | `retrying provider request`, `provider fallback {from,to,code,attempts}`, served-model mismatches |
 | Metrics (`/metrics`, `METRICS_TOKEN`) | `dash_ai_request_seconds{provider,status}`, `dash_provider_failures_total{provider,code,retryable}`, `dash_provider_retries_total{provider,code}`, `dash_provider_fallbacks_total{from,to,code}` |
-| `GET /v1/providers` with `Authorization: Bearer $METRICS_TOKEN` | Configured providers, modes and models |
+| `GET /v1/providers` with `Authorization: Bearer $OPERATOR_TOKEN` (a separate credential; the metrics token and user sessions get 404) | Configured providers, modes and models |
 
 Metric labels are identifier-only (no prompt or answer text can become a label).
 
