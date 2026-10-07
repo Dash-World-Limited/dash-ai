@@ -38,7 +38,6 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Share
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -518,7 +517,13 @@ fun AutomationEditorScreen(services: AppServices, automationId: String?, onBack:
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 )
                 FieldLabel("Time zone")
-                SecondaryButton(d.timeZone, { pickingZone = true }, modifier = Modifier.fillMaxWidth().testTag("automation_zone"))
+                SecondaryButton(d.timeZone, { pickingZone = !pickingZone }, modifier = Modifier.fillMaxWidth().testTag("automation_zone"))
+                if (pickingZone) {
+                    ZonePicker(current = d.timeZone, onPick = { zone ->
+                        vm.edit { it.copy(timeZone = zone) }
+                        pickingZone = false
+                    }, onDismiss = { pickingZone = false })
+                }
                 Text(
                     "The time is kept in this zone, including daylight-saving changes.",
                     style = MaterialTheme.typography.bodySmall,
@@ -534,12 +539,6 @@ fun AutomationEditorScreen(services: AppServices, automationId: String?, onBack:
                 Spacer(Modifier.height(Spacing.lg))
             }
         }
-    }
-    if (pickingZone) {
-        ZonePicker(current = d.timeZone, onPick = { zone ->
-            vm.edit { it.copy(timeZone = zone) }
-            pickingZone = false
-        }, onDismiss = { pickingZone = false })
     }
 }
 
@@ -564,6 +563,7 @@ private fun Pill(label: String, selected: Boolean, tag: String, onClick: () -> U
     }
 }
 
+/** Inline zone search (a few matches at a time), so the editor stays one scrolling form. */
 @Composable
 private fun ZonePicker(current: String, onPick: (String) -> Unit, onDismiss: () -> Unit) {
     val c = DashTheme.colors
@@ -571,35 +571,27 @@ private fun ZonePicker(current: String, onPick: (String) -> Unit, onDismiss: () 
     val all = remember(current) { AutomationDraft.zoneOptions(current) }
     val shown = remember(query, all) {
         val q = query.trim().replace(' ', '_')
-        (if (q.isEmpty()) all else all.filter { it.contains(q, ignoreCase = true) }).take(80)
+        (if (q.isEmpty()) all else all.filter { it.contains(q, ignoreCase = true) }).take(8)
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = c.surface,
-        title = { Text("Time zone", color = c.ink) },
-        text = {
-            Column {
-                DashTextField(query, { query = it }, "Search, for example Lagos", Modifier.testTag("zone_search"))
-                Spacer(Modifier.height(Spacing.sm))
-                LazyColumn(Modifier.heightIn(max = 320.dp)) {
-                    items(shown, key = { it }) { zone ->
-                        Text(
-                            zone.replace('_', ' '),
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = if (zone == current) c.accentInk else c.ink,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(Radii.sm)
-                                .clickable(role = Role.Button) { onPick(zone) }
-                                .padding(vertical = Spacing.md, horizontal = Spacing.sm)
-                                .testTag("zone_option"),
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = { TextAction("Cancel", onDismiss) },
-    )
+    QuietCard(Modifier.fillMaxWidth().testTag("zone_picker")) {
+        DashTextField(query, { query = it }, "Search, for example Lagos", Modifier.testTag("zone_search"))
+        Spacer(Modifier.height(Spacing.xs))
+        if (shown.isEmpty()) Text("No matching time zone.", style = MaterialTheme.typography.bodyMedium, color = c.inkSecondary)
+        shown.forEach { zone ->
+            Text(
+                zone.replace('_', ' '),
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (zone == current) c.accentInk else c.ink,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(Radii.sm)
+                    .clickable(role = Role.Button) { onPick(zone) }
+                    .padding(vertical = Spacing.md, horizontal = Spacing.sm)
+                    .testTag("zone_option"),
+            )
+        }
+        TextAction("Cancel", onDismiss)
+    }
 }
 
 // ---- Result -------------------------------------------------------------------------------------

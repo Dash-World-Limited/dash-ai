@@ -592,7 +592,7 @@ class DashAiUiTest {
         compose.onNodeWithTag("automation_day_5").performScrollTo().performClick()
         compose.onNodeWithTag("automation_zone").performScrollTo().performClick()
         compose.onNodeWithTag("zone_search").performTextInput("Lagos")
-        compose.onNodeWithText("Africa/Lagos").performClick()
+        compose.onNodeWithText("Africa/Lagos").performScrollTo().performClick()
         compose.onNodeWithTag("automation_save").performScrollTo().performClick()
         await("the automation to be created") { api.created.isNotEmpty() }
         val body = api.created.single()
