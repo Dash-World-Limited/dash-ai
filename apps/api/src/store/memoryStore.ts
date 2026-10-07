@@ -4,6 +4,11 @@ import {
   type AutomationRunRecord,
   type FinishRunInput,
   type NotificationRecord,
+  type ClaimedPushDelivery,
+  type FinishPushDeliveryInput,
+  type PushDeliveryRecord,
+  type PushDeviceRecord,
+  type UpsertPushDeviceInput,
   type ScheduleRunInput,
   type ConversationChangePage,
   type ConversationRecord,
@@ -19,6 +24,7 @@ import {
   type UsageRow,
   type UserRecord,
 } from "./store.js";
+import { newId } from "../security/crypto.js";
 import type { PluginSettingRecord, ToolInvocationRow } from "../tools/types.js";
 
 interface StoredConversation {
@@ -49,6 +55,11 @@ export class MemoryStore implements Store {
   /** Insertion order is creation order. */
   private readonly runs = new Map<string, AutomationRunRecord>();
   private readonly notifications = new Map<string, NotificationRecord>();
+  private readonly pushDevices = new Map<string, PushDeviceRecord>();
+  /** Insertion order is creation order. */
+  private readonly pushDeliveries = new Map<string, PushDeliveryRecord>();
+  /** Users who turned Automates pushes off (on is the default). */
+  private readonly pushOff = new Set<string>();
 
   private bump(conversation: StoredConversation): void {
     const next = (this.syncCounters.get(conversation.record.userId) ?? 0) + 1;
@@ -94,7 +105,8 @@ export class MemoryStore implements Store {
     if (user) this.usersByEmail.delete(user.email);
     this.users.delete(userId);
     this.syncCounters.delete(userId);
-    for (const [hash, s] of this.sessions) if (s.userId === userId) this.sessions.delete(hash);
+    for (const [hash, s] of this.sessions) if (s.userId === userId) this.dropSession(hash);
+    this.pushOff.delete(userId);
     for (const [id, c] of this.conversations) {
       if (c.record.userId === userId) {
         this.conversations.delete(id);
@@ -127,15 +139,31 @@ export class MemoryStore implements Store {
     return this.sessions.get(tokenHash);
   }
 
-  async deleteSession(tokenHash: string): Promise<void> {
+  /** Mirrors the foreign keys: a session takes its push device (and that device's deliveries) with it. */
+  private dropSession(tokenHash: string): void {
     this.sessions.delete(tokenHash);
+    for (const [id, d] of this.pushDevices) if (d.sessionHash === tokenHash) this.dropPushDevice(id);
+  }
+
+  private dropPushDevice(id: string): void {
+    this.pushDevices.delete(id);
+    for (const [did, d] of this.pushDeliveries) if (d.deviceId === id) this.pushDeliveries.delete(did);
+  }
+
+  private dropNotification(id: string): void {
+    this.notifications.delete(id);
+    for (const [did, d] of this.pushDeliveries) if (d.notificationId === id) this.pushDeliveries.delete(did);
+  }
+
+  async deleteSession(tokenHash: string): Promise<void> {
+    this.dropSession(tokenHash);
   }
 
   async deleteSessionsForUser(userId: string): Promise<number> {
     let removed = 0;
     for (const [hash, session] of this.sessions) {
       if (session.userId === userId) {
-        this.sessions.delete(hash);
+        this.dropSession(hash);
         removed += 1;
       }
     }
@@ -146,7 +174,7 @@ export class MemoryStore implements Store {
     let removed = 0;
     for (const [hash, s] of this.sessions) {
       if (Date.parse(s.expiresAt) <= now.getTime()) {
-        this.sessions.delete(hash);
+        this.dropSession(hash);
         removed += 1;
       }
     }
@@ -368,7 +396,7 @@ export class MemoryStore implements Store {
   private deleteAutomationRows(id: string): void {
     this.automations.delete(id);
     for (const [runId, r] of this.runs) if (r.automationId === id) this.runs.delete(runId);
-    for (const [nid, n] of this.notifications) if (n.automationId === id) this.notifications.delete(nid);
+    for (const [nid, n] of this.notifications) if (n.automationId === id) this.dropNotification(nid);
   }
 
   private inFlight(automationId: string): boolean {
@@ -458,10 +486,22 @@ export class MemoryStore implements Store {
       leaseUntil: null, provider: input.provider, model: input.model, demo: input.demo,
     });
     this.notifications.set(input.notification.id, structuredClone(input.notification));
+    if (input.pushAt !== null && !this.pushOff.has(r.userId)) {
+      const t = Date.parse(input.pushAt);
+      for (const device of this.pushDevices.values()) {
+        const session = this.sessions.get(device.sessionHash);
+        if (device.userId !== r.userId || !session || Date.parse(session.expiresAt) <= t) continue;
+        const id = newId();
+        this.pushDeliveries.set(id, {
+          id, notificationId: input.notification.id, deviceId: device.id, userId: r.userId, status: "pending", attempts: 0,
+          nextAttemptAt: input.pushAt, leaseUntil: null, lastError: null, createdAt: input.pushAt, updatedAt: input.pushAt,
+        });
+      }
+    }
     const finished = [...this.runs.values()].filter((x) => x.automationId === r.automationId && (x.status === "ready" || x.status === "failed")).reverse();
     for (const old of finished.slice(input.keep)) {
       this.runs.delete(old.id);
-      for (const [nid, n] of this.notifications) if (n.runId === old.id) this.notifications.delete(nid);
+      for (const [nid, n] of this.notifications) if (n.runId === old.id) this.dropNotification(nid);
     }
     return true;
   }
@@ -520,6 +560,110 @@ export class MemoryStore implements Store {
       changed += 1;
     }
     return changed;
+  }
+
+  // ---- Push notifications ----
+
+  async upsertPushDevice(input: UpsertPushDeviceInput): Promise<PushDeviceRecord | undefined> {
+    const session = this.sessions.get(input.sessionHash);
+    if (!session || session.userId !== input.userId || !this.owned(input.userId)) return undefined;
+    let same: PushDeviceRecord | undefined;
+    for (const [id, d] of this.pushDevices) {
+      if (d.sessionHash !== input.sessionHash && d.token !== input.token) continue;
+      if (d.sessionHash === input.sessionHash && d.token === input.token && d.userId === input.userId) same = d;
+      else this.dropPushDevice(id);
+    }
+    if (same) {
+      Object.assign(same, { platform: input.platform, appVersion: input.appVersion, updatedAt: input.now });
+      return structuredClone(same);
+    }
+    const record: PushDeviceRecord = {
+      id: input.id, userId: input.userId, sessionHash: input.sessionHash, platform: input.platform, token: input.token,
+      appVersion: input.appVersion, createdAt: input.now, updatedAt: input.now,
+    };
+    this.pushDevices.set(record.id, record);
+    return structuredClone(record);
+  }
+
+  async getPushDeviceForSession(sessionHash: string): Promise<PushDeviceRecord | undefined> {
+    for (const d of this.pushDevices.values()) if (d.sessionHash === sessionHash) return structuredClone(d);
+    return undefined;
+  }
+
+  async listPushDevices(userId: string): Promise<PushDeviceRecord[]> {
+    return [...this.pushDevices.values()].filter((d) => d.userId === userId).map((d) => structuredClone(d));
+  }
+
+  async deletePushDevice(userId: string, id: string): Promise<boolean> {
+    const d = this.pushDevices.get(id);
+    if (!d || d.userId !== userId) return false;
+    this.dropPushDevice(id);
+    return true;
+  }
+
+  async deletePushDeviceForSession(sessionHash: string): Promise<boolean> {
+    for (const [id, d] of this.pushDevices) {
+      if (d.sessionHash === sessionHash) {
+        this.dropPushDevice(id);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async removeInvalidPushDevice(id: string): Promise<boolean> {
+    if (!this.pushDevices.has(id)) return false;
+    this.dropPushDevice(id);
+    return true;
+  }
+
+  async getPushPreferences(userId: string): Promise<{ automates: boolean }> {
+    return { automates: !this.pushOff.has(userId) };
+  }
+
+  async setPushPreferences(userId: string, prefs: { automates: boolean }): Promise<void> {
+    if (!this.owned(userId)) return;
+    if (prefs.automates) this.pushOff.delete(userId);
+    else this.pushOff.add(userId);
+  }
+
+  async claimPushDeliveries(now: string, leaseUntil: string, limit: number): Promise<ClaimedPushDelivery[]> {
+    const t = Date.parse(now);
+    const due = [...this.pushDeliveries.values()]
+      .filter(
+        (d) =>
+          (d.status === "pending" && d.nextAttemptAt !== null && Date.parse(d.nextAttemptAt) <= t) ||
+          (d.status === "sending" && d.leaseUntil !== null && Date.parse(d.leaseUntil) < t),
+      )
+      .sort((a, b) => Date.parse(a.nextAttemptAt ?? a.createdAt) - Date.parse(b.nextAttemptAt ?? b.createdAt))
+      .slice(0, limit);
+    const out: ClaimedPushDelivery[] = [];
+    for (const d of due) {
+      const device = this.pushDevices.get(d.deviceId);
+      const notification = this.notifications.get(d.notificationId);
+      if (!device || !notification) continue;
+      Object.assign(d, { status: "sending", attempts: d.attempts + 1, leaseUntil, updatedAt: now });
+      const session = this.sessions.get(device.sessionHash);
+      out.push({
+        delivery: structuredClone(d),
+        device: structuredClone(device),
+        notification: structuredClone(notification),
+        sessionValid: !!session && Date.parse(session.expiresAt) > t,
+        automatesEnabled: !this.pushOff.has(d.userId),
+      });
+    }
+    return out;
+  }
+
+  async finishPushDelivery(input: FinishPushDeliveryInput): Promise<boolean> {
+    const d = this.pushDeliveries.get(input.id);
+    if (!d || d.status !== "sending") return false;
+    Object.assign(d, { status: input.status, nextAttemptAt: input.nextAttemptAt, leaseUntil: null, lastError: input.lastError, updatedAt: input.now });
+    return true;
+  }
+
+  async listPushDeliveries(userId: string): Promise<PushDeliveryRecord[]> {
+    return [...this.pushDeliveries.values()].filter((d) => d.userId === userId).map((d) => structuredClone(d));
   }
 
   async close(): Promise<void> {}

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { loadPolicy, PolicyError, type RouterPolicy } from "./intelligence/policy.js";
+import { FcmConfigError, parseServiceAccount, type FcmServiceAccount } from "./push/fcm.js";
 
 const emptyToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 const optionalString = z.preprocess(emptyToUndefined, z.string().trim().min(1).optional());
@@ -97,6 +98,22 @@ const EnvSchema = z.object({
   AUTOMATIONS_CONCURRENCY: int(2, 1, 32),
   /** Automations one account may keep. */
   AUTOMATIONS_MAX_PER_USER: int(25, 1, 500),
+  /**
+   * How Automates push notifications are delivered. none (default): not at all (results and in-app
+   * notices still work). fcm: Android through Firebase Cloud Messaging (needs FCM_SERVICE_ACCOUNT).
+   * fake: recorded, never sent (development and tests).
+   */
+  PUSH_TRANSPORT: z.preprocess(emptyToUndefined, z.enum(["none", "fcm", "fake"]).default("none")),
+  /** Firebase service-account JSON key (raw or base64) with permission to send FCM messages. Secret. */
+  FCM_SERVICE_ACCOUNT: optionalString,
+  /** How often each instance looks for due push deliveries (a finished run also triggers a pass). */
+  PUSH_TICK_MS: int(5_000, 500, 600_000),
+  /** Send attempts per device before a push is given up (the in-app notice stays). */
+  PUSH_MAX_ATTEMPTS: int(5, 1, 10),
+  /** First retry delay; doubles each attempt (with jitter), capped at an hour. */
+  PUSH_RETRY_BASE_MS: int(30_000, 100, 3_600_000),
+  /** How long a push may wait for an offline device, and the oldest notice still pushed. */
+  PUSH_TTL_SECONDS: int(86_400, 60, 2_419_200),
   /** Production refuses to start on the in-memory store unless this is "true". */
   ALLOW_MEMORY_STORE: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("false")),
 });
@@ -153,6 +170,15 @@ export interface AppConfig {
   tools: { enabled: boolean; timeoutMs: number; maxRounds: number; maxResultChars: number };
   routerPolicy: RouterPolicy;
   automations: { enabled: boolean; tickMs: number; concurrency: number; maxPerUser: number };
+  push: {
+    transport: "none" | "fcm" | "fake";
+    /** Parsed FCM_SERVICE_ACCOUNT (secret). */
+    fcm: FcmServiceAccount | undefined;
+    tickMs: number;
+    maxAttempts: number;
+    retryBaseMs: number;
+    ttlSeconds: number;
+  };
   dataEncryption: { key: string | undefined; keyId: string; previousKeys: string | undefined };
   version: string;
 }
@@ -172,6 +198,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
   if (e.OPERATOR_TOKEN && e.OPERATOR_TOKEN === e.METRICS_TOKEN) {
     throw new ConfigError("Invalid configuration: OPERATOR_TOKEN must be a different secret from METRICS_TOKEN.");
+  }
+  let fcm: FcmServiceAccount | undefined;
+  if (e.PUSH_TRANSPORT === "fcm") {
+    if (!e.FCM_SERVICE_ACCOUNT) throw new ConfigError("Invalid configuration: FCM_SERVICE_ACCOUNT is required when PUSH_TRANSPORT=fcm.");
+    try {
+      fcm = parseServiceAccount(e.FCM_SERVICE_ACCOUNT);
+    } catch (err) {
+      if (err instanceof FcmConfigError) throw new ConfigError(`Invalid configuration: ${err.message}`);
+      throw err;
+    }
   }
   let routerPolicy: RouterPolicy;
   try {
@@ -230,6 +266,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       concurrency: e.AUTOMATIONS_CONCURRENCY,
       maxPerUser: e.AUTOMATIONS_MAX_PER_USER,
     },
+    push: {
+      transport: e.PUSH_TRANSPORT,
+      fcm,
+      tickMs: e.PUSH_TICK_MS,
+      maxAttempts: e.PUSH_MAX_ATTEMPTS,
+      retryBaseMs: e.PUSH_RETRY_BASE_MS,
+      ttlSeconds: e.PUSH_TTL_SECONDS,
+    },
     dataEncryption: {
       key: e.DATA_ENCRYPTION_KEY,
       keyId: e.DATA_ENCRYPTION_KEY_ID,
@@ -264,6 +308,9 @@ export function configWarnings(config: AppConfig): string[] {
   }
   if (config.providerDetails === "exposed") {
     warnings.push("PROVIDER_DETAILS=exposed in production: consumer responses name the AI provider and model. Use hidden.");
+  }
+  if (config.push.transport === "fake") {
+    warnings.push("PUSH_TRANSPORT=fake in production: push notifications are recorded but never delivered. Use fcm, or none.");
   }
   if (config.providerMode === "fake") {
     warnings.push("PROVIDER_MODE=fake in production: every answer is a labelled demonstration, not a real model.");

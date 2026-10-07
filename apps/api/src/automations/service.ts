@@ -25,6 +25,8 @@ export interface AutomationDeps {
   log: FastifyBaseLogger;
   metrics: Metrics;
   now: () => Date;
+  /** Push delivery (absent or unavailable: notices stay in-app only). Never awaited by a run. */
+  push?: { readonly available: boolean; poke(): void };
 }
 
 /** Added to DASH AI's identity and mode instructions for every automation run. */
@@ -313,7 +315,10 @@ export class AutomationService {
       demo: outcome.status === "ready" ? outcome.demo : false,
       notification,
       keep: AUTOMATION_LIMITS.maxRunsKept,
+      // Deliveries are queued with the notice; sending happens afterwards and can never fail the run.
+      pushAt: this.deps.push?.available ? now : null,
     });
+    this.deps.push?.poke();
   }
 
   // ---- views ---------------------------------------------------------------------------------

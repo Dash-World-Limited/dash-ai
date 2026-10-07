@@ -1,0 +1,11 @@
+{
+  "v": "1",
+  "type": "automation.ready",
+  "notificationId": "2c3d4e5f-6a7b-4c8d-9e0f-0a1b2c3d4e5f",
+  "automationId": "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b",
+  "runId": "0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+  "account": "3f2a9c1d8e7b6a50",
+  "title": "DASH AI",
+  "body": "Your scheduled result is ready.",
+  "createdAt": "2026-10-07T07:00:09.000Z"
+}
