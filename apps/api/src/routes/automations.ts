@@ -6,6 +6,7 @@ import {
   UpdateAutomationRequest,
   UpdateAutomationRunRequest,
   type Automation,
+  type AutomationSchedule,
   type AutomationDetailResponse,
   type AutomationListResponse,
   type AutomationRunResponse,
@@ -22,6 +23,10 @@ import type { AutomationRecord } from "../store/store.js";
 import type { RouteContext } from "./context.js";
 
 const Params = z.object({ id: Id });
+
+/** Key order independent (PostgreSQL jsonb does not keep it), for "did the schedule change?". */
+const canonical = (value: AutomationSchedule): string =>
+  JSON.stringify(Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))));
 const RunParams = z.object({ id: Id, runId: Id });
 
 /**
@@ -102,7 +107,11 @@ export function automationRoutes(app: FastifyInstance, ctx: RouteContext): void 
     const body = parseOrThrow(UpdateAutomationRequest, request.body);
     if (body.timeZone !== undefined) checkTimeZone(body.timeZone);
     const updated: AutomationRecord = { ...automation, ...body, updatedAt: ctx.now().toISOString() };
-    const timing = body.schedule !== undefined || body.timeZone !== undefined;
+    // Clients may send the whole form back: only a real change of schedule or zone reschedules, so
+    // renaming a finished one-time automation doesn't fail because its time has passed.
+    const timing =
+      (body.schedule !== undefined && canonical(body.schedule) !== canonical(automation.schedule)) ||
+      (body.timeZone !== undefined && body.timeZone !== automation.timeZone);
     if (timing && updated.status !== "paused") {
       // A new schedule starts fresh; a completed one-time automation given a new time becomes active again.
       updated.status = "active";

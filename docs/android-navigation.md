@@ -15,11 +15,13 @@ Home (root)
   ├─ Ask field / quick action / recent chat ─► Chat
   ├─ Avatar ─► Account ─► (sign out / everywhere / delete) ─► Auth
   └─ Drawer: New chat · Search · History (Today / Yesterday / Previous 7 days / Older)
-             Home · Documents · Tools & Connections · Prompt library · Settings
+             Home · Documents · Automates · Tools & Connections · Prompt library · Settings
 
 Chat ─ back ─► Home        (history icon opens the same drawer)
 Documents ─► Document detail ─ "Ask about this document" / suggestion ─► Chat (Home stays below)
 Prompt library ─ "Use prompt" ─► Chat
+Automates ─► New automation / Automation ─► Edit, Result ─ Regenerate ─► Automation
+          └─ "New results" notice ─► Result
 Settings ─► Tools & Connections, Account (sign out and sessions), Auth (to leave Demo Mode)
 ```
 
@@ -47,6 +49,7 @@ opened with `launchSingleTop`. System Back follows the stack; Back from Chat ret
 | Onboarding | One screen: "What are we building today?", three cues, Get started; shown once | Carousel |
 | Auth | Email + password sign-in and account creation (the only methods the server supports), validation, offline, wrong credentials, existing account, rate limit, server failure with Retry, server address, Demo Mode | Google / Microsoft / Apple, email codes, password reset (not in the API) |
 | Home | Time-aware greeting with the account's own first name (none in Demo Mode), Ask field, quick actions mapped to real modes (Write, Analyse a file, Brainstorm, Code, Research, More tools → Tools), recent chats, empty state | Invented names |
+| Automates | Server-side automations: list with state (Scheduled / Running / Ready / Failed / Paused / Completed), schedule, next and last run; editor (task, mode, once / daily / weekly / monthly, time, time zone); detail with Run now, Pause, Resume, Delete and results; result with Edit, Regenerate, Copy, Download (.md), Share (share sheet); unread dot on the menu and count on the drawer entry ([automates.md](automates.md)) | Social auto-posting, push notifications (not built yet) |
 | Chat | Streaming answers, working state, stop, copy, share (Android share sheet), regenerate, edit and resend, markdown (headings, lists, code, tables), attachments, mode sheet, answers labelled "DASH AI", tool activity, recovery card, jump to latest | Provider selector, Compare, microphone (no voice input) |
 | Recovery | "DASH AI couldn't complete that response" (or "This answer couldn't be completed"), DASH AI's neutral message and attempt count, Retry, Continue later | Any provider name or provider switch |
 | History | Search, grouped by day, rename, delete (synced when signed in) | |

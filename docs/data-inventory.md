@@ -19,6 +19,10 @@ the ciphertext bound to its row so it cannot be moved to another row or user.
 | `documents.extracted_text_enc` | **Yes** | Encrypted | Since migration 1. Raw file bytes are never stored. |
 | `documents.name` | **Possibly** (file names like `divorce-settlement.pdf`) | Plaintext | Residual risk; see recommendations. |
 | `documents.status_detail` | No — fixed server messages | Plaintext | |
+| `automations.name_enc`, `prompt_enc` | **Yes** | Encrypted | Since migration 7, bound to the row (AAD). |
+| `automation_runs.content_enc` | **Yes** — generated results, possibly edited by the person | Encrypted | Since migration 7, bound to automation and run. |
+| `automations.schedule`, `time_zone`, `mode`, `status`, `next_run_at` | No — but the zone hints at location and the schedule at routine | Plaintext | Needed by the scheduler. |
+| `automation_runs.status`, `trigger`, `error_code`, `provider`, `model`, timestamps; `notifications` | No | Plaintext | Provider and model are internal; never sent to the apps. |
 
 ## Account and operational data
 

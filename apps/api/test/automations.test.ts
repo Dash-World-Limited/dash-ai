@@ -281,6 +281,15 @@ describe("the server-side scheduler", () => {
     await context.automations.idle();
     const a = Automation.parse((await app.inject({ method: "GET", url: `/v1/automations/${automation!.id}`, headers: user.auth })).json().automation);
     expect(a).toMatchObject({ status: "completed", state: "completed", nextRunAt: null, lastRun: { status: "ready" } });
+    // Saving the whole form back with only a new name keeps it completed (its time has passed).
+    const renamed = await app.inject({
+      method: "PATCH",
+      url: `/v1/automations/${automation!.id}`,
+      headers: user.auth,
+      payload: { name: "Renamed", prompt: a.prompt, mode: a.mode, schedule: a.schedule, timeZone: a.timeZone },
+    });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json()).toMatchObject({ name: "Renamed", status: "completed", nextRunAt: null });
   });
 
   it("never runs paused automations", async () => {

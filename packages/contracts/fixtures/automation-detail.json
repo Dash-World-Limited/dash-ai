@@ -1,0 +1,56 @@
+{
+  "automation": {
+    "id": "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b",
+    "name": "Morning brief",
+    "prompt": "Draft three priorities for my day.",
+    "mode": "general",
+    "schedule": { "kind": "weekly", "days": [1, 2, 3, 4, 5], "time": "08:00" },
+    "timeZone": "Africa/Lagos",
+    "status": "active",
+    "state": "ready",
+    "nextRunAt": "2026-10-08T07:00:00.000Z",
+    "lastRun": {
+      "id": "0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+      "automationId": "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b",
+      "status": "ready",
+      "trigger": "schedule",
+      "createdAt": "2026-10-07T07:00:00.000Z",
+      "startedAt": "2026-10-07T07:00:01.000Z",
+      "finishedAt": "2026-10-07T07:00:09.000Z",
+      "editedAt": null,
+      "error": null,
+      "demo": false,
+      "preview": "1. Finish the quarterly report"
+    },
+    "createdAt": "2026-10-01T09:00:00.000Z",
+    "updatedAt": "2026-10-01T09:00:00.000Z"
+  },
+  "runs": [
+    {
+      "id": "0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+      "automationId": "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b",
+      "status": "ready",
+      "trigger": "schedule",
+      "createdAt": "2026-10-07T07:00:00.000Z",
+      "startedAt": "2026-10-07T07:00:01.000Z",
+      "finishedAt": "2026-10-07T07:00:09.000Z",
+      "editedAt": null,
+      "error": null,
+      "demo": false,
+      "preview": "1. Finish the quarterly report"
+    },
+    {
+      "id": "1b2c3d4e-5f6a-4b7c-9d8e-9f0a1b2c3d4e",
+      "automationId": "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b",
+      "status": "failed",
+      "trigger": "manual",
+      "createdAt": "2026-10-06T12:00:00.000Z",
+      "startedAt": "2026-10-06T12:00:01.000Z",
+      "finishedAt": "2026-10-06T12:01:01.000Z",
+      "editedAt": null,
+      "error": "DASH AI couldn't complete this run.",
+      "demo": false,
+      "preview": ""
+    }
+  ]
+}

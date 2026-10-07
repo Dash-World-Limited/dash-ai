@@ -24,6 +24,9 @@ Production (`NODE_ENV=production`) **refuses to start** without `DATABASE_URL`
 | `usage_records` | provider, model, token counts per answer | |
 | `plugin_settings` | a user's plugin choices | No row = never configured = disabled. |
 | `tool_invocations` | tool-call audit rows | Metadata only: never arguments or results. Shown again with the conversation; deleted with it. |
+| `automations` | owner, **encrypted name and prompt**, mode, schedule (JSON), IANA time zone, status, next run | DASH Automates ([automates.md](automates.md)). |
+| `automation_runs` | **encrypted result**, status, trigger, lease, error code, provider/model (internal) | Also the scheduler's work queue; one queued/running run per automation (unique partial index). |
+| `notifications` | kind, automation, run, timestamps | No text is stored; titles are built from the decrypted name when read. |
 | `schema_migrations` | applied migrations with checksums | |
 
 Everything owned by a user cascades from `users`, so `DELETE /v1/me` removes it all.
