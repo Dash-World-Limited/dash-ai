@@ -106,6 +106,9 @@ test("a chat written on Android (offline, then synced) opens on the web, and del
   await page.getByRole("button", { name: /Options for/ }).first().click();
   await page.getByRole("menuitem", { name: "Delete" }).click();
   await page.getByTestId("confirm").click();
+  // The delete has reached the server once the web app has removed the chat from its list.
+  await openMenuIfNeeded(page);
+  await expect(page.getByTestId("history-item").filter({ hasText: "Written on the phone" })).toHaveCount(0);
   const tombstone = (await androidPull(page.request, auth)).changes.find((c) => c.conversation.id === conversationId)!;
   expect(tombstone).toMatchObject({ deleted: true, messages: [], toolActivity: [] });
 });
