@@ -49,14 +49,13 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.dashworldng.ai.core.documents.FileRules
-import com.dashworldng.ai.core.model.ModelChoice
 import com.dashworldng.ai.ui.theme.DashTheme
 import com.dashworldng.ai.ui.theme.Radii
 import com.dashworldng.ai.ui.theme.Sizing
 import com.dashworldng.ai.ui.theme.Spacing
 
 /**
- * The composer: text, attachments, the assistant mode and the provider. Every control does
+ * The composer: text, attachments and the assistant mode (DASH AI decides how to answer). Every control does
  * something real; there is no microphone because the app has no voice input.
  */
 @Composable
@@ -67,7 +66,6 @@ fun Composer(
     onStop: () -> Unit,
     onAttach: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
-    onOpenProviders: () -> Unit,
     onOpenModes: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -120,15 +118,6 @@ fun Composer(
                         onClick = onOpenModes,
                         enabled = !state.isGenerating,
                         modifier = Modifier.testTag("mode_selector"),
-                    )
-                    ComposerChip(
-                        label = state.choice.label,
-                        description = "Provider: ${state.choice.label}. Change provider",
-                        onClick = onOpenProviders,
-                        enabled = !state.isGenerating,
-                        accent = state.choice != ModelChoice.SMART,
-                        modifier = Modifier.testTag("model_selector"),
-                        labelModifier = Modifier.testTag("selected_model"),
                     )
                 }
                 Spacer(Modifier.width(Spacing.xs))

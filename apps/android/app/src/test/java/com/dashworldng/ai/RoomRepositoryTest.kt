@@ -49,7 +49,7 @@ class RoomRepositoryTest {
             status = MessageStatus.STOPPED,
             provider = ProviderId.ANTHROPIC,
             model = "claude-model",
-            modelChoice = ModelChoice.COMPARE,
+            modelChoice = ModelChoice.SMART,
             compareGroupId = "m1",
             replyToId = "m1",
         )

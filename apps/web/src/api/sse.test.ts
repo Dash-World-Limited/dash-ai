@@ -7,8 +7,8 @@ import { SseParser } from "./sse";
 const fixture = (name: string) => readFileSync(resolve(process.cwd(), "../../packages/contracts/fixtures", name), "utf8");
 
 describe("SseParser", () => {
-  it("decodes the shared Compare transcript, however it is chunked", () => {
-    const text = fixture("chat-stream-compare.sse");
+  it("decodes the shared production transcript, however it is chunked", () => {
+    const text = fixture("chat-stream.sse");
     const whole = new SseParser().feed(text);
     const parser = new SseParser();
     const chunked = [];

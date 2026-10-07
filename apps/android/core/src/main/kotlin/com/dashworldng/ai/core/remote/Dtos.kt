@@ -44,6 +44,7 @@ data class ProviderStatusDto(
 @Serializable
 data class ResearchDto(val liveSearchAvailable: Boolean, val note: String)
 
+/** Operator-only (`/v1/providers` with the operator token). The app never calls it. */
 @Serializable
 data class ProvidersResponseDto(
     val providers: List<ProviderStatusDto>,
@@ -51,6 +52,10 @@ data class ProvidersResponseDto(
     val smartRouting: Map<String, List<String>>,
     val research: ResearchDto,
 )
+
+/** `GET /v1/assistant`: whether DASH AI can answer. The AI infrastructure behind it is never named. */
+@Serializable
+data class AssistantStatusDto(val available: Boolean, val demo: Boolean, val research: ResearchDto)
 
 // ---- Auth and account ---------------------------------------------------------------------------
 
@@ -70,14 +75,14 @@ data class AuthResponseDto(val token: String, val expiresAt: String, val user: U
 data class MeResponseDto(val user: UserDto)
 
 @Serializable
-data class UsageTotalsDto(val provider: String, val requests: Int, val inputTokens: Long, val outputTokens: Long)
+data class UsageTotalsDto(val provider: String? = null, val requests: Int, val inputTokens: Long, val outputTokens: Long)
 
 @Serializable
 data class UsageRecordDto(
     val conversationId: String,
     val messageId: String,
-    val provider: String,
-    val model: String,
+    val provider: String? = null,
+    val model: String? = null,
     val demo: Boolean,
     val inputTokens: Long?,
     val outputTokens: Long?,
@@ -209,8 +214,9 @@ data class SyncPushResponseDto(val results: List<SyncOperationResultDto>)
 @Serializable
 data class OutgoingMessageDto(val id: String, val content: String, val attachmentIds: List<String> = emptyList())
 
+/** An earlier turn. Assistant turns are DASH AI's own; no origin is sent. */
 @Serializable
-data class HistoryMessageDto(val role: String, val content: String, val origin: String?)
+data class HistoryMessageDto(val role: String, val content: String)
 
 @Serializable
 data class ChatStreamRequestDto(
@@ -222,7 +228,7 @@ data class ChatStreamRequestDto(
 )
 
 @Serializable
-data class StreamTargetDto(val messageId: String, val provider: String, val model: String, val demo: Boolean)
+data class StreamTargetDto(val messageId: String, val provider: String? = null, val model: String? = null, val demo: Boolean)
 
 @Serializable
 data class StreamStartDto(
@@ -243,7 +249,7 @@ data class UsageDto(val inputTokens: Int?, val outputTokens: Int?)
 @Serializable
 data class MessageEndDto(val messageId: String, val finishReason: String, val usage: UsageDto)
 
-/** How a failed answer can be recovered: attempts made, and other providers the user may pick. */
+/** How a failed answer can be recovered: attempts made. `alternatives` is always empty from production servers. */
 @Serializable
 data class MessageRecoveryDto(val attempts: Int, val alternatives: List<String> = emptyList())
 
@@ -339,7 +345,7 @@ data class ToolActivityDto(
     val conversationId: String,
     val messageId: String,
     val callId: String,
-    val provider: String,
+    val provider: String? = null,
     val plugin: String,
     val tool: String,
     val status: String,

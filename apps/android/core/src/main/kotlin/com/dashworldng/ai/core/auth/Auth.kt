@@ -5,7 +5,7 @@ import com.dashworldng.ai.core.model.UserProfile
 import com.dashworldng.ai.core.remote.AuthResponseDto
 import com.dashworldng.ai.core.remote.DashApiClient
 import com.dashworldng.ai.core.remote.LoginRequestDto
-import com.dashworldng.ai.core.remote.ProvidersResponseDto
+import com.dashworldng.ai.core.remote.AssistantStatusDto
 import com.dashworldng.ai.core.remote.RegisterRequestDto
 
 data class AuthSession(val token: String, val expiresAt: String, val user: UserProfile)
@@ -50,7 +50,7 @@ class AuthService(private val client: () -> DashApiClient) {
 
     suspend fun deleteAccount() = client().callNoContent { deleteAccount() }
 
-    suspend fun providers(): ProvidersResponseDto = client().call { providers() }
+    suspend fun assistant(): AssistantStatusDto = client().call { assistant() }
 
     private fun AuthResponseDto.toSession() = AuthSession(
         token = token,

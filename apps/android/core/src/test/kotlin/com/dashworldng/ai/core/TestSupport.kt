@@ -16,7 +16,7 @@ import java.io.File
 class ScriptedGateway(
     override val isDemo: Boolean = false,
     private val script: suspend FlowCollector<ChatStreamEvent>.(ChatRequest) -> Unit = { request ->
-        answer(request, ProviderId.OPENAI, "Hello from OpenAI")
+        answer(request, null, "Hello from DASH AI")
     },
 ) : ChatGateway {
     val requests = mutableListOf<ChatRequest>()
@@ -36,10 +36,10 @@ private var counter = 0
 
 fun nextId(prefix: String = "id"): String = "$prefix-${++counter}"
 
-/** Emits a complete single-provider answer. */
+/** Emits one complete answer. Production servers send no provider; engineering servers may. */
 suspend fun FlowCollector<ChatStreamEvent>.answer(
     request: ChatRequest,
-    provider: ProviderId,
+    provider: ProviderId?,
     text: String,
     messageId: String = nextId("answer"),
 ) {
@@ -48,7 +48,7 @@ suspend fun FlowCollector<ChatStreamEvent>.answer(
             streamId = nextId("stream"),
             conversationId = request.conversationId,
             compareGroupId = null,
-            targets = listOf(StreamTarget(messageId, provider, "model-${provider.wire}", demo = false)),
+            targets = listOf(StreamTarget(messageId, provider, provider?.let { "model-${it.wire}" }, demo = false)),
             routingReason = "test",
         ),
     )
@@ -72,4 +72,12 @@ object Fixtures {
     }
 
     fun text(name: String): String = File(dir, name).readText()
+}
+
+/** Provider and model names a person must never see in DASH AI's interface. */
+val PROVIDER_NAMES = Regex("(?i)\\b(openai|chatgpt|gpt[-\\s]?\\d|anthropic|claude|gemini|dash smart)\\b|\\b(ai|change|another|other|default) providers?\\b")
+
+fun assertNoProviderName(text: String?, where: String = "text") {
+    val hit = text?.let { PROVIDER_NAMES.find(it)?.value }
+    kotlin.test.assertNull(hit, "provider wording in $where: $text")
 }

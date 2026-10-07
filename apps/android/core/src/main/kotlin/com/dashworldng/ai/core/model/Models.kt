@@ -1,29 +1,28 @@
 package com.dashworldng.ai.core.model
 
-/** The two real AI providers. The app never talks to them directly — only through the Dash AI API. */
-enum class ProviderId(val wire: String, val displayName: String, val company: String) {
-    OPENAI("openai", "OpenAI", "OpenAI"),
-    ANTHROPIC("anthropic", "Claude", "Anthropic");
-
-    val other: ProviderId get() = if (this == OPENAI) ANTHROPIC else OPENAI
+/**
+ * Internal id of the AI infrastructure behind an answer, kept only for local bookkeeping when a server
+ * reports it (engineering builds). It is never shown: DASH AI is the product, and the app never talks
+ * to an AI service directly — only through the DASH AI API.
+ */
+enum class ProviderId(val wire: String) {
+    OPENAI("openai"),
+    ANTHROPIC("anthropic");
 
     companion object {
         fun fromWire(value: String): ProviderId? = entries.firstOrNull { it.wire == value }
     }
 }
 
-/** What the user picks in the model selector. */
-enum class ModelChoice(val wire: String, val label: String, val description: String) {
-    SMART("smart", "Dash Smart", "Dash AI picks the most suitable configured model for the mode."),
-    OPENAI("openai", "OpenAI", "Every prompt in this chat goes to OpenAI."),
-    CLAUDE("claude", "Claude", "Every prompt in this chat goes to Anthropic's Claude."),
-    COMPARE("compare", "Compare", "Sends the same prompt to OpenAI and Claude and shows both answers side by side.");
+/**
+ * The routing value sent with each request. There is no provider choice in the app: DASH AI routes
+ * every request itself, so the app always sends [SMART]. Older stored values read back as null.
+ */
+enum class ModelChoice(val wire: String) {
+    SMART("smart");
 
     companion object {
         fun fromWire(value: String): ModelChoice? = entries.firstOrNull { it.wire == value }
-
-        /** The explicit choice that targets a single provider. */
-        fun forProvider(provider: ProviderId): ModelChoice = if (provider == ProviderId.OPENAI) OPENAI else CLAUDE
     }
 }
 
@@ -69,7 +68,7 @@ data class Conversation(
     val createdAt: Long,
     val updatedAt: Long,
     val titleIsCustom: Boolean = false,
-    /** Created in Demo Mode: its answers are simulated and never sent to a real provider. */
+    /** Created in Demo Mode: its answers are simulated and nothing is sent anywhere. */
     val isDemo: Boolean = false,
 )
 
@@ -80,14 +79,14 @@ data class ChatMessage(
     val content: String,
     val createdAt: Long,
     val status: MessageStatus = MessageStatus.COMPLETE,
-    /** Provider that produced an assistant message (null for user messages). */
+    /** Internal: the AI infrastructure behind an answer, when a server reports it. Never shown. */
     val provider: ProviderId? = null,
-    /** Model label reported by the server (or the demo engine). */
+    /** Internal: the model a server reported, when it reports one. Never shown. */
     val model: String? = null,
-    /** True when the answer is a demonstration, not a real provider response. */
+    /** True when the answer is a demonstration, not a real DASH AI answer. */
     val isDemo: Boolean = false,
     val modelChoice: ModelChoice? = null,
-    /** Shared by the two answers of a Compare request. */
+    /** Legacy: set on answers stored by older versions that offered Compare. Not used for display. */
     val compareGroupId: String? = null,
     /** For assistant messages: the user message being answered. */
     val replyToId: String? = null,
@@ -103,13 +102,12 @@ data class ChatMessage(
     val isAssistant: Boolean get() = role == MessageRole.ASSISTANT
     val isStreaming: Boolean get() = status == MessageStatus.STREAMING
 
-    /** Human-readable label saying exactly who produced this answer. */
+    /** Who wrote this answer, as shown to people: always DASH AI (simulated in Demo Mode). */
     val sourceLabel: String?
         get() = when {
             !isAssistant -> null
-            isDemo -> "Demo · ${provider?.displayName ?: "Dash AI"}-style (simulated)"
-            provider != null -> listOfNotNull(provider.displayName, model).joinToString(" · ")
-            else -> null
+            isDemo -> "Demo · DASH AI (simulated)"
+            else -> "DASH AI"
         }
 }
 

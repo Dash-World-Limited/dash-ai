@@ -448,7 +448,7 @@ fun DemoBadge(modifier: Modifier = Modifier) {
             .clip(Radii.pill)
             .border(1.dp, c.accent, Radii.pill)
             .padding(horizontal = 8.dp, vertical = 2.dp)
-            .semantics { contentDescription = "Demo Mode: simulated, not a real provider" },
+            .semantics { contentDescription = "Demo Mode: simulated by DASH AI, not a real answer" },
         style = MaterialTheme.typography.labelSmall,
         color = c.accentInk,
     )

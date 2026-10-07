@@ -33,6 +33,7 @@ import com.dashworldng.ai.core.routing.RoutingResult
 import com.dashworldng.ai.core.routing.SmartRouting
 import com.dashworldng.ai.core.stream.ChatStreamEvent
 import com.dashworldng.ai.core.stream.SseParser
+import com.dashworldng.ai.core.stream.StreamTarget
 import com.dashworldng.ai.core.stream.StreamEventDecoder
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -64,8 +65,8 @@ class ContractFixturesTest {
         }
         strict.decodeFromString(AuthResponseDto.serializer(), Fixtures.text("auth-response.json"))
         strict.decodeFromString(ConversationDetailDto.serializer(), Fixtures.text("conversation-detail.json")).also {
-            assertEquals(null, it.messages.first().origin)
-            assertEquals("openai", it.messages.last().origin)
+            // Production servers never say which AI service wrote an answer.
+            assertTrue(it.messages.all { m -> m.origin == null && m.model == null })
             assertEquals(listOf("text_stats"), it.toolActivity.map { a -> a.tool })
             assertEquals(it.messages.last().id, it.toolActivity.single().messageId)
         }
@@ -82,13 +83,13 @@ class ContractFixturesTest {
         val request = ChatRequest(
             conversationId = "3f0b8f2e-6a4d-4c1e-9d7a-1b2c3d4e5f60",
             mode = AssistantMode.BUSINESS,
-            modelChoice = ModelChoice.COMPARE,
+            modelChoice = ModelChoice.SMART,
             messageId = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
             content = "Draft a one-page plan for a premium coffee kiosk in Lagos.",
             attachments = listOf(AttachmentRef("local", "d0c5e1a2-3b4c-4d5e-8f60-718293a4b5c6", "notes.txt", DocumentKind.TXT, 10)),
             history = listOf(
-                HistoryItem(MessageRole.USER, "Hello", null),
-                HistoryItem(MessageRole.ASSISTANT, "Hi! How can I help?", ProviderId.OPENAI),
+                HistoryItem(MessageRole.USER, "Hello"),
+                HistoryItem(MessageRole.ASSISTANT, "Hi! How can I help?"),
             ),
         )
         val produced = Json.parseToJsonElement(DashJson.default.encodeToString(ChatStreamRequestDto.serializer(), request.toDto()))
@@ -97,25 +98,29 @@ class ContractFixturesTest {
     }
 
     @Test
-    fun `the compare SSE transcript decodes into stream events`() {
-        val events = SseParser.parseAll(Fixtures.text("chat-stream-compare.sse")).mapNotNull { StreamEventDecoder.decode(it, strict) }
-        assertEquals(8, events.size)
+    fun `the production SSE transcript decodes into DASH AI answers with no provider`() {
+        val events = SseParser.parseAll(Fixtures.text("chat-stream.sse")).mapNotNull { StreamEventDecoder.decode(it, strict) }
+        assertEquals(6, events.size)
         val start = assertIs<ChatStreamEvent.Started>(events[0])
-        assertEquals(listOf(ProviderId.OPENAI, ProviderId.ANTHROPIC), start.targets.map { it.provider })
-        assertTrue(start.targets.all { it.demo })
-        assertEquals("9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d", start.compareGroupId)
-        assertEquals(" — ünïcödé ✓ \"quoted\"", assertIs<ChatStreamEvent.Delta>(events[3]).text)
-        assertEquals("Demo answer:\n- point one", assertIs<ChatStreamEvent.Delta>(events[2]).text)
-        val end = assertIs<ChatStreamEvent.MessageEnded>(events[4])
+        assertEquals(listOf(StreamTarget("a1111111-1111-4111-8111-111111111111", null, null, demo = true)), start.targets)
+        assertEquals(null, start.compareGroupId)
+        assertEquals("**Demo** plan", assertIs<ChatStreamEvent.Delta>(events[1]).text)
+        assertEquals(" — ünïcödé ✓ \"quoted\"", assertIs<ChatStreamEvent.Delta>(events[2]).text)
+        val end = assertIs<ChatStreamEvent.MessageEnded>(events[3])
         assertEquals(FinishReason.STOP, end.finishReason)
         assertEquals(42, end.inputTokens)
-        val failure = assertIs<ChatStreamEvent.MessageFailed>(events[5])
+        assertEquals("Premium coffee kiosk plan", assertIs<ChatStreamEvent.TitleChanged>(events[4]).title)
+        assertIs<ChatStreamEvent.Ended>(events[5])
+    }
+
+    @Test
+    fun `a neutral failure decodes with its recovery details`() {
+        val events = SseParser.parseAll(Fixtures.text("chat-stream-recovery.sse")).mapNotNull { StreamEventDecoder.decode(it, strict) }
+        val failure = assertIs<ChatStreamEvent.MessageFailed>(events[2])
         assertEquals("provider_timeout", failure.error.code)
+        assertEquals("DASH AI took too long to respond. Please try again.", failure.error.message)
         assertTrue(failure.error.retryable)
         assertEquals(3, failure.attempts)
-        assertEquals(listOf(ProviderId.OPENAI), failure.alternatives)
-        assertEquals("Premium coffee kiosk plan", assertIs<ChatStreamEvent.TitleChanged>(events[6]).title)
-        assertIs<ChatStreamEvent.Ended>(events[7])
     }
 
     @Test
@@ -173,7 +178,7 @@ class ContractFixturesTest {
         for (mode in AssistantMode.entries) {
             val expected = table.getValue(mode.wire).jsonArray.map { ProviderId.fromWire(it.jsonPrimitive.content) }
             assertEquals(expected, SmartRouting.table.getValue(mode), "routing for ${mode.wire}")
-            val routed = SmartRouting.resolve(ModelChoice.SMART, mode, ProviderId.entries.toSet())
+            val routed = SmartRouting.resolve(mode, ProviderId.entries.toSet())
             assertEquals(expected.first(), assertIs<RoutingResult.Routed>(routed).providers.single())
         }
     }

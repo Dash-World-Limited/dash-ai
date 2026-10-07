@@ -12,7 +12,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -33,7 +32,6 @@ import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Share
-import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -63,14 +61,12 @@ import com.dashworldng.ai.core.documents.FileRules
 import com.dashworldng.ai.core.model.ChatMessage
 import com.dashworldng.ai.core.model.FinishReason
 import com.dashworldng.ai.core.model.MessageStatus
-import com.dashworldng.ai.core.model.ProviderId
 import com.dashworldng.ai.core.model.ToolUse
 import com.dashworldng.ai.core.presentation.RecoveryAction
 import com.dashworldng.ai.core.presentation.RecoveryCard
 import com.dashworldng.ai.core.presentation.ToolLabels
 import com.dashworldng.ai.ui.components.DemoBadge
 import com.dashworldng.ai.ui.components.PrimaryButton
-import com.dashworldng.ai.ui.components.SecondaryButton
 import com.dashworldng.ai.ui.components.TextAction
 import com.dashworldng.ai.ui.markdown.MarkdownView
 import com.dashworldng.ai.ui.theme.DashTheme
@@ -81,11 +77,9 @@ import com.dashworldng.ai.ui.theme.Spacing
 /** What a message row needs besides the message itself. */
 class MessageActions(
     val onRegenerate: (String) -> Unit,
-    val onRetryOther: (String) -> Unit,
     val onEdit: (ChatMessage) -> Unit,
     val onNotice: (String) -> Unit,
     val onRetryAnswer: (String) -> Unit,
-    val onChangeProvider: (String, List<ProviderId>) -> Unit,
     val onContinueLater: (String) -> Unit,
 )
 
@@ -143,7 +137,7 @@ fun UserMessage(message: ChatMessage, generating: Boolean, actions: MessageActio
 
 /** The assistant's answer: open reading space, no bubble. */
 @Composable
-fun AssistantMessage(message: ChatMessage, generating: Boolean, actions: MessageActions, extras: AnswerExtras, compact: Boolean = false) {
+fun AssistantMessage(message: ChatMessage, generating: Boolean, actions: MessageActions, extras: AnswerExtras) {
     val c = DashTheme.colors
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
@@ -157,7 +151,7 @@ fun AssistantMessage(message: ChatMessage, generating: Boolean, actions: Message
         } else if (message.content.isNotEmpty()) {
             MarkdownView(
                 markdown = message.content,
-                textStyle = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
+                textStyle = MaterialTheme.typography.bodyLarge,
                 onCopied = actions.onNotice,
             )
         }
@@ -181,10 +175,6 @@ fun AssistantMessage(message: ChatMessage, generating: Boolean, actions: Message
                 }
                 IconButton(onClick = { actions.onRegenerate(message.id) }, enabled = !generating) {
                     Icon(Icons.Rounded.Refresh, contentDescription = "Regenerate response", tint = c.inkTertiary, modifier = Modifier.size(18.dp))
-                }
-                val other = message.provider?.other
-                if (other != null && message.compareGroupId == null && !compact) {
-                    TextAction("Try ${other.displayName}", onClick = { actions.onRetryOther(message.id) }, enabled = !generating)
                 }
             }
         }
@@ -215,13 +205,13 @@ private fun StatusLine(message: ChatMessage) {
         message.status == MessageStatus.STOPPED -> "Stopped"
         message.status == MessageStatus.FAILED -> message.errorMessage ?: "This answer was not completed."
         message.finishReason == FinishReason.LENGTH -> "The answer reached the length limit and may be cut off."
-        message.finishReason == FinishReason.REFUSAL -> "The provider declined part of this request."
+        message.finishReason == FinishReason.REFUSAL -> "DASH AI declined part of this request."
         else -> null
     } ?: return
     Text(text, style = MaterialTheme.typography.bodySmall, color = c.inkTertiary, modifier = Modifier.testTag("message_status"))
 }
 
-/** "Provider temporarily unavailable" with Retry / Change provider / Continue later. */
+/** "DASH AI couldn't complete that response" with Retry / Continue later. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun RecoveryCardView(message: ChatMessage, card: RecoveryCard, generating: Boolean, actions: MessageActions) {
@@ -236,11 +226,6 @@ private fun RecoveryCardView(message: ChatMessage, card: RecoveryCard, generatin
             Text(card.title, style = MaterialTheme.typography.titleSmall, color = c.ink, modifier = Modifier.testTag("message_status"))
             Text(card.message, style = MaterialTheme.typography.bodyMedium, color = c.inkSecondary)
             card.attemptsNote?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.inkTertiary) }
-            Text(
-                "DASH AI never switches provider on its own.",
-                style = MaterialTheme.typography.bodySmall,
-                color = c.inkTertiary,
-            )
             FlowRow(horizontalArrangement = Arrangement.spacedBy(Spacing.sm), verticalArrangement = Arrangement.spacedBy(Spacing.sm), modifier = Modifier.padding(top = Spacing.xs)) {
                 card.actions.forEach { action ->
                     when (action) {
@@ -250,13 +235,6 @@ private fun RecoveryCardView(message: ChatMessage, card: RecoveryCard, generatin
                             enabled = !generating,
                             icon = Icons.Rounded.Refresh,
                             modifier = Modifier.testTag("recovery_retry"),
-                        )
-                        RecoveryAction.CHANGE_PROVIDER -> SecondaryButton(
-                            "Change provider",
-                            onClick = { actions.onChangeProvider(message.id, card.alternatives) },
-                            enabled = !generating,
-                            icon = Icons.Rounded.SwapHoriz,
-                            modifier = Modifier.testTag("recovery_change_provider"),
                         )
                         RecoveryAction.CONTINUE_LATER -> TextAction(
                             "Continue later",
@@ -339,27 +317,5 @@ fun WorkingIndicator(reducedMotion: Boolean, usingTools: Boolean = false) {
         }
         Spacer(Modifier.width(Spacing.sm))
         Text(label, style = MaterialTheme.typography.bodySmall, color = c.inkTertiary)
-    }
-}
-
-/** Both Compare answers, each labelled with its provider: side by side when wide, stacked on phones. */
-@Composable
-fun CompareRow(answers: List<ChatMessage>, generating: Boolean, actions: MessageActions, extras: AnswerExtras) {
-    val c = DashTheme.colors
-    Column(Modifier.fillMaxWidth().testTag("compare_row"), verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-        Text("Compare · same question, two providers", style = MaterialTheme.typography.labelMedium, color = c.inkTertiary)
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val wide = maxWidth >= 600.dp
-            val card: @Composable (ChatMessage, Modifier) -> Unit = { answer, modifier ->
-                Surface(modifier = modifier, shape = Radii.lg, color = c.surface, border = BorderStroke(1.dp, c.outline)) {
-                    Column(Modifier.padding(Spacing.md)) { AssistantMessage(answer, generating, actions, extras, compact = true) }
-                }
-            }
-            if (wide) {
-                Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) { answers.forEach { card(it, Modifier.weight(1f)) } }
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) { answers.forEach { card(it, Modifier.fillMaxWidth()) } }
-            }
-        }
     }
 }

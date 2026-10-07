@@ -27,7 +27,8 @@ data class ApiError(val code: String, val message: String, val retryable: Boolea
 class ApiException(val error: ApiError, val httpStatus: Int? = null, cause: Throwable? = null) :
     Exception(error.message, cause)
 
-data class StreamTarget(val messageId: String, val provider: ProviderId, val model: String, val demo: Boolean)
+/** One answer the server will stream. Production servers do not say which AI service produces it. */
+data class StreamTarget(val messageId: String, val provider: ProviderId? = null, val model: String? = null, val demo: Boolean)
 
 /** Events produced while an answer streams, whether from the live API or from Demo Mode. */
 sealed interface ChatStreamEvent {
@@ -48,15 +49,11 @@ sealed interface ChatStreamEvent {
         val outputTokens: Int?,
     ) : ChatStreamEvent
 
-    /**
-     * @property alternatives other providers the user may choose explicitly to retry this answer
-     *   (the server never switches provider by itself). Unknown provider ids are dropped.
-     */
+    /** @property attempts how many times DASH AI tried before giving up on this answer. */
     data class MessageFailed(
         val messageId: String,
         val error: ApiError,
         val attempts: Int = 1,
-        val alternatives: List<ProviderId> = emptyList(),
     ) : ChatStreamEvent
 
     /** The assistant started using a tool (names only; arguments are never sent to the app). */

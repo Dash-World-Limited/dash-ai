@@ -36,14 +36,14 @@ data class ChatSessionState(
     val messages: List<ChatMessage> = emptyList(),
     val isGenerating: Boolean = false,
     val activeStreamId: String? = null,
-    /** A request-level failure (e.g. offline, provider not configured). Per-answer failures live on messages. */
+    /** A request-level failure (e.g. offline, DASH AI unavailable). Per-answer failures live on messages. */
     val error: ApiError? = null,
     /**
      * Tools each answer used in this session (message id → calls, in order). Metadata only, kept in
      * memory: a reopened conversation shows its text, not its past tool activity.
      */
     val toolUses: Map<String, List<ToolUse>> = emptyMap(),
-    /** Recovery options for answers that failed in this session (message id → options from the server). */
+    /** Recovery details for answers that failed in this session (message id → what the server reported). */
     val recovery: Map<String, AnswerRecovery> = emptyMap(),
 ) {
     val isEmpty: Boolean get() = messages.isEmpty()
@@ -51,9 +51,9 @@ data class ChatSessionState(
 }
 
 /**
- * The conversation state machine: sending, streaming, stopping, regenerating, retrying with the
- * other provider, editing and resending, and Compare. Pure Kotlin so it is unit-tested on the JVM;
- * the Android ViewModel is a thin wrapper around it.
+ * The conversation state machine: sending, streaming, stopping, regenerating, editing and resending.
+ * DASH AI decides how each answer is produced; the app never picks a provider. Pure Kotlin so it is
+ * unit-tested on the JVM; the Android ViewModel is a thin wrapper around it.
  *
  * All public functions must be called from the scope's (single-threaded) dispatcher.
  */
@@ -100,7 +100,6 @@ class ChatSession(
     /** Sends a new user message. Returns false if nothing was sent. */
     fun send(
         text: String,
-        choice: ModelChoice,
         mode: AssistantMode,
         attachments: List<AttachmentRef> = emptyList(),
     ): Boolean {
@@ -129,11 +128,11 @@ class ChatSession(
             role = MessageRole.USER,
             content = content,
             createdAt = now,
-            modelChoice = choice,
+            modelChoice = ModelChoice.SMART,
             attachments = attachments,
         )
         _state.update { it.copy(conversation = conversation, messages = it.messages + user, error = null) }
-        generate(gateway, conversation, user, choice, mode, deleteIds = emptyList())
+        generate(gateway, conversation, user, mode, deleteIds = emptyList())
         return true
     }
 
@@ -163,35 +162,26 @@ class ChatSession(
     private class ConnectionLost : CancellationException("Connection lost")
 
     /** Generates the answer to [assistantMessageId]'s question again (replacing it). */
-    fun regenerate(assistantMessageId: String, choiceOverride: ModelChoice? = null): Boolean {
+    fun regenerate(assistantMessageId: String): Boolean {
         val messages = _state.value.messages
         val assistant = messages.firstOrNull { it.id == assistantMessageId && it.isAssistant } ?: return false
         val user = messages.firstOrNull { it.id == assistant.replyToId } ?: return false
-        val choice = choiceOverride ?: assistant.modelChoice ?: user.modelChoice ?: ModelChoice.SMART
-        return resend(user, user.content, choice, _state.value.conversation?.mode ?: AssistantMode.GENERAL)
-    }
-
-    /** Replaces a single-provider answer with one from the other provider. Not available for Compare answers. */
-    fun retryWithOtherProvider(assistantMessageId: String): Boolean {
-        val assistant = _state.value.messages.firstOrNull { it.id == assistantMessageId } ?: return false
-        val provider = assistant.provider ?: return false
-        if (assistant.compareGroupId != null) return false
-        return regenerate(assistantMessageId, ModelChoice.forProvider(provider.other))
+        return resend(user, user.content, _state.value.conversation?.mode ?: AssistantMode.GENERAL)
     }
 
     /** Edits a previous user message and resends it. Everything after it is replaced. */
-    fun editAndResend(userMessageId: String, newText: String, choice: ModelChoice, mode: AssistantMode): Boolean {
+    fun editAndResend(userMessageId: String, newText: String, mode: AssistantMode): Boolean {
         val user = _state.value.messages.firstOrNull { it.id == userMessageId && it.isUser } ?: return false
         val content = newText.trim()
         if (content.isEmpty() || content.length > Limits.MAX_MESSAGE_CHARS) return false
-        return resend(user, content, choice, mode)
+        return resend(user, content, mode)
     }
 
     /** Retries the last user message after a request-level failure. */
-    fun retryLast(choice: ModelChoice? = null): Boolean {
+    fun retryLast(): Boolean {
         val user = _state.value.lastUserMessage ?: return false
         val mode = _state.value.conversation?.mode ?: AssistantMode.GENERAL
-        return resend(user, user.content, choice ?: user.modelChoice ?: ModelChoice.SMART, mode)
+        return resend(user, user.content, mode)
     }
 
     fun dismissError() {
@@ -209,7 +199,7 @@ class ChatSession(
         }
     }
 
-    private fun resend(user: ChatMessage, content: String, choice: ModelChoice, mode: AssistantMode): Boolean {
+    private fun resend(user: ChatMessage, content: String, mode: AssistantMode): Boolean {
         if (_state.value.isGenerating) return false
         val conversation = _state.value.conversation ?: return false
         val messages = _state.value.messages
@@ -217,7 +207,7 @@ class ChatSession(
         if (index == -1) return false
         val removed = messages.drop(index + 1).map { it.id }
         // Same id and timestamp: the API replaces the message and everything after it.
-        val updatedUser = user.copy(content = content, modelChoice = choice)
+        val updatedUser = user.copy(content = content, modelChoice = ModelChoice.SMART)
         val updatedConversation = conversation.copy(updatedAt = time.next(), mode = mode)
         _state.update {
             it.copy(
@@ -228,7 +218,7 @@ class ChatSession(
                 recovery = it.recovery - removed.toSet(),
             )
         }
-        generate(gatewayProvider(), updatedConversation, updatedUser, choice, mode, removed)
+        generate(gatewayProvider(), updatedConversation, updatedUser, mode, removed)
         return true
     }
 
@@ -237,7 +227,6 @@ class ChatSession(
         val id: Long,
         var conversation: Conversation,
         val user: ChatMessage,
-        val choice: ModelChoice,
     ) {
         val answers = LinkedHashMap<String, ChatMessage>()
         /** Tools each answer used, kept here so they are saved with it even when it is not on screen. */
@@ -256,7 +245,6 @@ class ChatSession(
         gateway: ChatGateway,
         conversation: Conversation,
         user: ChatMessage,
-        choice: ModelChoice,
         mode: AssistantMode,
         deleteIds: List<String>,
     ) {
@@ -264,13 +252,13 @@ class ChatSession(
         val request = ChatRequest(
             conversationId = conversation.id,
             mode = mode,
-            modelChoice = choice,
+            modelChoice = ModelChoice.SMART,
             messageId = user.id,
             content = user.content,
             attachments = user.attachments,
-            history = ContextBuilder.history(earlier, choice),
+            history = ContextBuilder.history(earlier),
         )
-        val generation = Generation(++currentGeneration, conversation, user, choice)
+        val generation = Generation(++currentGeneration, conversation, user)
         activeGeneration = generation
         activeGateway = gateway
         _state.update { it.copy(isGenerating = true, activeStreamId = null) }
@@ -326,7 +314,7 @@ class ChatSession(
                         provider = t.provider,
                         model = t.model,
                         isDemo = t.demo,
-                        modelChoice = generation.choice,
+                        modelChoice = ModelChoice.SMART,
                         compareGroupId = event.compareGroupId,
                         replyToId = generation.user.id,
                         routingReason = event.routingReason,
@@ -348,7 +336,7 @@ class ChatSession(
             is ChatStreamEvent.MessageFailed -> {
                 if (generation.answers.containsKey(event.messageId)) {
                     applyToState(generation) { s ->
-                        s.copy(recovery = s.recovery + (event.messageId to AnswerRecovery(event.attempts, event.alternatives)))
+                        s.copy(recovery = s.recovery + (event.messageId to AnswerRecovery(event.attempts)))
                     }
                 }
                 updateAnswer(generation, event.messageId, persist = true) {

@@ -108,7 +108,7 @@ private data class Cue(val icon: ImageVector, val title: String, val text: Strin
 
 private val cues = listOf(
     Cue(Icons.Rounded.Bolt, "Get answers faster", "Ask in your own words and get clear, structured answers."),
-    Cue(Icons.Rounded.Layers, "Go deeper with context", "Add your documents and choose the AI provider for each chat."),
+    Cue(Icons.Rounded.Layers, "Go deeper with context", "Add your documents and pick a focused mode for each chat."),
     Cue(Icons.Rounded.AutoAwesome, "Turn ideas into action", "Draft, plan and analyse in focused modes built for real work."),
 )
 
@@ -140,7 +140,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
                 )
                 Spacer(Modifier.height(Spacing.md))
                 Text(
-                    "DASH AI helps you think, create, analyse and act, with the AI providers you choose.",
+                    "DASH AI helps you think, create, analyse and act.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = c.inkSecondary,
                 )

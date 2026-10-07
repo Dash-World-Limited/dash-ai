@@ -15,21 +15,19 @@ class ChatItemsTest {
         ChatMessage(id, "c", role, id, 0, provider = provider, compareGroupId = group)
 
     @Test
-    fun `compare answers are grouped side by side`() {
+    fun `answers kept from older Compare chats are shown one after another as DASH AI's`() {
         val items = ChatItems.build(
             listOf(
                 m("u1", MessageRole.USER),
                 m("a1", MessageRole.ASSISTANT, "u1", ProviderId.OPENAI),
                 m("a2", MessageRole.ASSISTANT, "u1", ProviderId.ANTHROPIC),
                 m("u2", MessageRole.USER),
-                m("a3", MessageRole.ASSISTANT, provider = ProviderId.OPENAI),
+                m("a3", MessageRole.ASSISTANT),
             ),
         )
-        assertEquals(4, items.size)
-        val compare = assertIs<ChatItem.Compare>(items[1])
-        assertEquals(listOf("a1", "a2"), compare.answers.map { it.id })
-        assertIs<ChatItem.Assistant>(items[3])
-        assertEquals(items.size, items.map { it.key }.toSet().size)
+        assertEquals(listOf("u1", "a1", "a2", "u2", "a3"), items.map { it.key })
+        assertTrue(items.filterIsInstance<ChatItem.Assistant>().all { it.message.sourceLabel == "DASH AI" })
+        assertIs<ChatItem.User>(items[0])
     }
 
     @Test

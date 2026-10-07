@@ -2,7 +2,6 @@ package com.dashworldng.ai.data.settings
 
 import com.dashworldng.ai.core.demo.DemoFailure
 import com.dashworldng.ai.core.model.AssistantMode
-import com.dashworldng.ai.core.model.ModelChoice
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,7 +21,6 @@ data class AppSettings(
     /** Demo Mode is on until the user signs in to a live server. */
     val demoMode: Boolean = true,
     val serverUrl: String = "",
-    val defaultModelChoice: ModelChoice = ModelChoice.SMART,
     val defaultMode: AssistantMode = AssistantMode.GENERAL,
     val demoFailure: DemoFailure = DemoFailure.NONE,
     val account: AccountInfo? = null,

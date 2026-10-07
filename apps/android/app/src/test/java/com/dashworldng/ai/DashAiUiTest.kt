@@ -26,7 +26,6 @@ import com.dashworldng.ai.core.model.AssistantMode
 import com.dashworldng.ai.core.model.ChatMessage
 import com.dashworldng.ai.core.model.Conversation
 import com.dashworldng.ai.core.model.MessageRole
-import com.dashworldng.ai.core.model.ProviderId
 import com.dashworldng.ai.core.stream.ChatStreamEvent
 import com.dashworldng.ai.core.stream.StreamTarget
 import com.dashworldng.ai.data.settings.AccountInfo
@@ -53,7 +52,7 @@ private class HangingGateway(demo: Boolean = true) : ChatGateway {
     val cancelled = mutableListOf<String>()
 
     override fun stream(request: ChatRequest): Flow<ChatStreamEvent> = flow {
-        emit(ChatStreamEvent.Started("stream-1", request.conversationId, null, listOf(StreamTarget("answer-1", ProviderId.OPENAI, "demo-openai", isDemo)), "test"))
+        emit(ChatStreamEvent.Started("stream-1", request.conversationId, null, listOf(StreamTarget("answer-1", demo = isDemo)), "test"))
         emit(ChatStreamEvent.Delta("answer-1", "Partial answer"))
         awaitCancellation()
     }
@@ -94,6 +93,24 @@ class DashAiUiTest {
 
     private fun waitForText(text: String) = await("text '$text'") {
         compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty()
+    }
+
+    /**
+     * Every text and accessibility description on screen: DASH AI is the product, so no provider or
+     * model name, provider choice or Compare may appear. The privacy disclosure ("third-party
+     * artificial-intelligence service providers") is allowed by design.
+     */
+    private fun assertNoProviderWording(where: String) {
+        val words = Regex("(?i)\\b(openai|chatgpt|gpt[-\\s]?\\d|anthropic|claude|gemini|dash smart)\\b|\\b(ai|change|another|other|default) providers?\\b|\\bcompare (mode|answers|providers)\\b")
+        val texts = compose.onAllNodes(isRoot(), useUnmergedTree = true).fetchSemanticsNodes().flatMap { root ->
+            fun collect(node: androidx.compose.ui.semantics.SemanticsNode): List<String> =
+                node.config.getOrElseNullable(SemanticsProperties.Text) { null }.orEmpty().map { it.text } +
+                    node.config.getOrElseNullable(SemanticsProperties.ContentDescription) { null }.orEmpty() +
+                    node.children.flatMap(::collect)
+            collect(root)
+        }
+        val hit = texts.firstOrNull { words.containsMatchIn(it) }
+        assertEquals(null, hit, "provider wording on $where")
     }
 
     /** The drawer is always composed; wait until it has actually slid on screen before tapping inside it. */
@@ -206,7 +223,7 @@ class DashAiUiTest {
         compose.onNodeWithTag("send_button").performClick()
         waitForTag("assistant_message")
         waitForText("Demo response · simulated")
-        compose.onNodeWithTag("model_label").assertTextContains("simulated", substring = true)
+        compose.onNodeWithTag("model_label").assertTextContains("Demo · DASH AI (simulated)", substring = true)
         compose.onNodeWithTag("message_list").performScrollToNode(hasTestTag("user_message"))
         compose.onNodeWithTag("user_message").assertExists()
         compose.onNodeWithTag("chat_title").assertTextContains("Draft a launch plan")
@@ -214,34 +231,39 @@ class DashAiUiTest {
     }
 
     @Test
-    fun modelSelectionIncludingTheCompareWarning() {
+    fun chatSpeaksOnlyAsDashAiWithNoProviderChoiceOrCompare() {
         val services = InMemoryServices(signedInDemo, chatGatewayOverride = DemoChatGateway(chunkDelayMillis = 0))
         launch(services, Routes.CHAT)
-        compose.onNodeWithTag("selected_model", useUnmergedTree = true).assertTextContains("Dash Smart")
-
-        compose.onNodeWithTag("model_selector").performClick()
-        waitForTag("provider_sheet")
-        compose.onNodeWithTag("model_option_claude").performSemanticsAction(SemanticsActions.OnClick)
-        compose.waitForIdle()
-        compose.onNodeWithTag("selected_model", useUnmergedTree = true).assertTextContains("Claude")
-        // The choice is remembered for new chats.
-        assertEquals(com.dashworldng.ai.core.model.ModelChoice.CLAUDE, services.settings.settings.value.defaultModelChoice)
-
-        compose.onNodeWithTag("model_selector").performClick()
-        waitForTag("provider_sheet")
-        compose.onNodeWithTag("model_option_compare").performSemanticsAction(SemanticsActions.OnClick)
-        compose.waitForIdle()
-        compose.onNodeWithText("Compare uses both providers").assertIsDisplayed()
-        compose.onNodeWithText("two requests", substring = true).assertExists()
-        compose.onNodeWithTag("confirm_compare").performClick()
-        compose.waitForIdle()
-        compose.onNodeWithTag("selected_model", useUnmergedTree = true).assertTextContains("Compare")
-
-        compose.onNodeWithTag("composer_input").performTextInput("Compare these")
+        assertEquals(0, compose.onAllNodesWithTag("model_selector").fetchSemanticsNodes().size)
+        compose.onNodeWithTag("recipient_label").assertTextContains("Demo Mode", substring = true)
+        compose.onNodeWithTag("composer_input").performTextInput("Plan a calm week")
         compose.onNodeWithTag("send_button").performClick()
-        waitForTag("compare_row")
-        waitForText("simulated OpenAI style")
-        waitForText("simulated Claude style")
+        waitForText("Demo response · simulated by DASH AI")
+        compose.onNodeWithTag("model_label").assertTextContains("DASH AI", substring = true)
+        assertEquals(0, compose.onAllNodesWithTag("compare_row").fetchSemanticsNodes().size)
+        assertNoProviderWording("chat")
+        compose.onNodeWithTag("mode_selector").performClick()
+        waitForTag("mode_sheet")
+        assertNoProviderWording("mode sheet")
+    }
+
+    @Test
+    fun settingsHaveNoProviderSelectorAndNameNoProvider() {
+        val services = InMemoryServices(signedInDemo)
+        launch(services, Routes.SETTINGS)
+        compose.onNodeWithText("Chat defaults").assertExists()
+        assertEquals(0, compose.onAllNodes(hasTestTag("default_smart")).fetchSemanticsNodes().size)
+        assertEquals(0, compose.onAllNodes(hasTestTag("default_openai")).fetchSemanticsNodes().size)
+        assertEquals(0, compose.onAllNodes(hasTestTag("default_claude")).fetchSemanticsNodes().size)
+        assertNoProviderWording("settings")
+    }
+
+    @Test
+    fun accountAndHomeNameNoProvider() {
+        val services = InMemoryServices(signedInDemo)
+        launch(services, Routes.ACCOUNT)
+        compose.onNodeWithTag("account_screen").assertExists()
+        assertNoProviderWording("account")
     }
 
     @Test
@@ -281,7 +303,7 @@ class DashAiUiTest {
             services.conversations.upsertConversation(Conversation("conv-1", "Quarterly plan", AssistantMode.BUSINESS, 1_000, 2_000))
             services.conversations.upsertMessage(ChatMessage("m1", "conv-1", MessageRole.USER, "Plan Q3 please", 1_000))
             services.conversations.upsertMessage(
-                ChatMessage("m2", "conv-1", MessageRole.ASSISTANT, "## Q3 plan\n- Grow revenue", 1_001, provider = ProviderId.OPENAI, model = "demo-openai", isDemo = true),
+                ChatMessage("m2", "conv-1", MessageRole.ASSISTANT, "## Q3 plan\n- Grow revenue", 1_001, isDemo = true),
             )
         }
         launch(services, Routes.CHAT)
@@ -363,19 +385,20 @@ class DashAiUiTest {
     }
 
     @Test
-    fun aProviderFailureOffersRetryChangeProviderAndContinueLaterWithoutSwitching() {
-        val services = InMemoryServices(signedInDemo.copy(demoFailure = DemoFailure.PROVIDER), chatGatewayOverride = DemoChatGateway(chunkDelayMillis = 0, failure = { DemoFailure.PROVIDER }))
+    fun aFailedAnswerOffersRetryAndContinueLaterInDashAisWords() {
+        val services = InMemoryServices(signedInDemo.copy(demoFailure = DemoFailure.SERVICE), chatGatewayOverride = DemoChatGateway(chunkDelayMillis = 0, failure = { DemoFailure.SERVICE }))
         launch(services, Routes.CHAT)
         compose.onNodeWithTag("composer_input").performTextInput("Hello")
         compose.onNodeWithTag("send_button").performClick()
         waitForTag("recovery_card")
-        compose.onNodeWithText("Provider temporarily unavailable").assertExists()
+        compose.onNodeWithText("DASH AI couldn't complete that response").assertExists()
         compose.onNodeWithTag("recovery_retry").assertExists()
         compose.onNodeWithTag("recovery_later").assertExists()
-        // Nothing switched on its own: the composer still targets the original choice.
-        compose.onNodeWithTag("selected_model", useUnmergedTree = true).assertTextContains("Dash Smart")
-        compose.onNodeWithTag("recovery_change_provider").performSemanticsAction(SemanticsActions.OnClick)
-        waitForTag("alternative_sheet")
+        assertEquals(0, compose.onAllNodesWithTag("recovery_change_provider").fetchSemanticsNodes().size)
+        assertNoProviderWording("recovery")
+        compose.onNodeWithTag("recovery_later").performSemanticsAction(SemanticsActions.OnClick)
+        compose.waitForIdle()
+        assertEquals(0, compose.onAllNodesWithTag("recovery_card").fetchSemanticsNodes().size)
     }
 
     @Test

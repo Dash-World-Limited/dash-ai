@@ -36,7 +36,7 @@ import java.util.concurrent.TimeUnit
 interface DashApiService {
     @GET("health") suspend fun health(): HealthDto
 
-    @GET("v1/providers") suspend fun providers(): ProvidersResponseDto
+    @GET("v1/assistant") suspend fun assistant(): AssistantStatusDto
 
     @POST("v1/auth/register") suspend fun register(@Body body: RegisterRequestDto): AuthResponseDto
 
@@ -91,7 +91,7 @@ interface DashApiService {
 
 /**
  * The only network client in the app. It talks exclusively to the configured Dash AI server;
- * AI-provider keys never exist on the device.
+ * AI service keys never exist on the device.
  */
 class DashApiClient(
     baseUrl: String,

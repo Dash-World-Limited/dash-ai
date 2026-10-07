@@ -4,7 +4,6 @@
       "conversationId": "4f0b8f2e-6a4d-4c1e-9d7a-1b2c3d4e5f60",
       "messageId": "c3333333-3333-4333-8333-333333333333",
       "callId": "call_1",
-      "provider": "openai",
       "plugin": "dash-demo",
       "tool": "text_stats",
       "status": "ok",

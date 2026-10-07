@@ -59,11 +59,9 @@ import com.dashworldng.ai.BuildConfig
 import com.dashworldng.ai.core.data.DataExport
 import com.dashworldng.ai.core.demo.DemoFailure
 import com.dashworldng.ai.core.model.AssistantMode
-import com.dashworldng.ai.core.model.ModelChoice
 import com.dashworldng.ai.core.presentation.SyncStatus
 import com.dashworldng.ai.core.presentation.SyncStatuses
 import com.dashworldng.ai.core.remote.DashApiClient
-import com.dashworldng.ai.core.remote.ProvidersResponseDto
 import com.dashworldng.ai.core.stream.ApiException
 import com.dashworldng.ai.data.settings.AppSettings
 import com.dashworldng.ai.data.settings.ThemePreference
@@ -97,7 +95,6 @@ import java.text.DateFormat
 import java.util.Date
 
 data class SettingsExtras(
-    val providers: ProvidersResponseDto? = null,
     val connection: String? = null,
     val checking: Boolean = false,
     val notice: String? = null,
@@ -123,7 +120,6 @@ class SettingsViewModel(private val services: AppServices) : ViewModel() {
 
     fun setTheme(value: ThemePreference) = update { it.copy(theme = value) }
     fun setDemoFailure(value: DemoFailure) = update { it.copy(demoFailure = value) }
-    fun setDefaultChoice(value: ModelChoice) = update { it.copy(defaultModelChoice = value) }
     fun setDefaultMode(value: AssistantMode) = update { it.copy(defaultMode = value) }
 
     /** Turning Demo Mode on is always allowed; turning it off needs a signed-in live account. */
@@ -143,7 +139,7 @@ class SettingsViewModel(private val services: AppServices) : ViewModel() {
             return
         }
         update { it.copy(serverUrl = normalized) }
-        _extras.update { it.copy(providers = null, connection = null) }
+        _extras.update { it.copy(connection = null) }
     }
 
     fun testConnection() {
@@ -156,10 +152,11 @@ class SettingsViewModel(private val services: AppServices) : ViewModel() {
         viewModelScope.launch {
             try {
                 val health = client.call { health() }
-                val providers = client.call { providers() }
-                _extras.update { it.copy(checking = false, connection = "Connected · DASH AI API ${health.version}", providers = providers) }
+                val assistant = client.call { assistant() }
+                val status = if (assistant.available) "DASH AI is available" else "DASH AI is temporarily unavailable"
+                _extras.update { it.copy(checking = false, connection = "Connected · $status · API ${health.version}") }
             } catch (e: ApiException) {
-                _extras.update { it.copy(checking = false, connection = e.error.message, providers = null) }
+                _extras.update { it.copy(checking = false, connection = e.error.message) }
             }
         }
     }
@@ -256,16 +253,6 @@ fun SettingsScreen(
 
                 SettingsGroup("Chat defaults") {
                     Text(
-                        "Provider for new chats",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = c.inkTertiary,
-                        modifier = Modifier.padding(start = Spacing.lg, top = Spacing.md),
-                    )
-                    ModelChoice.entries.filter { it != ModelChoice.COMPARE }.forEach { choice ->
-                        RadioRow(choice.label, selected = settings.defaultModelChoice == choice, tag = "default_${choice.wire}") { vm.setDefaultChoice(choice) }
-                    }
-                    SettingsDivider()
-                    Text(
                         "Mode for new chats",
                         style = MaterialTheme.typography.labelMedium,
                         color = c.inkTertiary,
@@ -336,9 +323,9 @@ fun SettingsScreen(
                     SettingsRow(
                         "Demo Mode",
                         subtitle = if (settings.demoMode) {
-                            "On. Answers are simulated on this device; no AI provider is used."
+                            "On. DASH AI's answers are simulated on this device; nothing is sent anywhere."
                         } else {
-                            "Off. Answers come from the providers on your DASH AI server."
+                            "Off. Answers come from DASH AI."
                         },
                         trailing = {
                             Switch(
@@ -372,19 +359,6 @@ fun SettingsScreen(
                         trailing = { TextAction("Test", vm::testConnection, enabled = !extras.checking) },
                         modifier = Modifier.testTag("server_url"),
                     )
-                    extras.providers?.let { providers ->
-                        providers.providers.forEach { p ->
-                            SettingsDivider()
-                            SettingsRow(
-                                p.displayName,
-                                subtitle = when {
-                                    !p.configured -> "Not configured on this server"
-                                    p.mode == "fake" -> "Test adapter (simulated answers)"
-                                    else -> "Configured${p.model?.let { m -> " · $m" } ?: ""}"
-                                },
-                            )
-                        }
-                    }
                 }
 
                 SettingsGroup("About") {
@@ -465,7 +439,7 @@ fun DataProtectionRow() {
         Column(Modifier.padding(start = Spacing.lg, end = Spacing.lg, bottom = Spacing.lg), verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
             listOf(
                 "In transit: release builds only talk to the server over HTTPS.",
-                "On the server: chats, documents and tool activity are encrypted at rest (AES-256-GCM). The server decrypts them to answer you and sends your messages to the AI provider you choose, so this is not end-to-end encryption.",
+                "On the server: chats, documents and tool activity are encrypted at rest (AES-256-GCM). The server decrypts them to answer you, so this is not end-to-end encryption. DASH AI may use third-party artificial-intelligence service providers to process requests.",
                 "On this phone: your session token is encrypted with a key kept in the Android Keystore. Chats are cached in the app's private storage, protected by Android's app sandbox and your device encryption, and are excluded from backups.",
                 "Signing out removes this account's chats, documents and prompts from this phone.",
             ).forEach { Text(it, style = MaterialTheme.typography.bodySmall, color = c.inkSecondary) }

@@ -1,0 +1,12 @@
+event: stream.start
+data: {"streamId":"6b1d7c3e-0f2a-4b6c-8d9e-a1b2c3d4e5f6","conversationId":"3f0b8f2e-6a4d-4c1e-9d7a-1b2c3d4e5f60","modelChoice":"smart","compareGroupId":null,"targets":[{"messageId":"b2222222-2222-4222-8222-222222222222","demo":false}],"routingReason":"DASH AI chose how to handle this request."}
+
+event: message.delta
+data: {"messageId":"b2222222-2222-4222-8222-222222222222","text":"Demo answer:\n- point one"}
+
+event: message.error
+data: {"messageId":"b2222222-2222-4222-8222-222222222222","error":{"code":"provider_timeout","message":"DASH AI took too long to respond. Please try again.","retryable":true},"recovery":{"attempts":3,"alternatives":[]}}
+
+event: stream.end
+data: {"streamId":"6b1d7c3e-0f2a-4b6c-8d9e-a1b2c3d4e5f6"}
+

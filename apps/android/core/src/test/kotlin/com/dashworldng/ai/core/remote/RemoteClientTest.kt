@@ -54,29 +54,30 @@ class RemoteClientTest {
     private val request = ChatRequest(
         conversationId = "conv-00000001",
         mode = AssistantMode.WRITING,
-        modelChoice = ModelChoice.COMPARE,
+        modelChoice = ModelChoice.SMART,
         messageId = "msg-00000001",
         content = "Hello",
         attachments = emptyList(),
-        history = listOf(HistoryItem(MessageRole.USER, "Earlier", null), HistoryItem(MessageRole.ASSISTANT, "Answer", ProviderId.ANTHROPIC)),
+        history = listOf(HistoryItem(MessageRole.USER, "Earlier"), HistoryItem(MessageRole.ASSISTANT, "Answer")),
     )
 
     @Test
     fun `streams events from the API with auth and the contract request body`() = runBlocking {
-        server.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(Fixtures.text("chat-stream-compare.sse")))
+        server.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(Fixtures.text("chat-stream.sse")))
 
         val events = RemoteChatGateway(client).stream(request).toList()
 
-        assertEquals(8, events.size)
+        assertEquals(6, events.size)
         assertIs<ChatStreamEvent.Started>(events.first())
         val recorded = server.takeRequest()
         assertEquals("/v1/chat/stream", recorded.path)
         assertEquals("Bearer dash_test_token_1234567890", recorded.getHeader("Authorization"))
         assertEquals("text/event-stream", recorded.getHeader("Accept"))
         val body = Json.parseToJsonElement(recorded.body.readUtf8()).jsonObject
-        assertEquals("compare", body.getValue("modelChoice").jsonPrimitive.content)
+        assertEquals("smart", body.getValue("modelChoice").jsonPrimitive.content)
         assertEquals("writing", body.getValue("mode").jsonPrimitive.content)
-        assertTrue(body.getValue("history").toString().contains("\"origin\":\"anthropic\""))
+        // History is DASH AI's own conversation as plain text: no provider names.
+        assertEquals("""[{"role":"user","content":"Earlier"},{"role":"assistant","content":"Answer"}]""", body.getValue("history").toString())
     }
 
     @Test
@@ -102,7 +103,7 @@ class RemoteClientTest {
 
     @Test
     fun `cancelling collection closes the HTTP stream without an error`() = runBlocking {
-        val head = Fixtures.text("chat-stream-compare.sse").substringBefore(": ping")
+        val head = Fixtures.text("chat-stream.sse").substringBefore(": ping")
         server.enqueue(
             MockResponse()
                 .setHeader("Content-Type", "text/event-stream")

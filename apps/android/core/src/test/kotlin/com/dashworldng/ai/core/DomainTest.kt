@@ -25,45 +25,32 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-class ProviderSelectionTest {
+class RoutingTest {
     private val both = ProviderId.entries.toSet()
 
     @Test
-    fun `explicit choices never switch provider silently`() {
-        val onlyOpenAi = setOf(ProviderId.OPENAI)
-        assertIs<RoutingResult.Unavailable>(SmartRouting.resolve(ModelChoice.CLAUDE, AssistantMode.GENERAL, onlyOpenAi))
-        assertEquals(listOf(ProviderId.OPENAI), assertIs<RoutingResult.Routed>(SmartRouting.resolve(ModelChoice.OPENAI, AssistantMode.WRITING, both)).providers)
-    }
-
-    @Test
-    fun `smart falls back and explains why`() {
-        val routed = assertIs<RoutingResult.Routed>(SmartRouting.resolve(ModelChoice.SMART, AssistantMode.WRITING, setOf(ProviderId.OPENAI)))
+    fun `demo routing picks the preferred configured provider internally, with a neutral reason`() {
+        val routed = assertIs<RoutingResult.Routed>(SmartRouting.resolve(AssistantMode.WRITING, setOf(ProviderId.OPENAI)))
         assertEquals(listOf(ProviderId.OPENAI), routed.providers)
-        assertTrue(routed.reason.contains("preferred provider is not configured"))
-        assertEquals("no_provider_available", assertIs<RoutingResult.Unavailable>(SmartRouting.resolve(ModelChoice.SMART, AssistantMode.GENERAL, emptySet())).code)
+        assertEquals(listOf(ProviderId.ANTHROPIC), assertIs<RoutingResult.Routed>(SmartRouting.resolve(AssistantMode.WRITING, both)).providers)
+        assertNoProviderName(routed.reason)
+        val none = assertIs<RoutingResult.Unavailable>(SmartRouting.resolve(AssistantMode.GENERAL, emptySet()))
+        assertEquals("DASH AI is temporarily unavailable.", none.message)
     }
 
     @Test
-    fun `compare targets both providers and needs both`() {
-        assertEquals(ProviderId.entries, assertIs<RoutingResult.Routed>(SmartRouting.resolve(ModelChoice.COMPARE, AssistantMode.GENERAL, both)).providers)
-        assertIs<RoutingResult.Unavailable>(SmartRouting.resolve(ModelChoice.COMPARE, AssistantMode.GENERAL, setOf(ProviderId.ANTHROPIC)))
+    fun `the composer says DASH AI receives the message, never a provider`() {
+        assertEquals("DASH AI · Writing", SmartRouting.recipientLabel(AssistantMode.WRITING, demo = false))
+        assertTrue(SmartRouting.recipientLabel(AssistantMode.GENERAL, demo = true).contains("nothing leaves this device"))
+        AssistantMode.entries.forEach { assertNoProviderName(SmartRouting.recipientLabel(it, demo = false)) }
     }
 
     @Test
-    fun `recipient label always names who receives the prompt`() {
-        assertTrue(SmartRouting.recipientLabel(ModelChoice.COMPARE, AssistantMode.GENERAL, demo = false).contains("may cost more"))
-        assertEquals("Sends to OpenAI", SmartRouting.recipientLabel(ModelChoice.OPENAI, AssistantMode.GENERAL, demo = false))
-        assertTrue(SmartRouting.recipientLabel(ModelChoice.CLAUDE, AssistantMode.GENERAL, demo = false).contains("Claude"))
-        assertTrue(SmartRouting.recipientLabel(ModelChoice.SMART, AssistantMode.WRITING, demo = false).contains("Claude"))
-        assertTrue(SmartRouting.recipientLabel(ModelChoice.OPENAI, AssistantMode.GENERAL, demo = true).contains("nothing leaves this device"))
-    }
-
-    @Test
-    fun `other provider and choice mapping`() {
-        assertEquals(ProviderId.ANTHROPIC, ProviderId.OPENAI.other)
-        assertEquals(ModelChoice.CLAUDE, ModelChoice.forProvider(ProviderId.ANTHROPIC))
-        assertEquals(ModelChoice.COMPARE, ModelChoice.fromWire("compare"))
-        assertNull(ModelChoice.fromWire("gpt"))
+    fun `only the DASH routing value exists and old stored choices read as nothing`() {
+        assertEquals(listOf(ModelChoice.SMART), ModelChoice.entries)
+        assertEquals(ModelChoice.SMART, ModelChoice.fromWire("smart"))
+        assertNull(ModelChoice.fromWire("compare"))
+        assertNull(ModelChoice.fromWire("claude"))
     }
 }
 
@@ -75,27 +62,22 @@ class ContextBuilderTest {
         msg(MessageRole.USER, "q1"),
         msg(MessageRole.ASSISTANT, "openai", ProviderId.OPENAI),
         msg(MessageRole.ASSISTANT, "claude", ProviderId.ANTHROPIC),
+        msg(MessageRole.ASSISTANT, "neutral"),
         msg(MessageRole.ASSISTANT, "demo", ProviderId.OPENAI, demo = true),
         msg(MessageRole.ASSISTANT, "failed", ProviderId.OPENAI, status = MessageStatus.FAILED),
         msg(MessageRole.ASSISTANT, "partial", ProviderId.OPENAI, status = MessageStatus.STOPPED),
     )
 
     @Test
-    fun `single-provider choices only include that provider's answers`() {
-        assertEquals(listOf("q1", "openai", "partial"), ContextBuilder.history(conversation, ModelChoice.OPENAI).map { it.content })
-        assertEquals(listOf("q1", "claude"), ContextBuilder.history(conversation, ModelChoice.CLAUDE).map { it.content })
-    }
-
-    @Test
-    fun `smart and compare include labelled real answers but never demos or failures`() {
-        val history = ContextBuilder.history(conversation, ModelChoice.COMPARE)
-        assertEquals(listOf("q1", "openai", "claude", "partial"), history.map { it.content })
-        assertEquals(listOf(null, ProviderId.OPENAI, ProviderId.ANTHROPIC, ProviderId.OPENAI), history.map { it.origin })
+    fun `every earlier DASH AI answer is context, whichever service wrote it, never demos or failures`() {
+        val history = ContextBuilder.history(conversation)
+        assertEquals(listOf("q1", "openai", "claude", "neutral", "partial"), history.map { it.content })
+        assertEquals(listOf(MessageRole.USER, MessageRole.ASSISTANT, MessageRole.ASSISTANT, MessageRole.ASSISTANT, MessageRole.ASSISTANT), history.map { it.role })
     }
 
     @Test
     fun `history is trimmed from the oldest turn`() {
-        val items = (1..10).map { HistoryItem(MessageRole.USER, "x".repeat(10) + it, null) }
+        val items = (1..10).map { HistoryItem(MessageRole.USER, "x".repeat(10) + it) }
         val trimmed = ContextBuilder.trim(items, maxMessages = 3, maxChars = 1_000)
         assertEquals(listOf("xxxxxxxxxx8", "xxxxxxxxxx9", "xxxxxxxxxx10"), trimmed.map { it.content })
         assertEquals(2, ContextBuilder.trim(items, maxMessages = 60, maxChars = 25).size)

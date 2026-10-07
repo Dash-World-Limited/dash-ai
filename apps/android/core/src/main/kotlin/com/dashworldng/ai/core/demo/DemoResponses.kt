@@ -2,23 +2,17 @@ package com.dashworldng.ai.core.demo
 
 import com.dashworldng.ai.core.chat.ChatRequest
 import com.dashworldng.ai.core.model.AssistantMode
-import com.dashworldng.ai.core.model.ProviderId
 
-/** Builds the clearly-labelled simulated answers used by Demo Mode. */
+/** Builds the clearly-labelled simulated answers used by Demo Mode (same wording as the web). */
 object DemoResponses {
-    fun label(provider: ProviderId): String =
-        "**Demo response · simulated ${provider.displayName} style.** This is not a real answer from ${provider.company}. " +
-            "Nothing was sent to any AI provider — Demo Mode runs entirely on this device."
+    const val LABEL = "**Demo response · simulated by DASH AI.** This is not a real answer. " +
+        "Nothing was sent anywhere — Demo Mode runs entirely on this device."
 
-    fun compose(request: ChatRequest, provider: ProviderId): String {
+    fun compose(request: ChatRequest): String {
         val topic = request.content.lineSequence().firstOrNull { it.isNotBlank() }?.trim()?.let {
             if (it.length > 80) it.take(79).trimEnd() + "…" else it
         } ?: "your request"
-        val voice = if (provider == ProviderId.OPENAI) {
-            "Here is how an answer will be laid out once a live provider is connected."
-        } else {
-            "Below is a sketch of the kind of structured answer you can expect with a live provider."
-        }
+        val voice = "Here is how DASH AI lays out an answer once you're signed in."
         val body = when {
             request.attachments.isNotEmpty() -> documents(request)
             request.mode == AssistantMode.RESEARCH -> research()
@@ -33,13 +27,13 @@ object DemoResponses {
             ""
         }
         return buildString {
-            append(label(provider))
+            append(LABEL)
             append("\n\n")
             append("You asked about: *").append(topic.replace("*", "")).append("*. ").append(voice)
             append("\n\n")
             append(body)
             append(code)
-            append("\n\n---\n\nTo get real answers, turn off Demo Mode in Settings and sign in to a Dash AI server with OpenAI or Claude configured.")
+            append("\n\n---\n\nTo get real answers, turn off Demo Mode in Settings and sign in to DASH AI.")
         }
     }
 
@@ -50,7 +44,7 @@ object DemoResponses {
         - Clear structure: short paragraphs, **key points** in bold, and lists where they help
         - Follow-up suggestions you can tap to continue
 
-        Demo Mode lets you try navigation, streaming, stopping, regenerating, model switching and Compare without using any API credits.
+        Demo Mode lets you try navigation, streaming, stopping, regenerating and editing without an account.
     """.trimIndent()
 
     private fun business() = """
@@ -83,7 +77,7 @@ object DemoResponses {
     """.trimIndent()
 
     private fun research() = """
-        **Live web research is not connected.** No search provider is configured, so even live answers use the model's built-in knowledge, which may be out of date.
+        **Live web research is not connected.** Even live answers use DASH AI's built-in knowledge, which may be out of date.
 
         ### Research outline (illustrative)
 
@@ -100,7 +94,7 @@ object DemoResponses {
         return """
             **Demo Mode cannot read documents.** This simulated reply does not reflect the contents of $names — the file was checked on this device but not opened, uploaded or analysed.
 
-            With a live Dash AI server, text is extracted from TXT, DOCX and text-based PDFs and sent only to the provider you choose. Image and scanned-PDF analysis is not available yet.
+            When you're signed in, DASH AI reads TXT, DOCX and text-based PDFs you attach and uses them to answer. Image and scanned-PDF analysis is not available yet.
         """.trimIndent()
     }
 
