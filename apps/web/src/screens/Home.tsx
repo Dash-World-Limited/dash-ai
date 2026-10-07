@@ -23,7 +23,6 @@ export function Home() {
   const ask = () => {
     if (!text.trim() || !canAsk) return;
     app.engine.newChat();
-    const c = app.composer.value;
     app.composer.set((x) => ({ ...x, text: "", attachments: [], mode: "general" }));
     if (app.engine.send(text.trim(), "general")) navigate("/chat");
     setText("");
