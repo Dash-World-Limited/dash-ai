@@ -19,10 +19,12 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.dashworldng.ai.core.push.PushDestination
 import com.dashworldng.ai.core.presentation.StartDestination
 import com.dashworldng.ai.core.presentation.StartRoute
 import com.dashworldng.ai.data.settings.AppSettings
 import com.dashworldng.ai.di.AppServices
+import com.dashworldng.ai.di.signedInUserId
 import com.dashworldng.ai.ui.auth.AuthScreen
 import com.dashworldng.ai.ui.chat.ChatScreen
 import com.dashworldng.ai.ui.chat.ChatViewModel
@@ -169,6 +171,41 @@ private fun AppNavigation(services: AppServices, startDestination: String, setti
             throw e
         } catch (e: Exception) {
             // Offline or an older server: the count simply stays as it was.
+        }
+    }
+    // Automates push: this phone is registered for the signed-in account while notifications are allowed.
+    val notificationsAllowed by services.notificationPermission.granted.collectAsStateWithLifecycle()
+    LaunchedEffect(settings.signedInUserId(), notificationsAllowed) {
+        services.push.sync(settings.signedInUserId()?.takeIf { services.tokens.get() != null }, notificationsAllowed)
+    }
+    // A tapped Automates notification (cold start, background or already open) opens its screen, with
+    // Automates underneath for Back. Only for a signed-in account; the screen's own API calls enforce
+    // that the automation is this account's (another account's id is simply "not found").
+    val pushOpen by services.pushOpens.pending.collectAsStateWithLifecycle()
+    LaunchedEffect(pushOpen, route, settings.account, settings.demoMode) {
+        if (pushOpen == null || route == null || route in Routes.ENTRY) return@LaunchedEffect
+        val destination = services.pushOpens.consume() ?: return@LaunchedEffect
+        if (settings.signedInUserId() == null) return@LaunchedEffect
+        nav.navigate(Routes.AUTOMATES) {
+            popUpTo(Routes.HOME) { inclusive = false }
+            launchSingleTop = true
+        }
+        when (destination) {
+            is PushDestination.Result -> nav.open(Routes.automationRun(destination.automationId, destination.runId))
+            is PushDestination.Automation -> nav.open(Routes.automation(destination.automationId))
+        }
+        val notificationId = when (destination) {
+            is PushDestination.Result -> destination.notificationId
+            is PushDestination.Automation -> destination.notificationId
+        }
+        val api = services.automations() ?: return@LaunchedEffect
+        try {
+            if (notificationId != null) api.markRead(listOf(notificationId))
+            services.notices.refresh(api)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Offline: the notice stays unread in the app.
         }
     }
     val duration = if (reducedMotion) 0 else 220

@@ -80,10 +80,15 @@ from the user, are included in `GET /v1/me/export`, removed by `DELETE /v1/me`, 
 encryption backfill and key rotation. See [persistence.md](persistence.md) and
 [data-inventory.md](data-inventory.md).
 
+Migration 8 adds Android push: device registrations (`push_devices`, bound to the session) and a
+delivery queue (`push_deliveries`) filled in the same transaction that stores the result. Push never
+affects the run. See [push-notifications.md](push-notifications.md).
+
 ## Known gaps (first version)
 
-- **No push notifications.** Web notices appear while a tab is open; Android shows them when the app
-  is opened. A device push channel (FCM / Web Push) is the next step.
+- **Push on Android only.** A finished or failed run sends an Android push ("DASH AI / Your scheduled
+  result is ready." or "… needs your attention."); see [push-notifications.md](push-notifications.md).
+  Web notices still appear only while a tab is open; Web Push is a planned separate milestone.
 - Automations do not use tools, web search or documents yet; the prompt is the whole input.
 - Router health (EWMA, circuit breaker) is per API instance, not shared.
 - The run list decrypts each result to build its one-line preview.

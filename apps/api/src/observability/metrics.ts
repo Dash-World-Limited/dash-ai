@@ -134,6 +134,7 @@ export class Metrics {
   readonly routerUnavailable = new Counter("dash_router_unavailable_total", "Requests the router could not route, by task and reason.", ["task", "reason"]);
   readonly automationRuns = new Counter("dash_automation_runs_total", "Automation runs finished, by trigger and status.", ["trigger", "status"]);
   readonly automationRunSeconds = new Histogram("dash_automation_run_seconds", "Duration of one automation run, from start to final status.", ["status"], SECONDS);
+  readonly pushDeliveries = new Counter("dash_push_deliveries_total", "Push delivery attempts by outcome (sent, retry, failed, invalid_token, signed_out, disabled, already_read, expired, no_transport).", ["outcome"]);
   readonly toolInvocations = new Counter("dash_tool_invocations_total", "Tool calls by outcome (ok, denied, invalid_arguments, timeout, error, cancelled, unknown_tool, replayed).", ["plugin", "tool", "status"]);
   readonly syncFailures = new Counter("dash_sync_failures_total", "Sync requests that failed, by operation and error code.", ["operation", "code"]);
   readonly syncRequests = new Counter("dash_sync_requests_total", "Sync requests handled, by operation.", ["operation"]);

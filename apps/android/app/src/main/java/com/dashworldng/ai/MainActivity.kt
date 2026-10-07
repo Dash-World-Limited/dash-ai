@@ -8,6 +8,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import com.dashworldng.ai.core.push.PushLink
 import com.dashworldng.ai.data.share.ShareIntents
 import com.dashworldng.ai.ui.DashAiApp
 
@@ -32,9 +33,20 @@ class MainActivity : ComponentActivity() {
         receive(intent)
     }
 
-    /** "Share → DASH AI": the chat picks it up once the person is past onboarding and sign-in. */
+    override fun onResume() {
+        super.onResume()
+        // The person may have changed notification permission in Android settings meanwhile.
+        (application as DashAiApplication).services.notificationPermission.refresh()
+    }
+
+    /**
+     * "Share → DASH AI", or a tapped Automates notification: the app opens it once the person is past
+     * onboarding and sign-in. A notification carries ids only; the screen loads through the owner-checked API.
+     */
     private fun receive(intent: Intent?) {
-        ShareIntents.parse(this, intent)?.let((application as DashAiApplication).services.shares::post)
+        val services = (application as DashAiApplication).services
+        if (intent != null) PushLink.parse(intent::getStringExtra)?.let(services.pushOpens::post)
+        ShareIntents.parse(this, intent)?.let(services.shares::post)
     }
 
     /** Transparent bars drawn edge to edge; icons light on the dark theme, dark on the ivory theme. */

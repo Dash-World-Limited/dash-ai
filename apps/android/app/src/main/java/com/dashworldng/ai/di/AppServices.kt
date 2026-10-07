@@ -25,6 +25,22 @@ import com.dashworldng.ai.core.tools.ToolsService
 import com.dashworldng.ai.core.automations.AutomationNotices
 import com.dashworldng.ai.core.automations.AutomationsApi
 import com.dashworldng.ai.core.automations.RemoteAutomations
+import com.dashworldng.ai.core.push.FixedNotificationPermission
+import com.dashworldng.ai.core.push.FixedPushTokenSource
+import com.dashworldng.ai.core.push.InMemoryPushStateStore
+import com.dashworldng.ai.core.push.InMemorySeenPushStore
+import com.dashworldng.ai.core.push.NotificationPermissionState
+import com.dashworldng.ai.core.push.PushApi
+import com.dashworldng.ai.core.push.PushDecision
+import com.dashworldng.ai.core.push.PushGate
+import com.dashworldng.ai.core.push.PushNotifier
+import com.dashworldng.ai.core.push.PushOpenInbox
+import com.dashworldng.ai.core.push.PushRegistrar
+import com.dashworldng.ai.core.push.PushStateStore
+import com.dashworldng.ai.core.push.PushTokenSource
+import com.dashworldng.ai.core.push.RecordingPushNotifier
+import com.dashworldng.ai.core.push.RemotePushApi
+import com.dashworldng.ai.core.push.SeenPushStore
 import com.dashworldng.ai.core.remote.DashApiClient
 import com.dashworldng.ai.core.remote.RemoteChatGateway
 import com.dashworldng.ai.core.remote.RemoteDocumentGateway
@@ -43,6 +59,7 @@ import com.dashworldng.ai.data.local.DashDatabase
 import com.dashworldng.ai.data.local.RoomConversationRepository
 import com.dashworldng.ai.data.local.RoomDocumentRepository
 import com.dashworldng.ai.data.local.RoomPromptRepository
+import com.dashworldng.ai.data.push.AndroidPush
 import com.dashworldng.ai.data.sync.PrefsLocalOwnerStore
 import com.dashworldng.ai.data.sync.PrefsSyncStateStore
 import com.dashworldng.ai.data.security.InMemoryTokenStore
@@ -151,7 +168,30 @@ interface AppServices {
 
     /** What this app session knows about sync (shown as Synced / Syncing / Offline / Sync issue). */
     val syncTracker: SyncTracker
+
+    // ---- Automates push notifications (docs/push-notifications.md) ----
+
+    /** Whether DASH AI may show notifications on this phone (Android permission and settings). */
+    val notificationPermission: NotificationPermissionState
+
+    /** Keeps this phone's server registration in line with the signed-in account and the permission. */
+    val push: PushRegistrar
+
+    /** A tapped notification's destination, opened once the app is ready. */
+    val pushOpens: PushOpenInbox
+
+    /** Push preferences and registration on the server. Null when no valid server is configured. */
+    fun pushApi(): PushApi?
+
+    /** Handles an incoming push (FCM data). True when a notification was shown. */
+    suspend fun receivePush(data: Map<String, String>): Boolean
+
+    /** A new device token (FCM refreshed it): registers it for the signed-in account. */
+    fun onPushToken(token: String)
 }
+
+/** The signed-in real account, or null (signed out, Demo Mode, or no session token). */
+fun AppSettings.signedInUserId(): String? = if (demoMode) null else account?.takeUnless { it.isDemo }?.userId
 
 /** Returned when no valid server is configured, so the failure is explained instead of crashing. */
 private object UnconfiguredGateway : ChatGateway {
@@ -167,6 +207,10 @@ abstract class BaseServices : AppServices {
     protected abstract val localConversations: ConversationRepository
     protected abstract val localDocuments: DocumentRepository
     protected abstract val ownerStore: LocalOwnerStore
+    protected abstract val pushTokens: PushTokenSource
+    protected abstract val pushState: PushStateStore
+    protected abstract val seenPushes: SeenPushStore
+    protected abstract val notifier: PushNotifier
 
     override val accountGuard: LocalAccountGuard by lazy {
         LocalAccountGuard(
@@ -175,7 +219,15 @@ abstract class BaseServices : AppServices {
             documents = localDocuments,
             prompts = prompts,
             syncState = syncState,
-            clearCredentials = { tokens.set(null) },
+            clearCredentials = {
+                // While the session token is still here: end this phone's push registration and discard
+                // its device token, then remove what the previous account was notified about.
+                push.signedOut()
+                notifier.clearAll()
+                seenPushes.clear()
+                pushOpens.clear()
+                tokens.set(null)
+            },
             exclusive = { block -> syncService()?.exclusive(block) ?: block() },
         )
     }
@@ -219,6 +271,22 @@ abstract class BaseServices : AppServices {
 
     override val syncTracker: SyncTracker by lazy { SyncTracker(clock) }
 
+    override val pushOpens: PushOpenInbox = PushOpenInbox()
+
+    override val push: PushRegistrar by lazy { PushRegistrar({ pushApi() }, pushTokens, pushState, BuildConfig.VERSION_NAME) }
+
+    override fun pushApi(): PushApi? = apiClient()?.let { client -> RemotePushApi { client } }
+
+    override suspend fun receivePush(data: Map<String, String>): Boolean {
+        val s = settings.settings.first { it.loaded }
+        val userId = s.signedInUserId()?.takeIf { tokens.get() != null }
+        notificationPermission.refresh()
+        return when (val decision = PushGate(seenPushes).decide(data, userId, notificationPermission.granted.value)) {
+            is PushDecision.Show -> notifier.show(decision.message)
+            is PushDecision.Drop -> false
+        }
+    }
+
     @Volatile
     override var syncGuard: () -> Boolean = { true }
     private var syncClient: DashApiClient? = null
@@ -258,6 +326,19 @@ class AppContainer(context: Context) : BaseServices() {
     override val shares: ShareInbox = ShareInbox()
     override val clock: Clock = Clock.System
     override val syncState: SyncStateStore = PrefsSyncStateStore(context)
+    private val androidPush = AndroidPush(context)
+    override val pushTokens: PushTokenSource = androidPush.tokens
+    override val pushState: PushStateStore = androidPush.state
+    override val seenPushes: SeenPushStore = androidPush.seen
+    override val notifier: PushNotifier = androidPush.notifier
+    override val notificationPermission: NotificationPermissionState = androidPush.permission
+
+    override fun onPushToken(token: String) {
+        appScope.launch {
+            val s = settings.settings.first { it.loaded }
+            push.sync(s.signedInUserId()?.takeIf { tokens.get() != null }, notificationPermission.granted.value, token = token)
+        }
+    }
 
     init {
         appScope.launch {
@@ -277,7 +358,19 @@ class InMemoryServices(
     documentGatewayOverride: DocumentGateway? = null,
     val fixedConnectivity: FixedConnectivity = FixedConnectivity(true),
     private val automationsOverride: AutomationsApi? = null,
+    private val pushApiOverride: PushApi? = null,
+    val permission: FixedNotificationPermission = FixedNotificationPermission(granted = false),
+    override val pushTokens: PushTokenSource = FixedPushTokenSource(),
+    override val notifier: PushNotifier = RecordingPushNotifier(),
 ) : BaseServices() {
+    override val pushState: PushStateStore = InMemoryPushStateStore()
+    override val seenPushes: SeenPushStore = InMemorySeenPushStore()
+    override val notificationPermission: NotificationPermissionState = permission
+
+    override fun pushApi(): PushApi? = pushApiOverride ?: super.pushApi()
+
+    override fun onPushToken(token: String) = Unit
+
     override val settings: SettingsRepository = InMemorySettingsRepository(initialSettings)
     override val localConversations: ConversationRepository = InMemoryConversationRepository()
     override val prompts: PromptRepository = InMemoryPromptRepository()

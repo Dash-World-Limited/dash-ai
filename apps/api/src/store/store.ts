@@ -6,6 +6,7 @@ import type {
   AutomationSchedule,
   AutomationStatus,
   NotificationKind,
+  PushPlatform,
   DocumentKind,
   DocumentStatus,
   MessageRole,
@@ -196,6 +197,74 @@ export interface FinishRunInput {
   notification: NotificationRecord;
   /** Runs kept per automation; older finished runs are removed. */
   keep: number;
+  /**
+   * When set, a push delivery is queued (due at this time) for each of the user's registered devices
+   * whose session is still valid, if the user has Automates pushes on. Written in the same step as
+   * the notification, so a finished run fans out exactly once. Null when this server cannot push.
+   */
+  pushAt: string | null;
+}
+
+/** A device registered for push by one signed-in session. `token` is a delivery credential (encrypted at rest). */
+export interface PushDeviceRecord {
+  id: string;
+  userId: string;
+  /** The session that registered it: the registration ends with that session. */
+  sessionHash: string;
+  platform: PushPlatform;
+  token: string;
+  appVersion: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PushDeliveryStatus = "pending" | "sending" | "sent" | "failed";
+
+/** One notification to one device; also the retry queue. */
+export interface PushDeliveryRecord {
+  id: string;
+  notificationId: string;
+  deviceId: string;
+  userId: string;
+  status: PushDeliveryStatus;
+  /** Send attempts started so far (a claim counts as one). */
+  attempts: number;
+  nextAttemptAt: string | null;
+  leaseUntil: string | null;
+  /** Normalized code of the last failure (never provider text). */
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A delivery claimed for sending, with everything the dispatcher checks before it sends. */
+export interface ClaimedPushDelivery {
+  delivery: PushDeliveryRecord;
+  device: PushDeviceRecord;
+  notification: NotificationRecord;
+  /** The registering session still exists and has not expired. */
+  sessionValid: boolean;
+  /** The account still has Automates pushes on. */
+  automatesEnabled: boolean;
+}
+
+export interface UpsertPushDeviceInput {
+  id: string;
+  userId: string;
+  sessionHash: string;
+  platform: PushPlatform;
+  token: string;
+  appVersion: string | null;
+  now: string;
+}
+
+/** How a send attempt ended. "pending" schedules another attempt at nextAttemptAt. */
+export interface FinishPushDeliveryInput {
+  id: string;
+  status: "sent" | "failed" | "pending";
+  nextAttemptAt: string | null;
+  lastError: string | null;
+  now: string;
 }
 
 /** The scheduler's compare-and-set step for one due automation. */
@@ -339,6 +408,35 @@ export interface Store {
   countUnreadNotifications(userId: string): Promise<number>;
   /** Marks the given notifications (or all when ids is null) read. Returns how many changed. */
   markNotificationsRead(userId: string, ids: string[] | null, readAt: string): Promise<number>;
+
+  // ---- Push notifications ----
+  /**
+   * Registers this session's device, or refreshes it. A session has at most one device and a token is
+   * registered once: the session's previous token and any other registration of this token (another
+   * session or account on the same phone) are removed with their pending deliveries. Undefined when the
+   * session no longer exists.
+   */
+  upsertPushDevice(input: UpsertPushDeviceInput): Promise<PushDeviceRecord | undefined>;
+  getPushDeviceForSession(sessionHash: string): Promise<PushDeviceRecord | undefined>;
+  /** The user's devices, oldest first. */
+  listPushDevices(userId: string): Promise<PushDeviceRecord[]>;
+  /** Removes one of the user's devices. False when it is not theirs or does not exist. */
+  deletePushDevice(userId: string, id: string): Promise<boolean>;
+  deletePushDeviceForSession(sessionHash: string): Promise<boolean>;
+  /** Removes a device the push service reported as unusable (internal; any user). */
+  removeInvalidPushDevice(id: string): Promise<boolean>;
+  getPushPreferences(userId: string): Promise<{ automates: boolean }>;
+  setPushPreferences(userId: string, prefs: { automates: boolean }): Promise<void>;
+  /**
+   * Claims up to `limit` due deliveries (pending and due, or sending with an expired lease), oldest
+   * first, across all users: each becomes "sending" with a lease and one more attempt. Safe across
+   * instances (each delivery is claimed by one).
+   */
+  claimPushDeliveries(now: string, leaseUntil: string, limit: number): Promise<ClaimedPushDelivery[]>;
+  /** Records the outcome of a claimed delivery. False when it is gone or no longer sending. */
+  finishPushDelivery(input: FinishPushDeliveryInput): Promise<boolean>;
+  /** The user's deliveries, oldest first (diagnostics and tests; never returned to clients). */
+  listPushDeliveries(userId: string): Promise<PushDeliveryRecord[]>;
 
   /** Deletes sessions that expired before `now`. Returns how many were removed. */
   purgeExpiredSessions(now: Date): Promise<number>;

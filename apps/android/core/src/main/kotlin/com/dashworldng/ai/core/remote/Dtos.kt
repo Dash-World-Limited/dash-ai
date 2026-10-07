@@ -480,3 +480,29 @@ data class MarkNotificationsReadRequestDto(
 
 @Serializable
 data class MarkNotificationsReadResponseDto(val updated: Int)
+
+// ---- Push notifications -------------------------------------------------------------------------
+
+/** Registers this signed-in session's device. The token is sent once and never comes back. */
+@Serializable
+data class RegisterPushDeviceRequestDto(val platform: String = "android", val token: String, val appVersion: String? = null)
+
+@Serializable
+data class PushDeviceDto(
+    val id: String,
+    val platform: String,
+    val appVersion: String?,
+    val current: Boolean,
+    val createdAt: String,
+    val updatedAt: String,
+)
+
+@Serializable
+data class PushDeviceResponseDto(val device: PushDeviceDto)
+
+/** `available` is false when the server has no push delivery configured. */
+@Serializable
+data class PushPreferencesDto(val automates: Boolean, val available: Boolean)
+
+@Serializable
+data class UpdatePushPreferencesRequestDto(val automates: Boolean)

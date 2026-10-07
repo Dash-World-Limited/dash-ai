@@ -5,6 +5,8 @@
     <!-- Network access is used only to reach the configured Dash AI server. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Android 13+: asked only after DASH AI explains Automates notifications (never at first launch). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:name=".DashAiApplication"
@@ -49,5 +51,21 @@
                 <data android:mimeType="image/webp" />
             </intent-filter>
         </activity>
+
+        <!-- Automates push notifications (data-only FCM messages; see docs/push-notifications.md). -->
+        <service
+            android:name=".data.push.DashMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+        <!-- No token until DASH AI asks for one (signed in, notifications allowed); no analytics. -->
+        <meta-data
+            android:name="firebase_messaging_auto_init_enabled"
+            android:value="false" />
+        <meta-data
+            android:name="firebase_analytics_collection_enabled"
+            android:value="false" />
     </application>
 </manifest>

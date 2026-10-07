@@ -120,6 +120,14 @@ interface DashApiService {
     @GET("v1/notifications") suspend fun notifications(): NotificationListDto
 
     @POST("v1/notifications/read") suspend fun markNotificationsRead(@Body body: MarkNotificationsReadRequestDto): MarkNotificationsReadResponseDto
+
+    @PUT("v1/push/devices/current") suspend fun registerPushDevice(@Body body: RegisterPushDeviceRequestDto): PushDeviceResponseDto
+
+    @DELETE("v1/push/devices/current") suspend fun unregisterPushDevice(): retrofit2.Response<Unit>
+
+    @GET("v1/push/preferences") suspend fun pushPreferences(): PushPreferencesDto
+
+    @PUT("v1/push/preferences") suspend fun updatePushPreferences(@Body body: UpdatePushPreferencesRequestDto): PushPreferencesDto
 }
 
 /**

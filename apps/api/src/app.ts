@@ -9,6 +9,11 @@ import { loggerOptions, type LogStream } from "./logging.js";
 import { IntelligenceRouter } from "./intelligence/router.js";
 import { ProviderRegistry } from "./providers/registry.js";
 import { AutomationService } from "./automations/service.js";
+import { FakePushTransport } from "./push/fake.js";
+import { FcmTransport } from "./push/fcm.js";
+import { PushService } from "./push/service.js";
+import type { PushTransport } from "./push/types.js";
+import { pushRoutes } from "./routes/push.js";
 import { accountRoutes } from "./routes/account.js";
 import { automationRoutes } from "./routes/automations.js";
 import { authRoutes } from "./routes/auth.js";
@@ -37,6 +42,20 @@ export interface AppDependencies {
   /** Where rate-limit buckets live. Defaults to per-process memory; index.ts passes Redis when configured. */
   rateLimitStore?: RateLimitStore;
   metrics?: Metrics;
+  /** Push transports. Defaults to what PUSH_TRANSPORT configures (tests pass a fake). */
+  pushTransports?: PushTransport[];
+}
+
+/** The transports PUSH_TRANSPORT asks for: none, FCM for Android, or a recording fake. */
+export function pushTransportsFor(config: AppConfig): PushTransport[] {
+  switch (config.push.transport) {
+    case "fcm":
+      return config.push.fcm ? [new FcmTransport({ account: config.push.fcm })] : [];
+    case "fake":
+      return [new FakePushTransport()];
+    default:
+      return [];
+  }
 }
 
 export interface DashApp {
@@ -110,13 +129,15 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
       retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000)),
     });
 
-  const automations = new AutomationService({ store, providers, router, config, log: app.log, metrics, now });
+  const push = new PushService({ store, transports: deps.pushTransports ?? pushTransportsFor(config), config, log: app.log, metrics, now });
+  const automations = new AutomationService({ store, providers, router, config, log: app.log, metrics, now, push });
   const context: RouteContext = {
     config,
     store,
     providers,
     router,
     automations,
+    push,
     tools: ToolRuntime.fromConfig(config, store, deps.plugins),
     streams: new StreamRegistry(),
     rateLimits,
@@ -178,10 +199,12 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   pluginRoutes(app, context);
   syncRoutes(app, context);
   automationRoutes(app, context);
+  pushRoutes(app, context);
 
   app.addHook("onClose", async () => {
     context.streams.cancelAll();
     await automations.stop();
+    await push.stop();
   });
   // The caller that created the store (index.ts / tests) owns closing it.
 

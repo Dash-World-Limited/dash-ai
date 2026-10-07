@@ -250,4 +250,57 @@ CREATE INDEX notifications_user_idx ON notifications (user_id, position DESC);
 CREATE INDEX notifications_unread_idx ON notifications (user_id) WHERE read_at IS NULL;
 `,
   },
+  {
+    id: 8,
+    name: "push_notifications",
+    sql: `
+-- Push notifications for DASH Automates (docs/push-notifications.md).
+-- The account's choice: Automates pushes on or off. Automations run either way.
+ALTER TABLE users ADD COLUMN push_automates boolean NOT NULL DEFAULT true;
+
+-- One registered device per signed-in session. The row belongs to the session, so signing out (here or
+-- everywhere), the session expiring and deleting the account all remove it. The push token is a
+-- delivery credential: AES-256-GCM ciphertext bound to the row, plus a SHA-256 hash so one token is
+-- registered once (signing in to another account on the same phone moves it, never shares it).
+CREATE TABLE push_devices (
+  id           text PRIMARY KEY,
+  user_id      text NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  session_hash text NOT NULL REFERENCES sessions (token_hash) ON DELETE CASCADE,
+  platform     text NOT NULL,
+  token_hash   text NOT NULL,
+  token_enc    bytea NOT NULL,
+  token_key_id text NOT NULL,
+  app_version  text,
+  created_at   timestamptz NOT NULL,
+  updated_at   timestamptz NOT NULL
+);
+CREATE UNIQUE INDEX push_devices_token_key ON push_devices (token_hash);
+CREATE UNIQUE INDEX push_devices_session_key ON push_devices (session_hash);
+CREATE INDEX push_devices_user_idx ON push_devices (user_id);
+
+-- One delivery per (notification, device), written in the same transaction as the notification, so a
+-- finished run fans out exactly once however many instances, retries or reconnects there are. Rows are
+-- also the retry queue: "pending" rows are claimed with FOR UPDATE SKIP LOCKED; a "sending" row whose
+-- lease expired (its instance stopped) is claimed again. last_error is a normalized code, never
+-- provider text. Removing a device or a notification removes its deliveries.
+CREATE TABLE push_deliveries (
+  id              text PRIMARY KEY,
+  notification_id text NOT NULL REFERENCES notifications (id) ON DELETE CASCADE,
+  device_id       text NOT NULL REFERENCES push_devices (id) ON DELETE CASCADE,
+  user_id         text NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  status          text NOT NULL,
+  attempts        integer NOT NULL DEFAULT 0,
+  next_attempt_at timestamptz,
+  lease_until     timestamptz,
+  last_error      text,
+  created_at      timestamptz NOT NULL,
+  updated_at      timestamptz NOT NULL
+);
+CREATE UNIQUE INDEX push_deliveries_once_key ON push_deliveries (notification_id, device_id);
+CREATE INDEX push_deliveries_device_idx ON push_deliveries (device_id);
+CREATE INDEX push_deliveries_user_idx ON push_deliveries (user_id);
+CREATE INDEX push_deliveries_due_idx ON push_deliveries (next_attempt_at) WHERE status = 'pending';
+CREATE INDEX push_deliveries_sending_idx ON push_deliveries (lease_until) WHERE status = 'sending';
+`,
+  },
 ];

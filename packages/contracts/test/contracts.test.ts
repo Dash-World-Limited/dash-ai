@@ -24,6 +24,10 @@ import {
   PluginsResponse,
   AutomationDetailResponse,
   NotificationListResponse,
+  PushDeviceResponse,
+  PushPayload,
+  PushPreferences,
+  PUSH_TEXT,
   ProvidersResponse,
   SMART_ROUTING,
   SyncConversationsResponse,
@@ -60,6 +64,9 @@ describe("JSON fixtures match the schemas", () => {
     ["tool-activity.json", ToolActivityResponse],
     ["automation-detail.json", AutomationDetailResponse],
     ["notification-list.json", NotificationListResponse],
+    ["push-payload.json", PushPayload],
+    ["push-device.json", PushDeviceResponse],
+    ["push-preferences.json", PushPreferences],
     ["sync-conversations.json", SyncConversationsResponse],
     ["sync-push-request.json", SyncPushRequest],
     ["sync-push-response.json", SyncPushResponse],
@@ -341,5 +348,20 @@ describe("history rules", () => {
     ).toBe(false);
     const history = Array.from({ length: LIMITS.maxHistoryMessages + 1 }, () => ({ role: "user", content: "hi" }));
     expect(ChatStreamRequest.safeParse({ ...base, history }).success).toBe(false);
+  });
+});
+
+describe("push notifications", () => {
+  it("lock-screen text is fixed, provider-neutral and says DASH AI", () => {
+    for (const text of Object.values(PUSH_TEXT)) {
+      expect(text.title).toBe("DASH AI");
+      expect(`${text.title} ${text.body}`).not.toMatch(/openai|chatgpt|anthropic|claude|gemini|gpt-|model/i);
+    }
+  });
+
+  it("the payload fixture carries ids and fixed text only, never content or a token", () => {
+    const payload = json("push-payload.json") as Record<string, unknown>;
+    expect(Object.keys(payload).sort()).toEqual(["account", "automationId", "body", "createdAt", "notificationId", "runId", "title", "type", "v"]);
+    expect(PushPayload.safeParse({ ...payload, type: "chat.message" }).success).toBe(false);
   });
 });

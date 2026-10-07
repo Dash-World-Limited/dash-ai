@@ -44,6 +44,12 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `TOOL_TIMEOUT_MS` | `10000` | Default per-tool-call timeout (a tool may set a shorter one; 120 s ceiling). |
 | `TOOL_MAX_ROUNDS` | `4` | Maximum model → tool → model rounds per answer; the last round keeps the same tools but switches tool use off (tool choice "none"). |
 | `TOOL_MAX_RESULT_CHARS` | `20000` | Tool output beyond this is truncated before it reaches the model. |
+| `PUSH_TRANSPORT` | `none` | Automates push notifications: `none`, `fcm` or `fake` (recorded, never sent; production warns). See [push-notifications.md](push-notifications.md). |
+| `FCM_SERVICE_ACCOUNT` | — | **Secret.** Firebase service-account JSON (raw or base64). Required with `PUSH_TRANSPORT=fcm`. |
+| `PUSH_TICK_MS` | `5000` | How often each instance sends due pushes. |
+| `PUSH_MAX_ATTEMPTS` | `5` | Attempts per push before it is marked failed. |
+| `PUSH_RETRY_BASE_MS` | `30000` | First push retry delay; doubles with ±20 % jitter, capped at an hour. |
+| `PUSH_TTL_SECONDS` | `86400` | Pushes older than this are not sent. |
 | `METRICS_TOKEN` | — | **Secret.** At least 24 characters. Enables `GET /metrics` (Prometheus text) for requests bearing this token; unset, the endpoint does not exist. |
 | `OPERATOR_TOKEN` | — | **Secret.** At least 32 characters and a different value from `METRICS_TOKEN` (the server refuses to start if they match). Opens the operator view `GET /v1/providers` while provider details are hidden; unset, there is no operator access. |
 

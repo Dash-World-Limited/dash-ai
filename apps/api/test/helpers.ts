@@ -5,6 +5,7 @@ import JSZip from "jszip";
 import { buildApp } from "../src/app.js";
 import { loadConfig, type AppConfig } from "../src/config.js";
 import { ProviderRegistry } from "../src/providers/registry.js";
+import type { PushTransport } from "../src/push/types.js";
 import type { Store } from "../src/store/store.js";
 import { createTestPgStore } from "./pgTestStore.js";
 import type { ProviderAdapter, ProviderChunk, ProviderRequest } from "../src/providers/types.js";
@@ -47,6 +48,7 @@ export async function makeApp(
     env?: Record<string, string>;
     store?: Store;
     now?: () => Date;
+    pushTransports?: PushTransport[];
   } = {},
 ) {
   const config = options.config ?? testConfig({ ...(options.logs ? { LOG_LEVEL: "debug" } : {}), ...options.env });
@@ -57,6 +59,7 @@ export async function makeApp(
     logStream: options.logs,
     store: options.store ?? pg?.store,
     now: options.now,
+    pushTransports: options.pushTransports,
   });
   if (pg) app.addHook("onClose", async () => pg.dispose());
   await app.ready();

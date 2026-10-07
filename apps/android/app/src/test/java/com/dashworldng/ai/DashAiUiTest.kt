@@ -74,7 +74,7 @@ private class HangingGateway(demo: Boolean = true) : ChatGateway {
 }
 
 /** A server-side Automates stand-in: one automation with a ready result. */
-private class FakeAutomations : com.dashworldng.ai.core.automations.AutomationsApi {
+internal class FakeAutomations : com.dashworldng.ai.core.automations.AutomationsApi {
     private val ts = java.time.Instant.now().minusSeconds(3600).toString()
     private fun summary(id: String, status: String, trigger: String = "schedule") = AutomationRunSummaryDto(
         id = id, automationId = "auto-0001", status = status, trigger = trigger, createdAt = ts, startedAt = ts,

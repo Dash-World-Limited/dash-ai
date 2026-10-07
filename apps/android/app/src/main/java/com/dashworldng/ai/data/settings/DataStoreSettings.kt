@@ -36,6 +36,7 @@ class DataStoreSettingsRepository(
         val name = stringPreferencesKey("account_name")
         val accountDemo = booleanPreferencesKey("account_demo")
         val theme = stringPreferencesKey("theme")
+        val notificationPrompt = booleanPreferencesKey("notification_prompt_answered")
     }
 
     override val settings: StateFlow<AppSettings> = store.data
@@ -56,6 +57,7 @@ class DataStoreSettingsRepository(
             defaultMode = p[Keys.mode]?.let { AssistantMode.fromWire(it) } ?: AssistantMode.GENERAL,
             demoFailure = DemoFailure.fromStored(p[Keys.demoFailure]),
             theme = ThemePreference.fromWire(p[Keys.theme]),
+            notificationPromptAnswered = p[Keys.notificationPrompt] ?: false,
             account = userId?.let {
                 AccountInfo(it, p[Keys.email], p[Keys.name] ?: "Dash AI user", p[Keys.accountDemo] ?: true)
             },
@@ -71,6 +73,7 @@ class DataStoreSettingsRepository(
         p[Keys.mode] = s.defaultMode.wire
         p[Keys.demoFailure] = s.demoFailure.name
         p[Keys.theme] = s.theme.wire
+        p[Keys.notificationPrompt] = s.notificationPromptAnswered
         val account = s.account
         if (account == null) {
             p.remove(Keys.userId)

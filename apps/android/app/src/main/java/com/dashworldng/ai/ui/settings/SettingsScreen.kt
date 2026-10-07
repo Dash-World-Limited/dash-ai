@@ -66,6 +66,7 @@ import com.dashworldng.ai.core.stream.ApiException
 import com.dashworldng.ai.data.settings.AppSettings
 import com.dashworldng.ai.data.settings.ThemePreference
 import com.dashworldng.ai.di.AppServices
+import com.dashworldng.ai.ui.automates.AutomatesNotificationsGroup
 import com.dashworldng.ai.ui.chat.SelectionDot
 import com.dashworldng.ai.ui.components.BrandWordmark
 import com.dashworldng.ai.ui.components.ConfirmDialog
@@ -250,6 +251,8 @@ fun SettingsScreen(
                         RadioRow(theme.label, selected = settings.theme == theme, tag = "theme_${theme.wire}") { vm.setTheme(theme) }
                     }
                 }
+
+                if (signedIn) AutomatesNotificationsGroup(services)
 
                 SettingsGroup("Chat defaults") {
                     Text(

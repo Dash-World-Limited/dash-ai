@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import pg from "pg";
-import type { AssistantMode, AutomationRunStatus, AutomationRunTrigger, AutomationSchedule, AutomationStatus, NotificationKind, DocumentKind, DocumentStatus, MessageRole, MessageStatus, ProviderId } from "@dash-ai/contracts";
+import type { AssistantMode, AutomationRunStatus, AutomationRunTrigger, AutomationSchedule, AutomationStatus, NotificationKind, PushPlatform, DocumentKind, DocumentStatus, MessageRole, MessageStatus, ProviderId } from "@dash-ai/contracts";
 import type { PluginSettingRecord, ToolInvocationRow } from "../tools/types.js";
 import { DataKeyError, type DataCipher } from "../security/dataCrypto.js";
 import { assertMigrated, migrate } from "./migrate.js";
@@ -8,6 +9,12 @@ import {
   type AutomationRunRecord,
   type FinishRunInput,
   type NotificationRecord,
+  type ClaimedPushDelivery,
+  type FinishPushDeliveryInput,
+  type PushDeliveryRecord,
+  type PushDeliveryStatus,
+  type PushDeviceRecord,
+  type UpsertPushDeviceInput,
   type ScheduleRunInput,
   type ConversationChange,
   type ConversationChangePage,
@@ -93,6 +100,25 @@ const toNotification = (r: NotificationRow): NotificationRecord => ({
   id: r.id, userId: r.user_id, kind: r.kind as NotificationKind, automationId: r.automation_id, runId: r.run_id,
   createdAt: iso(r.created_at), readAt: isoOrNull(r.read_at),
 });
+const pushTokenAad = (deviceId: string) => `dash-ai:push-token:${deviceId}`;
+/** Uniqueness key for a push token (the token itself is only stored encrypted). */
+const pushTokenHash = (token: string) => createHash("sha256").update(`dash-ai:push-token:${token}`).digest("hex");
+
+interface PushDeviceRow {
+  id: string; user_id: string; session_hash: string; platform: string; token_enc: Buffer; token_key_id: string;
+  app_version: string | null; created_at: Date; updated_at: Date;
+}
+interface PushDeliveryRow {
+  id: string; notification_id: string; device_id: string; user_id: string; status: string; attempts: number;
+  next_attempt_at: Date | null; lease_until: Date | null; last_error: string | null; created_at: Date; updated_at: Date;
+}
+const toPushDelivery = (r: PushDeliveryRow): PushDeliveryRecord => ({
+  id: r.id, notificationId: r.notification_id, deviceId: r.device_id, userId: r.user_id, status: r.status as PushDeliveryStatus,
+  attempts: r.attempts, nextAttemptAt: isoOrNull(r.next_attempt_at), leaseUntil: isoOrNull(r.lease_until), lastError: r.last_error,
+  createdAt: iso(r.created_at), updatedAt: iso(r.updated_at),
+});
+const PUSH_DEVICE_COLUMNS = "id, user_id, session_hash, platform, token_enc, token_key_id, app_version, created_at, updated_at";
+
 const RUN_COLUMNS =
   "id, automation_id, user_id, trigger, status, content_enc, content_key_id, error_code, created_at, started_at, finished_at, lease_until, edited_at, provider, model, demo";
 
@@ -353,6 +379,19 @@ export class PostgresStore implements Store {
           "INSERT INTO notifications (id, user_id, kind, automation_id, run_id, created_at, read_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
           [n.id, n.userId, n.kind, n.automationId, n.runId, n.createdAt, n.readAt],
         );
+        if (input.pushAt !== null) {
+          // One delivery per live device of this user (a valid session, Automates pushes on), in this transaction.
+          await client.query(
+            `INSERT INTO push_deliveries (id, notification_id, device_id, user_id, status, attempts, next_attempt_at, created_at, updated_at)
+             SELECT gen_random_uuid()::text, $1, d.id, d.user_id, 'pending', 0, $3, $3, $3
+             FROM push_devices d
+             JOIN sessions s ON s.token_hash = d.session_hash AND s.expires_at > $3
+             JOIN users u ON u.id = d.user_id AND u.push_automates
+             WHERE d.user_id = $2
+             ON CONFLICT (notification_id, device_id) DO NOTHING`,
+            [n.id, n.userId, input.pushAt],
+          );
+        }
         // Keep the newest finished runs; their notifications go with them (FK cascade).
         await client.query(
           `DELETE FROM automation_runs WHERE automation_id = $1 AND status IN ('ready', 'failed') AND id NOT IN (
@@ -420,6 +459,146 @@ export class PostgresStore implements Store {
       ? await this.pool.query("UPDATE notifications SET read_at = $3 WHERE user_id = $1 AND id = ANY($2) AND read_at IS NULL", [userId, ids, readAt])
       : await this.pool.query("UPDATE notifications SET read_at = $2 WHERE user_id = $1 AND read_at IS NULL", [userId, readAt]);
     return res.rowCount ?? 0;
+  }
+
+  // ---- Push notifications (tokens encrypted at rest) ---------------------------------------------
+
+  private toPushDevice(r: PushDeviceRow): PushDeviceRecord {
+    return {
+      id: r.id, userId: r.user_id, sessionHash: r.session_hash, platform: r.platform as PushPlatform,
+      token: this.cipher.decrypt({ keyId: r.token_key_id, payload: r.token_enc }, pushTokenAad(r.id)),
+      appVersion: r.app_version, createdAt: iso(r.created_at), updatedAt: iso(r.updated_at),
+    };
+  }
+
+  async upsertPushDevice(input: UpsertPushDeviceInput): Promise<PushDeviceRecord | undefined> {
+    const hash = pushTokenHash(input.token);
+    try {
+      return await this.tx(async (client) => {
+        // The session must still exist and belong to this user (locked so a sign-out waits for us).
+        const session = await client.query("SELECT 1 FROM sessions WHERE token_hash = $1 AND user_id = $2 FOR KEY SHARE", [input.sessionHash, input.userId]);
+        if (session.rowCount !== 1) return undefined;
+        // This session's other token, and this token under another session or account, are replaced.
+        await client.query(
+          `DELETE FROM push_devices WHERE (session_hash = $1 OR token_hash = $2)
+             AND NOT (session_hash = $1 AND token_hash = $2 AND user_id = $3)`,
+          [input.sessionHash, hash, input.userId],
+        );
+        const same = await client.query<PushDeviceRow>(
+          `UPDATE push_devices SET platform = $2, app_version = $3, updated_at = $4 WHERE session_hash = $1 RETURNING ${PUSH_DEVICE_COLUMNS}`,
+          [input.sessionHash, input.platform, input.appVersion, input.now],
+        );
+        if (same.rows[0]) return this.toPushDevice(same.rows[0]);
+        const enc = this.cipher.encrypt(input.token, pushTokenAad(input.id));
+        const { rows } = await client.query<PushDeviceRow>(
+          `INSERT INTO push_devices (id, user_id, session_hash, platform, token_hash, token_enc, token_key_id, app_version, created_at, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9) RETURNING ${PUSH_DEVICE_COLUMNS}`,
+          [input.id, input.userId, input.sessionHash, input.platform, hash, enc.payload, enc.keyId, input.appVersion, input.now],
+        );
+        return this.toPushDevice(rows[0]!);
+      });
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      // 23503: the session or account went away meanwhile. 23505: the same token registered concurrently.
+      if (code === "23503") return undefined;
+      if (code === "23505") return this.upsertPushDevice(input);
+      throw err;
+    }
+  }
+
+  async getPushDeviceForSession(sessionHash: string): Promise<PushDeviceRecord | undefined> {
+    const { rows } = await this.pool.query<PushDeviceRow>(`SELECT ${PUSH_DEVICE_COLUMNS} FROM push_devices WHERE session_hash = $1`, [sessionHash]);
+    return rows[0] && this.toPushDevice(rows[0]);
+  }
+
+  async listPushDevices(userId: string): Promise<PushDeviceRecord[]> {
+    const { rows } = await this.pool.query<PushDeviceRow>(
+      `SELECT ${PUSH_DEVICE_COLUMNS} FROM push_devices WHERE user_id = $1 ORDER BY created_at, id`,
+      [userId],
+    );
+    return rows.map((r) => this.toPushDevice(r));
+  }
+
+  async deletePushDevice(userId: string, id: string): Promise<boolean> {
+    const res = await this.pool.query("DELETE FROM push_devices WHERE id = $1 AND user_id = $2", [id, userId]);
+    return res.rowCount === 1;
+  }
+
+  async deletePushDeviceForSession(sessionHash: string): Promise<boolean> {
+    const res = await this.pool.query("DELETE FROM push_devices WHERE session_hash = $1", [sessionHash]);
+    return (res.rowCount ?? 0) > 0;
+  }
+
+  async removeInvalidPushDevice(id: string): Promise<boolean> {
+    const res = await this.pool.query("DELETE FROM push_devices WHERE id = $1", [id]);
+    return res.rowCount === 1;
+  }
+
+  async getPushPreferences(userId: string): Promise<{ automates: boolean }> {
+    const { rows } = await this.pool.query<{ push_automates: boolean }>("SELECT push_automates FROM users WHERE id = $1", [userId]);
+    return { automates: rows[0]?.push_automates ?? true };
+  }
+
+  async setPushPreferences(userId: string, prefs: { automates: boolean }): Promise<void> {
+    await this.pool.query("UPDATE users SET push_automates = $2 WHERE id = $1", [userId, prefs.automates]);
+  }
+
+  async claimPushDeliveries(now: string, leaseUntil: string, limit: number): Promise<ClaimedPushDelivery[]> {
+    return this.tx(async (client) => {
+      const claimed = await client.query<PushDeliveryRow>(
+        `UPDATE push_deliveries SET status = 'sending', attempts = attempts + 1, lease_until = $2, updated_at = $1
+         WHERE id IN (
+           SELECT id FROM push_deliveries
+           WHERE (status = 'pending' AND next_attempt_at <= $1) OR (status = 'sending' AND lease_until < $1)
+           ORDER BY coalesce(next_attempt_at, created_at) LIMIT $3 FOR UPDATE SKIP LOCKED)
+         RETURNING *`,
+        [now, leaseUntil, limit],
+      );
+      if (claimed.rows.length === 0) return [];
+      const deviceIds = [...new Set(claimed.rows.map((r) => r.device_id))];
+      const devices = await client.query<PushDeviceRow & { expires_at: Date | null; push_automates: boolean }>(
+        `SELECT d.id, d.user_id, d.session_hash, d.platform, d.token_enc, d.token_key_id, d.app_version, d.created_at, d.updated_at,
+                s.expires_at, u.push_automates
+         FROM push_devices d JOIN users u ON u.id = d.user_id LEFT JOIN sessions s ON s.token_hash = d.session_hash
+         WHERE d.id = ANY($1)`,
+        [deviceIds],
+      );
+      const notes = await client.query<NotificationRow>(
+        "SELECT id, user_id, kind, automation_id, run_id, created_at, read_at FROM notifications WHERE id = ANY($1)",
+        [[...new Set(claimed.rows.map((r) => r.notification_id))]],
+      );
+      const deviceById = new Map(devices.rows.map((d) => [d.id, d]));
+      const noteById = new Map(notes.rows.map((n) => [n.id, toNotification(n)]));
+      const t = Date.parse(now);
+      const out: ClaimedPushDelivery[] = [];
+      for (const r of claimed.rows.sort((a, b) => Date.parse(iso(a.next_attempt_at ?? a.created_at)) - Date.parse(iso(b.next_attempt_at ?? b.created_at)))) {
+        const d = deviceById.get(r.device_id);
+        const notification = noteById.get(r.notification_id);
+        if (!d || !notification) continue;
+        out.push({
+          delivery: toPushDelivery(r),
+          device: this.toPushDevice(d),
+          notification,
+          sessionValid: d.expires_at !== null && d.expires_at.getTime() > t,
+          automatesEnabled: d.push_automates,
+        });
+      }
+      return out;
+    });
+  }
+
+  async finishPushDelivery(input: FinishPushDeliveryInput): Promise<boolean> {
+    const res = await this.pool.query(
+      `UPDATE push_deliveries SET status = $2, next_attempt_at = $3, lease_until = NULL, last_error = $4, updated_at = $5
+       WHERE id = $1 AND status = 'sending'`,
+      [input.id, input.status, input.nextAttemptAt, input.lastError, input.now],
+    );
+    return res.rowCount === 1;
+  }
+
+  async listPushDeliveries(userId: string): Promise<PushDeliveryRecord[]> {
+    const { rows } = await this.pool.query<PushDeliveryRow>("SELECT * FROM push_deliveries WHERE user_id = $1 ORDER BY created_at, id", [userId]);
+    return rows.map(toPushDelivery);
   }
 
   async close(): Promise<void> {
@@ -865,11 +1044,20 @@ export class PostgresStore implements Store {
         const enc = this.cipher.encrypt(this.toRun(r).content, runContentAad(r.automation_id, r.id));
         await client.query("UPDATE automation_runs SET content_enc = $2, content_key_id = $3 WHERE id = $1", [r.id, enc.payload, enc.keyId]);
       }
+      const devices = await client.query<PushDeviceRow>(
+        `SELECT ${PUSH_DEVICE_COLUMNS} FROM push_devices WHERE token_key_id = ANY($1) ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED`,
+        [retired, limit],
+      );
+      for (const r of devices.rows) {
+        const enc = this.cipher.encrypt(this.toPushDevice(r).token, pushTokenAad(r.id));
+        await client.query("UPDATE push_devices SET token_enc = $2, token_key_id = $3 WHERE id = $1", [r.id, enc.payload, enc.keyId]);
+      }
       return {
         titles: convs.rowCount ?? 0,
         messages: msgs.rowCount ?? 0,
         documents: docs.rowCount ?? 0,
-        automations: (autos.rowCount ?? 0) + (runs.rowCount ?? 0),
+        // Automates data, including the push tokens its notifications are delivered with.
+        automations: (autos.rowCount ?? 0) + (runs.rowCount ?? 0) + (devices.rowCount ?? 0),
       };
     });
   }
@@ -885,7 +1073,8 @@ export class PostgresStore implements Store {
          + (SELECT count(*) FROM messages WHERE content_key_id IS NOT NULL AND content_key_id <> $1)
          + (SELECT count(*) FROM documents WHERE enc_key_id <> $1)
          + (SELECT count(*) FROM automations WHERE enc_key_id <> $1)
-         + (SELECT count(*) FROM automation_runs WHERE content_key_id IS NOT NULL AND content_key_id <> $1) AS r`,
+         + (SELECT count(*) FROM automation_runs WHERE content_key_id IS NOT NULL AND content_key_id <> $1)
+         + (SELECT count(*) FROM push_devices WHERE token_key_id <> $1) AS r`,
       [current],
     );
     return { plaintextTitles: Number(rows[0]!.t), plaintextMessages: Number(rows[0]!.m), retiredKeyRows: Number(rows[0]!.r) };
