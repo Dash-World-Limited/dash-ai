@@ -57,7 +57,8 @@ object Routes {
     const val DOCUMENTS = "documents"
     const val DOCUMENT = "documents/{id}"
     const val AUTOMATES = "automates"
-    const val AUTOMATION_NEW = "automates/new"
+    // Not under "automates/", where navigation would read "new" as an automation id.
+    const val AUTOMATION_NEW = "new-automation"
     const val AUTOMATION = "automates/{id}"
     const val AUTOMATION_EDIT = "automates/{id}/edit"
     const val AUTOMATION_RUN = "automates/{id}/runs/{runId}"
@@ -236,7 +237,6 @@ private fun AppNavigation(services: AppServices, startDestination: String, setti
                 onOpenRun = { id, runId -> nav.open(Routes.automationRun(id, runId)) },
             )
         }
-        // Before AUTOMATION, so "new" is never read as an id.
         composable(Routes.AUTOMATION_NEW) {
             AutomationEditorScreen(services, automationId = null, onBack = { nav.popBackStack() }, onSaved = { id ->
                 nav.popBackStack()
