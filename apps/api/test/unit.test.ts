@@ -227,22 +227,22 @@ describe("provider context", () => {
     { role: "assistant", content: "claude answer 2", origin: "anthropic" },
   ];
 
-  it("never forwards another provider's answers", () => {
-    expect(filterHistoryForProvider(history, "openai").map((m) => m.content)).toEqual(["q1", "openai answer", "q2"]);
-    expect(filterHistoryForProvider(history, "anthropic").map((m) => m.content)).toEqual([
-      "q1",
-      "claude answer",
-      "q2",
-      "claude answer 2",
-    ]);
+  it("keeps every earlier answer as DASH AI's own turn, whichever provider wrote it", () => {
+    const all = ["q1", "openai answer", "claude answer", "q2", "claude answer 2"];
+    expect(filterHistoryForProvider(history, "openai").map((m) => m.content)).toEqual(all);
+    expect(filterHistoryForProvider(history, "anthropic").map((m) => m.content)).toEqual(all);
+    // Newer clients send no origin at all.
+    expect(filterHistoryForProvider(history.map(({ role, content }) => ({ role, content })), "openai")).toHaveLength(5);
   });
 
   it("merges consecutive turns so providers receive alternating roles", () => {
     const messages = buildProviderMessages("openai", history, "q3", []);
     expect(messages).toEqual([
       { role: "user", content: "q1" },
-      { role: "assistant", content: "openai answer" },
-      { role: "user", content: "q2\n\nq3" },
+      { role: "assistant", content: "openai answer\n\nclaude answer" },
+      { role: "user", content: "q2" },
+      { role: "assistant", content: "claude answer 2" },
+      { role: "user", content: "q3" },
     ]);
   });
 
@@ -286,8 +286,18 @@ describe("provider context", () => {
     expect(new Set(Object.values(MODE_INSTRUCTIONS)).size).toBe(5);
     expect(MODE_INSTRUCTIONS.research).toMatch(/no live web access/);
     const prompt = buildSystemPrompt("writing", new FakeAdapter("anthropic", 0));
-    expect(prompt).toContain("Claude");
     expect(prompt).toContain(MODE_INSTRUCTIONS.writing);
+  });
+
+  it("every provider is told it is DASH AI; the prompt never names the provider or model running it", () => {
+    for (const adapter of [new FakeAdapter("openai", 0), new FakeAdapter("anthropic", 0)]) {
+      const prompt = buildSystemPrompt("general", adapter);
+      expect(prompt.startsWith("You are DASH AI")).toBe(true);
+      expect(prompt).toContain("I'm DASH AI. DASH AI may use third-party AI infrastructure to help process requests.");
+      // Only named in the instruction never to claim them, not as "you are running on ...".
+      expect(prompt).not.toMatch(/running on|model:/i);
+      expect(prompt).not.toContain(adapter.model);
+    }
   });
 });
 
@@ -308,8 +318,9 @@ describe("fake adapter", () => {
       }),
     );
     const text = chunks.map((c) => (c.type === "text" ? c.text : "")).join("");
-    expect(text).toMatch(/^\*\*Demonstration answer — fake OpenAI adapter\.\*\*/);
-    expect(text).toContain("no AI provider received your prompt");
+    expect(text).toMatch(/^\*\*Demonstration answer from DASH AI\.\*\*/);
+    expect(text).toContain("no AI service received your prompt");
+    expect(text).not.toMatch(/OpenAI|Claude|Anthropic|OPENAI_|ANTHROPIC_/);
     expect(chunks.at(-1)).toMatchObject({ type: "finish", finishReason: "stop" });
   });
 

@@ -13,7 +13,7 @@ import { DEFAULT_TITLE } from "../chat/titles.js";
 import { AppError, parseOrThrow } from "../errors.js";
 import type { MessageRecord } from "../store/store.js";
 import type { RouteContext } from "./context.js";
-import { toSyncChange } from "./mappers.js";
+import { toSyncChange, viewFor } from "./mappers.js";
 
 const Query = z.object({
   cursor: z.string().regex(/^\d{1,15}$/, "cursor must be a non-negative integer").default("0"),
@@ -39,7 +39,7 @@ export function syncRoutes(app: FastifyInstance, ctx: RouteContext): void {
     const [page, latest] = [await ctx.store.listConversationChanges(user.id, after, limit), await ctx.store.latestSyncSeq(user.id)];
     const last = page.changes.at(-1);
     return {
-      changes: page.changes.map(toSyncChange),
+      changes: page.changes.map((c) => toSyncChange(c, viewFor(ctx.config))),
       cursor: String(last ? last.seq : after),
       latest: String(latest),
       hasMore: page.hasMore,

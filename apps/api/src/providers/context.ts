@@ -6,11 +6,14 @@ export const MAX_DOC_CONTEXT_CHARS = 60_000;
 export const MAX_TOTAL_DOC_CONTEXT_CHARS = 120_000;
 
 /**
- * Keeps user turns and only the assistant turns produced by `provider`. Answers from the other
- * provider are never forwarded, so a provider never silently receives a competitor's output.
+ * Earlier turns of the conversation as the provider handling this request receives them. Every
+ * assistant turn is DASH AI's own earlier answer, so it is kept whichever internal provider wrote
+ * it: the conversation stays one thread when DASH AI routes or falls back between providers. Only
+ * plain text crosses providers; thinking blocks and tool-call continuations never do (they live in
+ * the per-request turns, see orchestrator). The provider id is no longer used to filter.
  */
-export function filterHistoryForProvider(history: readonly HistoryMessage[], provider: ProviderId): HistoryMessage[] {
-  return history.filter((m) => m.role === "user" || m.origin === provider);
+export function filterHistoryForProvider(history: readonly HistoryMessage[], _provider: ProviderId): HistoryMessage[] {
+  return [...history];
 }
 
 /** Drops the oldest turns until the history fits the character budget. */

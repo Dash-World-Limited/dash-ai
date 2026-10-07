@@ -18,6 +18,9 @@ const EnvSchema = z.object({
    * fake — use the fake demonstration adapters for both providers (no network, no cost).
    */
   PROVIDER_MODE: z.preprocess(emptyToUndefined, z.enum(["live", "fake"]).default("live")),
+  // hidden (default): consumer responses never name the AI provider or model; explicit provider
+  // routes are treated as DASH AI routing. exposed: engineering/diagnostic mode for tests and smoke runs.
+  PROVIDER_DETAILS: z.preprocess(emptyToUndefined, z.enum(["hidden", "exposed"]).default("hidden")),
   OPENAI_API_KEY: optionalString,
   OPENAI_MODEL: optionalString,
   /** Request and replay encrypted reasoning items in tool rounds (reasoning models). Verify live before enabling. */
@@ -93,6 +96,8 @@ export interface AppConfig {
   port: number;
   logLevel: Env["LOG_LEVEL"];
   providerMode: Env["PROVIDER_MODE"];
+  /** Whether consumer responses may carry provider identity (never in production). */
+  providerDetails: Env["PROVIDER_DETAILS"];
   openai: ProviderConfig & { encryptedReasoning: boolean };
   anthropic: ProviderConfig;
   providerTimeoutMs: number;
@@ -146,6 +151,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     port: e.PORT,
     logLevel: e.LOG_LEVEL,
     providerMode: e.PROVIDER_MODE,
+    providerDetails: e.PROVIDER_DETAILS,
     openai: { apiKey: e.OPENAI_API_KEY, model: e.OPENAI_MODEL, encryptedReasoning: e.OPENAI_ENCRYPTED_REASONING === "true" },
     anthropic: { apiKey: e.ANTHROPIC_API_KEY, model: e.ANTHROPIC_MODEL },
     providerTimeoutMs: e.PROVIDER_TIMEOUT_MS,
@@ -212,6 +218,9 @@ export function configWarnings(config: AppConfig): string[] {
   }
   if (config.rateLimits.redisUrl?.startsWith("redis://") && config.rateLimits.backend === "redis") {
     warnings.push("REDIS_URL uses redis:// in production: traffic to Redis is not encrypted in transit. Use rediss:// unless Redis is on a private network.");
+  }
+  if (config.providerDetails === "exposed") {
+    warnings.push("PROVIDER_DETAILS=exposed in production: consumer responses name the AI provider and model. Use hidden.");
   }
   if (config.providerMode === "fake") {
     warnings.push("PROVIDER_MODE=fake in production: every answer is a labelled demonstration, not a real model.");

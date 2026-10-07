@@ -11,7 +11,7 @@ import { currentUser } from "../auth/requireAuth.js";
 import { AppError, parseOrThrow } from "../errors.js";
 import type { PluginSettingRecord } from "../store/store.js";
 import type { RouteContext } from "./context.js";
-import { toToolActivity } from "./mappers.js";
+import { toToolActivity, viewFor } from "./mappers.js";
 
 export function pluginRoutes(app: FastifyInstance, ctx: RouteContext): void {
   const auth = { preHandler: ctx.requireAuth };
@@ -51,6 +51,6 @@ export function pluginRoutes(app: FastifyInstance, ctx: RouteContext): void {
   });
 
   app.get("/v1/tools/activity", auth, async (request: FastifyRequest): Promise<ToolActivityResponse> => ({
-    activity: (await ctx.store.listToolInvocations(currentUser(request).id, 100)).map(toToolActivity),
+    activity: (await ctx.store.listToolInvocations(currentUser(request).id, 100)).map((t) => toToolActivity(t, viewFor(ctx.config))),
   }));
 }

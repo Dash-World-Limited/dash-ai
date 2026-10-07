@@ -6,11 +6,17 @@ export type Id = z.infer<typeof Id>;
 
 export const IsoDateTime = z.iso.datetime({ offset: true });
 
-/** The two real AI providers the backend can talk to. */
+/**
+ * The AI infrastructure providers the backend can talk to. INTERNAL: consumer clients never show
+ * them. Production servers omit provider identity from consumer responses (PROVIDER_DETAILS=hidden).
+ */
 export const ProviderId = z.enum(["openai", "anthropic"]);
 export type ProviderId = z.infer<typeof ProviderId>;
 
-/** What the user picks in the model selector. */
+/**
+ * How a request is routed. Consumer clients send "smart" (DASH AI decides). The explicit values are
+ * engineering/diagnostic routes: a server with PROVIDER_DETAILS=hidden treats them as "smart".
+ */
 export const ModelChoice = z.enum(["smart", "openai", "claude", "compare"]);
 export type ModelChoice = z.infer<typeof ModelChoice>;
 

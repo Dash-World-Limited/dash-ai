@@ -13,7 +13,7 @@ import { DEFAULT_TITLE } from "../chat/titles.js";
 import { AppError, parseOrThrow } from "../errors.js";
 import { newId } from "../security/crypto.js";
 import type { RouteContext } from "./context.js";
-import { toConversation, toMessage, toMessageToolActivity } from "./mappers.js";
+import { toConversation, toMessage, toMessageToolActivity, viewFor } from "./mappers.js";
 
 const Params = z.object({ id: Id });
 
@@ -57,7 +57,7 @@ export function conversationRoutes(app: FastifyInstance, ctx: RouteContext): voi
     const conversation = await load(request);
     return {
       conversation: toConversation(conversation),
-      messages: (await ctx.store.listMessages(conversation.id)).map(toMessage),
+      messages: (await ctx.store.listMessages(conversation.id)).map((m) => toMessage(m, viewFor(ctx.config))),
       toolActivity: (await ctx.store.listConversationToolInvocations(conversation.userId, conversation.id)).map(toMessageToolActivity),
     };
   });

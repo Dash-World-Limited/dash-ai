@@ -191,7 +191,7 @@ describe("streaming chat", () => {
     expect(start.data.targets[0]).toMatchObject({ provider: "anthropic", model: "fake-anthropic", demo: true });
     expect(byEvent(events, "conversation.title")[0]?.data.title).toBe("Draft a launch email");
     const text = byEvent(events, "message.delta").map((e) => e.data.text).join("");
-    expect(text).toContain("Demonstration answer — fake Claude adapter");
+    expect(text).toContain("Demonstration answer from DASH AI");
     expect(byEvent(events, "message.end")[0]?.data.finishReason).toBe("stop");
     expect(events.at(-1)?.event).toBe("stream.end");
 
@@ -257,7 +257,7 @@ describe("streaming chat", () => {
     expect(res.json().error.code).toBe("no_provider_available");
   });
 
-  it("never forwards one provider's answers to the other", async () => {
+  it("earlier answers are DASH AI's own turns: each provider receives the whole conversation as text", async () => {
     const { registry, spies } = spyRegistry();
     const { app } = await setup({ providers: registry });
     const { auth } = await register(app);
@@ -269,10 +269,10 @@ describe("streaming chat", () => {
     await app.inject({ method: "POST", url: "/v1/chat/stream", headers: auth, payload: chatBody({ modelChoice: "compare", history }) });
     const openaiSeen = JSON.stringify(spies.openai!.requests[0]!.messages);
     const claudeSeen = JSON.stringify(spies.anthropic!.requests[0]!.messages);
-    expect(openaiSeen).toContain("OPENAI-ONLY-ANSWER");
-    expect(openaiSeen).not.toContain("CLAUDE-ONLY-ANSWER");
-    expect(claudeSeen).toContain("CLAUDE-ONLY-ANSWER");
-    expect(claudeSeen).not.toContain("OPENAI-ONLY-ANSWER");
+    for (const seen of [openaiSeen, claudeSeen]) {
+      expect(seen).toContain("OPENAI-ONLY-ANSWER");
+      expect(seen).toContain("CLAUDE-ONLY-ANSWER");
+    }
     expect(spies.openai!.requests[0]!.system).toContain("Mode: General");
   });
 

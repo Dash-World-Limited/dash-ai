@@ -1,6 +1,8 @@
 import {
   LIMITS,
+  providerHint,
   resolveProviders,
+  smartRoute,
   type ChatStreamRequest,
   type MessageStatus,
   type StreamEvent,
@@ -25,6 +27,7 @@ import { DUPLICATE_TEXT } from "../tools/executor.js";
 import type { ToolRuntime } from "../tools/runtime.js";
 import type { ModelToolCall } from "../tools/types.js";
 import type { Metrics } from "../observability/metrics.js";
+import { hideProviders, neutralErrorMessage, NEUTRAL_ROUTING_REASON, NEUTRAL_UNAVAILABLE } from "./publicSurface.js";
 import { withIdleTimeout } from "./timeouts.js";
 import { DEFAULT_TITLE, generateTitle } from "./titles.js";
 
@@ -51,6 +54,11 @@ const SAFE_CALL_ID = /^[A-Za-z0-9_.:-]{1,64}$/;
 export interface PreparedTarget {
   adapter: ProviderAdapter;
   messageId: string;
+  /**
+   * Other providers DASH AI may route to, in order, if this one fails before producing anything
+   * (no text sent, no tool run). Only for DASH AI routing ("smart"); explicit diagnostic routes have none.
+   */
+  fallbacks: ProviderAdapter[];
 }
 
 export interface PreparedChat {
@@ -105,22 +113,38 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
     documents.push(doc);
   }
 
-  const routing = resolveProviders(request.modelChoice, request.mode, ctx.providers.configured());
-  if (!routing.ok) throw new AppError(routing.code, routing.message);
-
-  const targets = routing.providers.map((p) => {
-    const adapter = ctx.providers.get(p);
-    if (!adapter) throw new AppError("provider_not_configured", "The selected provider is not configured.");
-    return { adapter, messageId: newId() };
-  });
+  // Consumers never choose a provider: with provider details hidden every request is DASH AI routed.
+  const hidden = hideProviders(ctx.config);
+  const choice = hidden ? "smart" : request.modelChoice;
+  const configured = ctx.providers.configured();
+  let targets: PreparedTarget[];
+  let routingReason: string;
+  if (choice === "smart") {
+    // A provider the person named in their own words is a preference, applied silently when available.
+    const route = smartRoute(request.mode, configured, providerHint(request.message.content));
+    const adapters = route.map((p) => ctx.providers.get(p)).filter((a): a is ProviderAdapter => a !== undefined);
+    if (adapters.length === 0) throw new AppError("no_provider_available", hidden ? NEUTRAL_UNAVAILABLE : "No AI provider is configured on this server.");
+    targets = [{ adapter: adapters[0]!, messageId: newId(), fallbacks: adapters.slice(1) }];
+    const legacy = resolveProviders("smart", request.mode, configured);
+    routingReason = hidden ? NEUTRAL_ROUTING_REASON : legacy.ok ? legacy.reason : "";
+  } else {
+    const routing = resolveProviders(choice, request.mode, configured);
+    if (!routing.ok) throw new AppError(routing.code, routing.message);
+    targets = routing.providers.map((p) => {
+      const adapter = ctx.providers.get(p);
+      if (!adapter) throw new AppError("provider_not_configured", "The selected provider is not configured.");
+      return { adapter, messageId: newId(), fallbacks: [] };
+    });
+    routingReason = routing.reason;
+  }
 
   return {
     userId,
-    request,
+    request: { ...request, modelChoice: choice },
     conversation,
     targets,
-    routingReason: routing.reason,
-    compareGroupId: request.modelChoice === "compare" ? request.message.id : null,
+    routingReason,
+    compareGroupId: choice === "compare" ? request.message.id : null,
     documents,
     offered: await ctx.tools.offeredFor(userId),
   };
@@ -169,12 +193,11 @@ export async function runChat(
       conversationId: conversation.id,
       modelChoice: request.modelChoice,
       compareGroupId: prepared.compareGroupId,
-      targets: prepared.targets.map((t) => ({
-        messageId: t.messageId,
-        provider: t.adapter.id,
-        model: t.adapter.model,
-        demo: t.adapter.demo,
-      })),
+      targets: prepared.targets.map((t) =>
+        hideProviders(ctx.config)
+          ? { messageId: t.messageId, demo: t.adapter.demo }
+          : { messageId: t.messageId, provider: t.adapter.id, model: t.adapter.model, demo: t.adapter.demo },
+      ),
       routingReason: prepared.routingReason,
     },
   });
@@ -203,7 +226,10 @@ async function runTarget(
   sink: SseSink,
   parentSignal: AbortSignal,
 ): Promise<TargetOutcome> {
-  const { adapter, messageId } = target;
+  const { messageId } = target;
+  // DASH AI's route: the chosen provider first, then internal fallbacks (see PreparedTarget.fallbacks).
+  const candidates = [target.adapter, ...target.fallbacks];
+  let adapter = candidates[0]!;
   const controller = new AbortController();
   const onParentAbort = () => controller.abort(parentSignal.reason ?? "cancelled");
   if (parentSignal.aborted) onParentAbort();
@@ -217,7 +243,9 @@ async function runTarget(
   let status: MessageStatus = "complete";
   let usage: Usage = { inputTokens: null, outputTokens: null };
 
-  try {
+  /** One complete answer from `provider`; throws on failure. Text and tool calls stream as they come. */
+  const generate = async (provider: ProviderAdapter): Promise<"stop" | "length" | "refusal"> => {
+    const adapter = provider;
     const turns: ProviderTurn[] = buildProviderMessages(
       adapter.id,
       prepared.request.history,
@@ -307,7 +335,7 @@ async function runTarget(
         break;
       }
 
-      const results = await runToolCalls(ctx, prepared, target, calls, controller.signal, sink, seenCallIds);
+      const results = await runToolCalls(ctx, prepared, { ...target, adapter }, calls, controller.signal, sink, seenCallIds);
       // `turns` belongs to this target alone, so a continuation only ever goes back to its own provider.
       turns.push(
         { role: "assistant", content: roundText, toolCalls: calls, ...(continuation !== undefined ? { continuation } : {}) },
@@ -316,6 +344,26 @@ async function runTarget(
     }
     if (servedModel && servedModel !== adapter.model) {
       ctx.log.info({ provider: adapter.id, configuredModel: adapter.model, servedModel }, "provider served a different model id");
+    }
+    return finishReason;
+  };
+
+  try {
+    let finishReason: "stop" | "length" | "refusal" = "stop";
+    for (let c = 0; ; c++) {
+      adapter = candidates[c]!;
+      try {
+        finishReason = await generate(adapter);
+        break;
+      } catch (err) {
+        if (controller.signal.aborted) throw err;
+        const next = candidates[c + 1];
+        const error = toProviderError(adapter.displayName, err, controller.signal);
+        // Safe only while nothing reached the person and no tool ran: the next provider starts clean.
+        if (!next || content !== "" || seenCallIds.size > 0 || !error.retryable) throw err;
+        ctx.metrics?.providerFallbacks?.inc({ from: adapter.id, to: next.id, code: error.code });
+        ctx.log.warn({ from: adapter.id, to: next.id, code: error.code, attempts }, "provider fallback");
+      }
     }
     sink.send({ event: "message.end", data: { messageId, finishReason, usage } });
   } catch (err) {
@@ -333,14 +381,15 @@ async function runTarget(
         { provider: adapter.id, code: error.code, httpStatus: error.httpStatus, demo: adapter.demo, attempts, partial: content.length > 0 },
         "provider stream failed",
       );
-      // The server never switches provider on its own: that would answer with a model the user did
-      // not choose. It says which other providers the user could pick explicitly.
-      const alternatives = [...ctx.providers.configured()].filter((p) => p !== adapter.id);
+      // DASH AI already tried every safe route. Consumers get a neutral message and Retry; the
+      // provider's own wording (and which provider failed) stays in the log above.
+      const hidden = hideProviders(ctx.config);
+      const alternatives = hidden ? [] : [...ctx.providers.configured()].filter((p) => p !== adapter.id);
       sink.send({
         event: "message.error",
         data: {
           messageId,
-          error: { code: error.code, message: error.message, retryable: error.retryable },
+          error: { code: error.code, message: hidden ? neutralErrorMessage(error.code) : error.message, retryable: error.retryable },
           recovery: { attempts: Math.max(1, attempts), alternatives },
         },
       });

@@ -13,6 +13,20 @@ export const ProviderStatus = z.object({
 });
 export type ProviderStatus = z.infer<typeof ProviderStatus>;
 
+/**
+ * What a consumer client may know about the assistant: whether DASH AI can answer, and whether
+ * answers are demonstrations. No provider identity (see ProvidersResponse for the operator view).
+ */
+export const AssistantStatusResponse = z.object({
+  /** False when no AI infrastructure is configured: chat requests will fail with "unavailable". */
+  available: z.boolean(),
+  /** True when the server runs demonstration adapters: answers must be labelled as demonstrations. */
+  demo: z.boolean(),
+  research: z.object({ liveSearchAvailable: z.boolean(), note: z.string() }),
+});
+export type AssistantStatusResponse = z.infer<typeof AssistantStatusResponse>;
+
+/** OPERATOR ONLY (needs the operator token in production): the internal provider configuration. */
 export const ProvidersResponse = z.object({
   providers: z.array(ProviderStatus),
   compareAvailable: z.boolean(),

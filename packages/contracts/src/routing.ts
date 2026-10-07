@@ -70,3 +70,26 @@ export function resolveProviders(
 export function otherProvider(provider: ProviderId): ProviderId {
   return provider === "openai" ? "anthropic" : "openai";
 }
+
+/**
+ * A provider the person explicitly asked for in their own words ("use ChatGPT", "a Claude-style
+ * analysis"). Only a routing preference: it is applied when that provider is configured and is never
+ * announced or promised to the user. Unknown names (e.g. Gemini, not integrated) give no hint.
+ */
+export function providerHint(text: string): ProviderId | null {
+  const t = text.toLowerCase();
+  const claude = /\b(claude|anthropic)\b/.test(t);
+  const openai = /\b(chatgpt|chat gpt|openai|gpt-?\d[\w.-]*)\b/.test(t);
+  if (claude === openai) return null;
+  return claude ? "anthropic" : "openai";
+}
+
+/**
+ * DASH AI's own route for a request: every configured provider, best first. The first answers; the
+ * rest are internal fallbacks used only when the first fails before producing anything.
+ */
+export function smartRoute(mode: AssistantMode, configured: ReadonlySet<ProviderId>, hint: ProviderId | null = null): ProviderId[] {
+  const order = [...SMART_ROUTING[mode]];
+  if (hint && configured.has(hint)) order.sort((a, b) => Number(b === hint) - Number(a === hint));
+  return order.filter((p) => configured.has(p));
+}

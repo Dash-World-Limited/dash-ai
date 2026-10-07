@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  providerHint,
+  smartRoute,
   AssistantMode,
   PROMPT_CATEGORIES,
   PROMPT_LIMITS,
@@ -101,6 +103,27 @@ describe("JSON fixtures match the schemas", () => {
     expect(validatePrompt("Title", "  ")).toBe("Write the prompt text.");
     expect(validatePrompt("Title", "b".repeat(4001))).toBe("Prompts can be up to 4,000 characters.");
     expect(validatePrompt("Title", "Body")).toBeNull();
+  });
+
+  it("DASH AI routing: every configured provider, best first; a named provider is only a preference", () => {
+    const both = new Set(["openai", "anthropic"] as const);
+    expect(smartRoute("general", both)).toEqual(["openai", "anthropic"]);
+    expect(smartRoute("writing", both)).toEqual(["anthropic", "openai"]);
+    expect(smartRoute("general", both, "anthropic")).toEqual(["anthropic", "openai"]);
+    expect(smartRoute("general", new Set(["openai"] as const), "anthropic")).toEqual(["openai"]);
+    expect(smartRoute("general", new Set())).toEqual([]);
+    expect(providerHint("Give me a Claude-style analysis")).toBe("anthropic");
+    expect(providerHint("use ChatGPT for this")).toBe("openai");
+    expect(providerHint("answer like gpt-4o would")).toBe("openai");
+    expect(providerHint("Approach this like Gemini would")).toBeNull();
+    expect(providerHint("compare Claude and ChatGPT")).toBeNull();
+    expect(providerHint("plan my week")).toBeNull();
+  });
+
+  it("history and stream targets no longer require provider identity", () => {
+    expect(HistoryMessage.safeParse({ role: "assistant", content: "earlier answer" }).success).toBe(true);
+    expect(HistoryMessage.safeParse({ role: "user", content: "q", origin: "openai" }).success).toBe(false);
+    expect(ChatStreamRequest.parse({ conversationId: "conv-00000001", mode: "general", message: { id: "msg-00000001", content: "hi" } }).modelChoice).toBe("smart");
   });
 
   it("smart-routing.json mirrors SMART_ROUTING", () => {
@@ -292,8 +315,8 @@ describe("file checks", () => {
 });
 
 describe("history rules", () => {
-  it("requires assistant turns to name their provider", () => {
-    expect(HistoryMessage.safeParse({ role: "assistant", content: "x", origin: null }).success).toBe(false);
+  it("assistant turns are DASH AI's own; older clients may still send an origin", () => {
+    expect(HistoryMessage.safeParse({ role: "assistant", content: "x", origin: null }).success).toBe(true);
     expect(HistoryMessage.safeParse({ role: "assistant", content: "x", origin: "anthropic" }).success).toBe(true);
     expect(HistoryMessage.safeParse({ role: "user", content: "x", origin: "openai" }).success).toBe(false);
   });
