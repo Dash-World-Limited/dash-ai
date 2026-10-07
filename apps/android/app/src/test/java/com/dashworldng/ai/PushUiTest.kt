@@ -121,13 +121,9 @@ class PushUiTest {
     )
 
     @Test
-    fun noPromptAtLaunchAndTheOfferCanBeDeclinedWithoutLosingAutomates() {
+    fun theOfferExplainsFirstAndCanBeDeclinedWithoutLosingAutomates() {
         val permission = FixedNotificationPermission(granted = false)
         val services = services(permission = permission)
-        launch(services, Routes.HOME)
-        compose.waitForIdle()
-        assertFalse(has("notification_offer"), "no notification ask outside Automates")
-
         launch(services, Routes.AUTOMATES)
         waitForTag("notification_offer")
         waitForText("Know when results are ready")
@@ -187,6 +183,13 @@ class PushUiTest {
         // Notifications turned off on the phone: pushes to it stop.
         permission.set(false)
         await("this phone to be unregistered") { push.unregistered == 1 }
+    }
+
+    @Test
+    fun nothingIsAskedOutsideAutomates() {
+        launch(services(), Routes.HOME)
+        compose.waitForIdle()
+        assertFalse(has("notification_offer"))
     }
 
     @Test

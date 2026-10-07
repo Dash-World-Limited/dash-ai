@@ -54,7 +54,8 @@ val rClass = tasks.register("rClass") {
 
 /** The app's Compose UI tests (Robolectric on Android), run here on the desktop test runtime. */
 val appTests = tasks.register<Sync>("appTests") {
-    from("$appSrc/test/java") { include("com/dashworldng/ai/DashAiUiTest.kt", "com/dashworldng/ai/PushUiTest.kt") }
+    // PushUiTest runs under Robolectric only: it starts on Home, which this software renderer draws too slowly.
+    from("$appSrc/test/java") { include("com/dashworldng/ai/DashAiUiTest.kt") }
     into(layout.buildDirectory.dir("app-test-src"))
 }
 
