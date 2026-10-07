@@ -13,8 +13,9 @@ never carries or shows a prompt, a result, a document, a provider or model name,
 Every run that queues a notice also keeps the in-app notice, so nothing is lost when a push is not
 delivered.
 
-Scope of this version: **Android through Firebase Cloud Messaging (FCM)**. Web Push is deferred (see
-[Web](#web)); the web app behaves exactly as before.
+Scope of this version: **Android through Firebase Cloud Messaging (FCM)**. Web Push is a deliberate
+future milestone (see [Web Push](#web-push-a-deliberate-future-milestone)); the web app behaves exactly
+as before.
 
 ## Architecture
 
@@ -125,12 +126,49 @@ delivery row only tracks sending.
   the session), deletes the FCM token, clears shown notifications, the duplicate guard and any pending
   open.
 
-## Web
+## Web Push: a deliberate future milestone
 
-Deferred. The web app has no service worker; it keeps showing notices while a tab is open
-([automates.md](automates.md)). Web Push would add a `web` platform, a service worker, VAPID keys and a
-transport behind the same `PushTransport` interface and delivery queue; no schema change beyond the
-platform value is expected.
+Web Push is **intentionally not part of this milestone**. It was scoped out on purpose, not forgotten.
+
+**Why it was deferred**
+- The milestone brief put Android first. The Android app is where scheduled results are expected to be
+  read away from a desk, and FCM covers it fully.
+- Web Push needs pieces with no counterpart on the web app yet: a service worker (the web app has
+  none, and adding one changes caching and update behaviour for the whole site), VAPID keys managed as
+  a new production secret, and per-browser permission and delivery quirks (Safari only delivers to
+  sites added to the Home Screen on iOS). That is a milestone of its own, with its own tests and review.
+- The web app already tells people about results while it is open (below), so nothing regresses.
+
+**What the web does today (unchanged by this milestone)**
+- `GET /v1/notifications` is polled every minute and when the tab becomes visible, giving the unread badge on the menu and on
+  Automates, a toast for new results, and the "New results" card.
+- When the tab is hidden and the person allowed it ("Turn on" on Automates), the browser's own
+  `Notification` shows new results. This works only while a DASH AI tab is open.
+- None of this code was changed (`git diff fd750ed..HEAD -- apps/web` is empty), and the web
+  end-to-end suite (Chromium and Firefox) passes on this branch.
+
+**How Web Push fits later without redesign**
+
+The server side is already platform-neutral. Adding Web Push adds code; it changes no schema and no
+Android behaviour:
+
+| Piece | Today | With Web Push |
+| --- | --- | --- |
+| `push_devices.platform` | `text`, no constraint; only `android` accepted by the contract | add `web` to `PushPlatform` (contracts only, no migration) |
+| Device credential | encrypted `token_enc` + `token_hash` | the browser subscription (endpoint and keys) stored encrypted in `token_enc`, its endpoint hashed into `token_hash` (no migration) |
+| Registration API | `PUT /v1/push/devices/current {platform, token}` | a `web` variant of the request carrying the subscription (additive contract change) |
+| Session binding | device row deleted with its session | same: signing out of the browser ends its pushes |
+| Queue, retries, idempotency, preference, TTL | `push_deliveries` + `PushService` | reused unchanged |
+| Transport | `FcmTransport` for `android` | a `WebPushTransport` for `web` behind the same `PushTransport` interface; 404/410 map to `invalid_token`, 429 to `retryable` |
+| Payload and text | `PushPayload`, fixed `PUSH_TEXT` | reused; the service worker shows the same fixed text and opens `/automates/{id}/runs/{runId}` or `/automates/{id}` |
+| Config | `PUSH_TRANSPORT=fcm` | a transport list (for example `fcm,webpush`) plus VAPID key variables |
+
+Nothing in this milestone needs undoing for that. The one contract change is additive: a `web`
+platform and its request shape. Android clients send `android` and are unaffected.
+
+What the Web Push milestone will include: a service worker and its update strategy; a permission
+offer on Automates mirroring Android's; the `web` registration variant; `WebPushTransport` with VAPID
+signing and payload encryption; VAPID secrets; tests on both stores; and docs.
 
 ## Configuration and secrets
 
@@ -164,7 +202,9 @@ What the Director supplies to turn pushes on (none of it is committed, and CI ne
 
 ## Known limitations
 
-- Android only; no Web Push yet.
+- Android only. Web Push is a planned, separate milestone (above).
+- Live FCM delivery has not been exercised yet: it needs the production Firebase credentials. Everything
+  up to the HTTP call is covered by tests against a local stand-in for FCM.
 - Notification grouping is per notice; there is no summary when many arrive together.
 - If FCM accepts a message and the instance dies before recording it, the delivery may be sent once
   more after the lease; the phone's duplicate guard hides it.

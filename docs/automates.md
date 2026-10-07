@@ -88,7 +88,7 @@ affects the run. See [push-notifications.md](push-notifications.md).
 
 - **Push on Android only.** A finished or failed run sends an Android push ("DASH AI / Your scheduled
   result is ready." or "… needs your attention."); see [push-notifications.md](push-notifications.md).
-  Web notices still appear only while a tab is open; Web Push is deferred.
+  Web notices still appear only while a tab is open; Web Push is a planned separate milestone.
 - Automations do not use tools, web search or documents yet; the prompt is the whole input.
 - Router health (EWMA, circuit breaker) is per API instance, not shared.
 - The run list decrypts each result to build its one-line preview.
