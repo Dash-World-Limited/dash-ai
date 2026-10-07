@@ -55,6 +55,9 @@ android {
         unitTests {
             isIncludeAndroidResources = true
             isReturnDefaultValues = true
+            // Robolectric keeps every native text layout it creates for the whole run; the UI
+            // suite (Automates editor included) outgrows Gradle's 512 MB default test heap.
+            all { it.maxHeapSize = "2g" }
         }
     }
 
