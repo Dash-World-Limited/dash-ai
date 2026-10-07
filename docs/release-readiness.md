@@ -1,5 +1,24 @@
 # Release readiness
 
+## Release hardening and parity milestone (`feature/release-hardening-parity`, PR #2)
+
+GitHub Actions is the source of truth. On this branch (head `ab1d966` unless noted):
+
+| Gate | Status |
+| --- | --- |
+| Secret scanning, actionlint, lint, typecheck, build | ✅ CI |
+| Contracts, API on the in-memory store, API on PostgreSQL + Redis, migrations from zero | ✅ CI |
+| Kotlin core + live contract tests against the API on PostgreSQL | ✅ CI (153 core tests locally) |
+| Web unit tests, production build | ✅ CI (19 unit tests) |
+| Web end to end: **Chromium and Firefox**, phone and desktop sizes (60 runs: product flows, robustness, cross-client) | ✅ CI |
+| Android app module: real AGP compile, Robolectric/Room tests (incl. Room v1→v2 migration, share intents, Back, brand), lint, `assembleDebug`, APK key check | ✅ CI; artifact **`dash-ai-debug-apk`** |
+| Android UI on the desktop harness (`jvm-ui`) | see PR #2 for the latest run |
+| OpenAI / Anthropic live | ❌ not run: needs API keys (`live-smoke.yml`) |
+| Safari / WebKit | ❌ not tested |
+| Physical device (Samsung A55) | ❌ not run; checklist in [android-hardening.md](android-hardening.md) |
+
+## Previous milestone (native UI/UX and web app)
+
 Status of every release gate after the native UI/UX milestone and the web app (branch `claude/epic-fermi-fmpda0`, PR #1).
 Nothing is deployed and nothing paid has been provisioned. "Verified" means it ran and passed in the
 authoring environment; "not verified" means it has not run anywhere yet, and why.
@@ -32,15 +51,15 @@ authoring environment; "not verified" means it has not run anywhere yet, and why
 | Observability without sensitive data | ✅ verified | canary test over every instrumented path |
 | Mutation checks | ✅ | every security-critical protection added in this milestone was reverted once; a test failed each time |
 | Workflow lint | ✅ verified locally | actionlint 1.7.7 on all workflows (incl. the new `jvm-ui` job) |
-| GitHub Actions | ❌ **not running** | every job on this branch still fails within seconds without a runner (no logs, `runner_id` 0), consistent with an account-level Actions restriction (billing or spending limit) |
+| GitHub Actions | ✅ running | was blocked earlier by an account-level restriction; all workflows have run since the repository moved to Dash-World-Limited |
 
 ## Android UI: what is verified, and how far
 
 | Level | Status |
 | --- | --- |
 | Implemented | ✅ All screens in [android-navigation.md](android-navigation.md), on the design system in [ui-design-system.md](ui-design-system.md) |
-| Compiled | ✅ against Compose Multiplatform 1.7.3 on the JVM (same Compose 1.7 / Material 3 APIs); ❌ not with the Android Gradle plugin / Android SDK |
-| Behaviour tested | ✅ 20 Compose UI tests on the JVM test runtime (stubbed navigation, lifecycle and platform); ✅ UI state logic in 16 core tests; ❌ Robolectric not run |
+| Compiled | ✅ with the Android Gradle plugin in GitHub Actions, and against Compose Multiplatform 1.7.3 on the JVM |
+| Behaviour tested | ✅ Compose UI tests on the JVM test runtime and in Robolectric (GitHub Actions); ✅ UI state logic in core tests |
 | Visually checked | ✅ 19 screens rendered by the desktop Skia renderer and inspected (light and dark; see [screenshots](screenshots/android/README.md)); two defects found and fixed (markdown tables, brand mark size). Fonts and system bars differ from Android |
 | Built for Android | ✅ the real module compiles, passes Robolectric/Room tests and lint, and produces a debug APK in GitHub Actions |
 | Device-verified | ❌ Not run on any emulator or phone: insets/keyboard on real devices, TalkBack, font scaling at 200 %, Samsung One UI, file picker, share sheet, system back and predictive back are unverified |

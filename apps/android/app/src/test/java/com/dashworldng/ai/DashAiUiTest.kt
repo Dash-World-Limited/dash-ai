@@ -22,7 +22,6 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.dashworldng.ai.core.chat.ChatGateway
 import com.dashworldng.ai.core.chat.ChatRequest
 import com.dashworldng.ai.core.demo.DemoChatGateway
-import com.dashworldng.ai.core.documents.UploadSource
 import com.dashworldng.ai.core.model.AssistantMode
 import com.dashworldng.ai.core.model.ChatMessage
 import com.dashworldng.ai.core.model.Conversation
@@ -45,9 +44,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
-import java.io.ByteArrayInputStream
 import kotlin.test.assertEquals
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** A gateway that starts an answer and never finishes it, so tests can press Stop. */
@@ -325,29 +322,6 @@ class DashAiUiTest {
         compose.onAllNodes(hasTestTag("use_prompt"))[0].performClick()
         waitForTag("composer_input")
         compose.onNodeWithTag("composer_input").assertTextContains("SWOT analysis", substring = true)
-    }
-
-    @Test
-    fun sharedTextAndFilesOpenANewChatReadyToEdit() {
-        val services = InMemoryServices(signedInDemo)
-        val notes = "Quarterly notes. Revenue grew.".toByteArray()
-        services.shares.post(
-            IncomingShare(
-                text = "Summarise this for my team",
-                files = listOf(UploadSource("notes.txt", "text/plain", notes.size.toLong()) { ByteArrayInputStream(notes) }),
-                refused = 1,
-            ),
-        )
-        compose.mainClock.autoAdvance = true
-        launch(services, Routes.SPLASH)
-        waitForTag("composer_input")
-        compose.onNodeWithTag("composer_input").assertTextContains("Summarise this for my team")
-        waitForTag("attachment_chip")
-        compose.onNodeWithText("notes.txt").assertExists()
-        waitForText("One shared item couldn't be added.")
-        assertNull(services.shares.pending.value)
-        // Nothing was sent: the person decides.
-        assertEquals(0, compose.onAllNodesWithTag("user_message").fetchSemanticsNodes().size)
     }
 
     @Test

@@ -4,29 +4,35 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.dashworldng.ai.core.documents.UploadSource
 import com.dashworldng.ai.data.settings.AccountInfo
 import com.dashworldng.ai.data.settings.AppSettings
 import com.dashworldng.ai.data.share.ShareIntents
 import com.dashworldng.ai.di.InMemoryServices
+import com.dashworldng.ai.di.IncomingShare
 import com.dashworldng.ai.ui.DashAiApp
 import com.dashworldng.ai.ui.Routes
 import com.dashworldng.ai.ui.brand.DashBrand
-import org.junit.Rule
-import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.annotation.Config
+import java.io.ByteArrayInputStream
 import java.io.File
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
 
 /** Android-only behaviour (intents, system Back) that the desktop UI harness cannot run. */
 @RunWith(AndroidJUnit4::class)
@@ -36,6 +42,49 @@ class AndroidPlatformTest {
     val compose = createAndroidComposeRule<ComponentActivity>()
 
     private val context: Context = ApplicationProvider.getApplicationContext()
+
+    private val signedInDemo = AppSettings(
+        loaded = true,
+        onboardingComplete = true,
+        demoMode = true,
+        serverUrl = "http://127.0.0.1:8787/",
+        account = AccountInfo("demo-local", null, "Demo user", isDemo = true),
+    )
+
+    private fun launch(services: InMemoryServices, start: String) {
+        compose.setContent { DashAiApp(services, startDestination = start) }
+        compose.waitForIdle()
+    }
+
+    private fun waitForTag(tag: String) = compose.waitUntil(5_000) { compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty() }
+
+    private fun waitForText(text: String) = compose.waitUntil(5_000) { compose.onAllNodes(hasText(text, substring = true)).fetchSemanticsNodes().isNotEmpty() }
+
+    // Runs here, not in the shared UI tests: sharing is Android-only, and the desktop test runtime
+    // used by apps/android/jvm-ui never shows the snackbar this checks.
+    @Test
+    fun sharedTextAndFilesOpenANewChatReadyToEdit() {
+        val services = InMemoryServices(signedInDemo)
+        val notes = "Quarterly notes. Revenue grew.".toByteArray()
+        launch(services, Routes.HOME)
+        waitForTag("home_screen")
+        // Shared from another app while DASH AI is open.
+        services.shares.post(
+            IncomingShare(
+                text = "Summarise this for my team",
+                files = listOf(UploadSource("notes.txt", "text/plain", notes.size.toLong()) { ByteArrayInputStream(notes) }),
+                refused = 1,
+            ),
+        )
+        waitForTag("composer_input")
+        compose.onNodeWithTag("composer_input").assertTextContains("Summarise this for my team")
+        waitForTag("attachment_chip")
+        compose.onNodeWithText("notes.txt").assertExists()
+        waitForText("One shared item couldn't be added.")
+        assertNull(services.shares.pending.value)
+        // Nothing was sent: the person decides.
+        assertEquals(0, compose.onAllNodesWithTag("user_message").fetchSemanticsNodes().size)
+    }
 
     @Test
     fun sharedTextIsAcceptedAndTrimmedToTheMessageLimit() {
