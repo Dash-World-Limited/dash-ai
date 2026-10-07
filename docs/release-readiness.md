@@ -1,5 +1,27 @@
 # Release readiness
 
+## Provider-neutral product, brand and voice direction milestone (`feature/provider-neutral-brand-refinement`)
+
+Started from `1c37e91` (head of `feature/release-hardening-parity`), PR #3. GitHub Actions is the source of truth; all gates below were green on `2496e56` (CI runs 47 and 48, Android app run 25).
+
+| Gate | Status |
+| --- | --- |
+| Secret scanning, actionlint, lint, typecheck, build | ✅ CI |
+| Contracts (44), API in memory, API on PostgreSQL + Redis (432 locally), migrations | ✅ CI |
+| Provider-neutrality leak tests: API responses and SSE, consumer fixtures, web DOM and accessibility text, Android core / live contract / UI | ✅ CI |
+| Kotlin core + live contract tests against the neutral API on PostgreSQL (149 locally, 11 live) | ✅ CI |
+| Web unit tests (20) and build; E2E in **Chromium and Firefox**, phone and desktop (60 runs) | ✅ CI |
+| Android: real AGP compile, Robolectric/Room tests, lint, `assembleDebug`, artifact **`dash-ai-debug-apk`** | ✅ CI |
+| Android UI on the desktop harness (24 UI tests + screenshot render) | ✅ locally |
+| OpenAI / Anthropic live | ❌ not run: needs API keys |
+| Safari / WebKit | ❌ not tested |
+| Physical device (Samsung A55) | ❌ not run |
+| Voice | ❌ **not implemented** (architecture only: [voice.md](voice.md)) |
+
+Director approvals needed: the working faceted-diamond mark and the splash as built ([branding.md](branding.md));
+the export no longer containing provider identity; cross-provider plain-text history; reusing
+`METRICS_TOKEN` as the operator token for `/v1/providers` ([ADR 0012](decisions/0012-dash-ai-is-the-product.md)).
+
 ## Release hardening and parity milestone (`feature/release-hardening-parity`, PR #2)
 
 GitHub Actions is the source of truth. On this branch (head `ab1d966` unless noted):
