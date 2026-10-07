@@ -82,7 +82,7 @@ The staging procedure is prepared in [staging-runbook.md](staging-runbook.md) (n
 | Demo documents | Validated on device by name/type/size only. |
 | Email verification, password reset, social sign-in | Not implemented. |
 | Rate limiting across instances | Redis-backed and tested against a real Redis; no managed Redis exists yet. |
-| Official Dash World logo | Missing — temporary typographic mark (see [design.md](design.md)). |
+| Official Dash World logo | Working faceted-diamond mark from the approved splash concept; final artwork needs Director approval ([branding.md](branding.md)). |
 | Instrumented (on-device) UI tests | Compose UI tests run on the JVM with Robolectric; no emulator job yet. |
 | Release signing, Play Store listing, deployment | Not set up (by instruction: no deployment). |
 
@@ -116,3 +116,18 @@ Everything left unverified needs things this environment does not have:
 - Certificate pinning decision for the production API domain.
 - Dependency update automation and SAST in CI.
 - Prompt-injection review before any plugin can read untrusted external content (mail, web pages, issues).
+
+## After the provider-neutral milestone (not started)
+
+These are direction only; nothing below exists in the apps, and none of it may be shown as available.
+
+- **Public launch:** messaging is "COMING DECEMBER" / "OFFICIALLY LAUNCHING DECEMBER 2026". Platforms:
+  Android and Web only.
+- **DASH Signature Voice and DASH voice identities** — architecture in [voice.md](voice.md). Not
+  implemented.
+- **Super Admin console** — the data it needs is already recorded ([provider-neutrality.md](provider-neutrality.md#super-admin-data-that-is-preserved-not-built-yet)).
+  Installs, first opens and downloads are not measured yet and must stay distinct from registered and
+  active users; no device fingerprinting.
+- **Google, Microsoft and Apple sign-in** — roadmap only. No buttons are shown until the backend
+  supports them.
+- **DASH's own models** — would be one more provider adapter behind DASH AI's routing; no client change.

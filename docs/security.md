@@ -54,7 +54,7 @@ Full detail: [plugins.md](plugins.md). The security-relevant guarantees:
 - **Tool results are untrusted data** (prompt-injection aware): they use the providers' tool-result channel
   and the system prompt says to treat them as information, not instructions. This reduces, but cannot
   eliminate, prompt-injection risk, which is why write tools need a confirmation flow before they exist.
-- Tool state is never shared between providers; Compare runs two independent loops.
+- Tool state is never shared between providers; there is no failover after a tool has run.
 
 ## Sync
 - Pull and push are scoped to the signed-in user; another account's conversation ids are rejected or
@@ -112,9 +112,11 @@ recorded as `other`, so free text cannot leak into metrics. `GET /ready` reports
   Claude · may cost more", "Demo Mode · nothing leaves this device").
 - Every answer is labelled with its provider and model; demonstration answers carry a DEMO badge
   and start with an explicit "not a real answer" statement.
-- **No silent cross-provider forwarding**: history sent to a provider contains user turns and only
-  that provider's own earlier answers (enforced on the device and again on the server, tested on
-  both sides). Compare never shows one provider the other's answer.
+- **History is DASH AI's own conversation** (ADR 0012): earlier answers go as plain text to whichever
+  provider handles a request; thinking blocks and tool-call continuations never cross providers.
+  The privacy text discloses that DASH AI may use third-party AI service providers to process requests.
+- **No provider identity leaves the server** with `PROVIDER_DETAILS=hidden`: leak tests scan every
+  consumer response and SSE event, the web DOM and Android UI ([provider-neutrality.md](provider-neutrality.md)).
 - OpenAI requests set `store: false` so responses are not retained for later retrieval.
 - Provider safety systems are respected: refusals are shown to the user as returned
   (`finishReason: refusal`); nothing attempts to bypass them.

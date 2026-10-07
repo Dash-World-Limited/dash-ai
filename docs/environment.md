@@ -61,9 +61,14 @@ per instance) and an unencrypted `redis://` `REDIS_URL`. A staging template with
 deployment: without it the development defaults apply (no database TLS by default, migrations at
 start-up, in-memory store allowed).
 
-`GET /v1/providers` reports which providers are configured (`live`, `fake` or `unconfigured`) and
-their model ids, so the app can disable unavailable choices. Explicit choices (OpenAI, Claude,
-Compare) never silently fall back to another provider; Dash Smart falls back and says so.
+`PROVIDER_DETAILS` (`hidden`, the default and the production value, or `exposed`): with `hidden`, nothing
+a consumer receives names an AI provider or model, and every request is routed by DASH AI
+([provider-neutrality.md](provider-neutrality.md)). `exposed` is the engineering view for tests and the
+live smoke run; production logs a warning if it is set.
+
+`GET /v1/assistant` tells the apps whether DASH AI can answer (`available`, `demo`, research note).
+`GET /v1/providers` (configured providers, `live`/`fake`/`unconfigured`, model ids) is operator-only: it
+needs `Authorization: Bearer $METRICS_TOKEN` and answers 404 otherwise.
 
 ## Opt-in live smoke test
 

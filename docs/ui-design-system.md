@@ -10,8 +10,11 @@ building blocks from `ui/components/Components.kt`. No screen hard-codes a colou
 
 - **Calm and native.** Warm ivory surfaces, deep charcoal text, generous whitespace, Material 3
   behaviour (sheets, drawers, dialogs, ripple, system back).
-- **Gold is an accent, not a theme.** Champagne gold marks the primary action, the selected
-  provider or option, active states, progress and brand moments. Nothing else is gold.
+- **Gold is an accent, not a theme.** Champagne gold is used sparingly for important DASH AI brand
+  moments, primary actions where appropriate, selected interface states, progress, focus and subtle
+  highlights. Nothing else is gold. No neon, no purple/blue "AI" gradients, no loud yellow metallic gold.
+- **DASH AI is the product.** No AI provider name, logo, selector or comparison appears in the
+  interface ([provider-neutrality.md](provider-neutrality.md)).
 - **Honest.** Only features that exist are shown. Demo Mode is always labelled. Security text says
   exactly what the architecture does (encryption in transit and at rest, *not* end-to-end).
 - **Readable first.** Assistant answers sit in open reading space (no bubble); user messages are a
@@ -67,6 +70,21 @@ Serif (`BrandSerif`, the platform serif) for brand moments and greetings — dis
 sizes. Sans-serif for everything people read and operate. All sizes are in `sp`, so system font
 scaling applies everywhere.
 
+### Palette review (champagne)
+
+The palette is locked. Light: `#FAF8F3` background, `#FFFFFF` surface, `#F2EEE5` muted surface, `#1D1C1A`
+ink, `#57534B` secondary ink, `#C9A75B` champagne, `#7A5C1C` deep champagne (legible gold),
+`#F4ECD9` champagne container. Dark: `#141413`, `#1C1B19`, `#F4F1EA` ink, `#D4B46C` champagne,
+`#DCC07F` legible gold. Status: `#2E6E47` success, `#8A5A10` warning, `#A3302A` error.
+
+Reviewed against the rendered splash in this milestone: the champagne reads warm and restrained next to
+the ivory horizon, so it is **unchanged**. A slight move toward warm nude (for example `#C9A75B` →
+`#C8A866`) is only a proposal for the Director; it has not been applied or rendered side by side.
+
+### Splash
+
+Always dark, independent of the theme: see [branding.md](branding.md#the-splash-intelligence-possibility-arrival).
+
 ### Theme
 
 `Settings → Appearance`: System default (initial), Light, Dark, stored in DataStore (`theme`). The
@@ -76,16 +94,16 @@ activity switches the system-bar icon colour with the theme; the bars are transp
 
 | Component | Notes |
 | --- | --- |
-| `BrandMark`, `BrandWordmark` | Gold "D" drawn in code (same geometry as the temporary launcher vector) and "DASH AI" in spaced capitals. Replace with the official Dash World asset when supplied. |
+| `BrandMark`, `BrandWordmark` | The faceted diamond drawn in code from `DashBrand.MARK_PATH` (same geometry as the launcher, themed and splash icons; `luminous = true` on the dark splash) and "DASH AI" in spaced capitals. Working mark pending the Director's final artwork ([branding.md](branding.md)). |
 | `DashTopBar` | Back or custom navigation icon, calm title, actions |
 | `PrimaryButton`, `SecondaryButton`, `TextAction` | Gold pill / outlined pill / quiet text; loading state |
 | `DashTextField` | Outlined, labelled, error and supporting text |
-| `Composer` (`ui/chat`) | Text, attachments, mode chip, provider chip, send/stop. No microphone (no voice input exists). |
+| `Composer` (`ui/chat`) | Text, attachments, mode chip, send/stop, and the line "DASH AI · <mode>". No provider chip. No microphone (no voice input exists; see [voice.md](voice.md)). |
 | `QuietCard`, `SettingsGroup`, `SettingsRow` | Surfaces and settings lists |
 | `StatusBadge`, `Notice`, `DemoBadge` | Status tone → semantic colour |
 | `EmptyState`, `ErrorState`, `LoadingState`, `ConfirmDialog` | Intentional states everywhere |
-| `ProviderSheet`, `ModeSheet`, `AlternativeProviderSheet` (`ui/chat/Sheets.kt`) | Bottom sheets |
-| `UserMessage`, `AssistantMessage`, `CompareRow`, `ToolActivity`, recovery card (`ui/chat/MessageViews.kt`) | Conversation |
+| `ModeSheet` (`ui/chat/Sheets.kt`) | Bottom sheet (mode and a link to Tools & Connections) |
+| `UserMessage`, `AssistantMessage` (labelled "DASH AI"), `ToolActivity`, recovery card with Retry / Continue later (`ui/chat/MessageViews.kt`) | Conversation |
 | `DocumentRow`, `UploadRow` (`ui/documents`) | Library rows |
 | `MarkdownView` (`ui/markdown`) | Headings, lists, quotes, code with copy, grid tables that scroll sideways |
 

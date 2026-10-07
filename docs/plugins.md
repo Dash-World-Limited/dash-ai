@@ -116,9 +116,10 @@ database) and `provider-resilience.test.ts`.
 | Replayed call | `function_call` input item with `call_id` (plus encrypted reasoning items when `OPENAI_ENCRYPTED_REASONING=true`) | the assistant turn exactly as produced: `thinking` / `redacted_thinking` blocks, text, `tool_use` |
 | Result | `function_call_output` item | user turn with a `tool_result` block (`is_error` set on failure) |
 
-Each provider's tool turns are only replayed to that same provider. In **Compare** the two providers run
-independent loops, and call ids from one never appear in the other's requests (tested). Dash Smart picks one
-provider by the usual routing and then behaves like a single-provider chat. Persisted history keeps only
+Each provider's tool turns are only replayed to that same provider. DASH AI never fails over to another
+provider once a tool has run in an answer (ADR 0012), so a tool loop always stays with one provider.
+(In the engineering view, `PROVIDER_DETAILS=exposed`, Compare still runs two independent loops whose call
+ids never cross; tested.) Persisted history keeps only
 the visible text: tool turns are not stored or replayed in later requests.
 
 **Provider caveats to verify live:** `strict` is false because zod schemas can have optional properties;

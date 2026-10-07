@@ -1,5 +1,11 @@
 # Provider verification
 
+> Internal engineering document. Providers are infrastructure behind DASH AI and are never shown to
+> people ([ADR 0012](decisions/0012-dash-ai-is-the-product.md)). The explicit routes and Compare
+> described here exist only in the engineering view (`PROVIDER_DETAILS=exposed`, used by tests and the
+> live smoke run). Since ADR 0012, DASH AI also fails over internally when a provider fails before any
+> output; the "never switches" statements below describe explicit routes in the engineering view.
+
 Dash AI talks to OpenAI through the **Responses API** and to Anthropic through the **Messages API**,
 both via the official SDKs (`apps/api/src/providers`). Model ids come from server configuration only.
 Both adapters translate one provider-neutral conversation model (`ProviderTurn`: user / assistant /

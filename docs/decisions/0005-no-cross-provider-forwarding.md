@@ -1,6 +1,6 @@
 # ADR 0005 — Never forward one provider's answers to another
 
-**Status:** accepted
+**Status:** superseded by [ADR 0012](0012-dash-ai-is-the-product.md) (earlier answers are DASH AI's own turns and go as plain text to whichever provider handles a request; thinking blocks and tool continuations still never cross providers)
 
 **Decision.** History sent to a provider contains the user's turns and only that provider's own
 earlier answers. Demo answers are never sent anywhere. Enforced in `ContextBuilder` (Android) and

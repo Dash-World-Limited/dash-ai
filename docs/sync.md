@@ -92,9 +92,10 @@ The same inputs always give the same Room state, whatever the page sizes or retr
 
 `apps/api/test/sync-e2e.test.ts` and the Kotlin live contract tests check:
 
-- **Switching provider never forks a conversation.** OpenAI, Claude, Compare, a retry with the other
-  provider and Dash Smart inside one conversation produce one conversation with unique message ids, and a
-  second device pulls exactly what the first device shows.
+- **Continuing and regenerating never fork a conversation.** Several questions, a regenerated answer and
+  internal routing or failover inside one conversation produce one conversation with unique message ids,
+  and a second device pulls exactly what the first device shows. Synced messages carry no provider or
+  model (`origin`/`model` are null with `PROVIDER_DETAILS=hidden`).
 - **Pulls during a stream** return the user message only (never a partial answer); the next pull from
   that cursor delivers the finished answer, once.
 - **Partial failures:** when storage fails after one operation of a push batch was committed, the request

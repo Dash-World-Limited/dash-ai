@@ -89,7 +89,7 @@ immediately, then treat database backups made before the rotation as exposed.
 - [ ] Live provider smoke from a trusted machine or the manual **Live provider smoke** workflow, with
       the staging keys: `DASH_LIVE_SMOKE=1 PROVIDER_MODE=live pnpm smoke:live` — both providers, tools
       included. Record the output (it contains no secrets).
-- [ ] Register two test accounts; chat with OpenAI, Claude, Dash Smart and Compare; stop a response;
+- [ ] Register two test accounts; chat in each mode and confirm no provider name appears anywhere (answers say "DASH AI"); ask "which AI are you?" and check the answer names DASH AI only; stop a response;
       upload a TXT, DOCX and PDF; a password-protected PDF is refused with the "encrypted" message.
 - [ ] Sync between two devices (or the Kotlin live contract tests with
       `DASH_API_BASE_URL=https://<staging-api-host>`; they create throwaway accounts).

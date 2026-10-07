@@ -14,7 +14,7 @@ Reviewed in code and covered by automated tests (Robolectric, the desktop UI har
 | Session restoration | The session token is kept in encrypted storage; a 401 signs the device out with an explanation. Shared-device sign-out wipes local data (see security.md). | `AccountIsolationTest`, existing UI tests |
 | File picker | The system document picker (no storage permission); type and size are checked before upload; unreadable files say why on their chip. | `DocumentsScreen`, `FileRules` tests |
 | Share into DASH AI | **New in this milestone:** "Share → DASH AI" from other apps for text, PDF, Word, text files and images. The share waits until onboarding and sign-in are done, then opens a new chat with the text ready to edit and the files attaching; nothing is sent automatically. Only `content://` items from other apps are accepted: `file://` paths and DASH AI's own storage are refused, so no app can make DASH AI upload its private files. More than 5 files, or refused items, are reported. | `AndroidPlatformTest` (parsing, safety), `sharedTextAndFilesOpenANewChatReadyToEdit`, `aShareWaitsUntilOnboardingAndSignInAreDone` |
-| Error and recovery states | Provider failures show Retry / Change provider / Continue later, never switching automatically; offline is announced; sign-in offline explains instead of failing. | Existing UI tests |
+| Error and recovery states | Failed answers show "DASH AI couldn't complete that response" with Retry / Continue later (no provider named or offered); offline is announced; sign-in offline explains instead of failing. | Existing UI tests |
 
 ## Device checklist (Samsung A55, to do)
 

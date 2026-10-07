@@ -22,21 +22,17 @@ web app, the native Android app, the secure backend they talk to, and the contra
 | `apps/android` | Native Android app — Kotlin, Jetpack Compose, Material 3, Room. Application ID `com.dashworldng.ai`. |
 | `apps/android/core` | Pure-Kotlin core used by the app: chat state machine, routing, streaming client, Demo Mode, Markdown parser, prompt library. Builds and tests without Google's Android repositories. |
 | `apps/api` | Secure TypeScript backend (Fastify). Holds the provider keys, routes prompts to OpenAI and/or Anthropic Claude, streams answers over SSE, persists to PostgreSQL, hosts the optional plugin/tool layer and conversation sync. |
-| `packages/contracts` | Shared API schemas (zod), limits, the Dash Smart routing table, upload rules and JSON/SSE fixtures used by contract tests on both sides. |
+| `packages/contracts` | Shared API schemas (zod), limits, the internal routing table, upload rules and JSON/SSE fixtures used by contract tests on both sides. |
 | `docs` | Product, architecture, security, design, decisions and roadmap. |
 | `scripts` | Secret scanning and APK checks used locally and in CI. |
 
-## Model choices
+## DASH AI is the product
 
-| Choice | What happens |
-| --- | --- |
-| **Dash Smart** | The backend picks the most suitable *configured* provider for the mode (see `packages/contracts/src/routing.ts`) and says why. |
-| **OpenAI** | Prompts go to OpenAI only. |
-| **Claude** | Prompts go to Anthropic's Claude only. |
-| **Compare** | The same prompt goes to both providers and both answers appear side by side. The app warns that this uses both providers and may cost more. |
-
-Every assistant answer is labelled with the provider and model that produced it. One provider's
-answers are never sent to the other provider as context.
+People talk to **DASH AI**. There is no provider or model selector and no Compare: DASH AI routes each
+request to the AI infrastructure it judges best for the mode, fails over internally when a provider fails
+before producing anything, and labels every answer "DASH AI". Provider and model are recorded internally
+for operations and never shown. See [docs/provider-neutrality.md](docs/provider-neutrality.md) and
+[ADR 0012](docs/decisions/0012-dash-ai-is-the-product.md).
 
 ## Quick start
 
@@ -140,6 +136,7 @@ before a runner starts (an account-level restriction), so the local results in
 
 ## Brand asset notice
 
-The official Dash World logo is **not** in this repository. The app uses a clean, temporary
-typographic Dash AI mark (a gold "D" letterform and the "DASH AI" wordmark). It must be replaced
-with the official asset before release — see [docs/design.md](docs/design.md).
+The mark is the faceted diamond from the approved splash concept, kept as a working mark until the
+Director approves final artwork; every variant comes from one source per platform — see
+[docs/branding.md](docs/branding.md). Public launch messaging: **"COMING DECEMBER"** /
+**"OFFICIALLY LAUNCHING DECEMBER 2026"**. Platforms: Android and Web.

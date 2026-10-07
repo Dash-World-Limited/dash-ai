@@ -19,25 +19,15 @@ wordmark and headlines, semibold labels, 16 sp body text with 24 sp line height.
 
 Motion is restrained: splash fade/scale (≈1.6 s), pager transitions, drawer, typing indicator.
 
-## Brand mark — action required
-**The official Dash World logo is not in this repository.** The build uses a clean temporary
-typographic mark:
-
-- Launcher icon / system splash: a gold-gradient "D" letterform on black
-  (`app/src/main/res/drawable/ic_launcher_foreground.xml`, `ic_splash_mark.xml`,
-  `ic_launcher_monochrome.xml`).
-- In-app wordmark: "DASH" in gold gradient + "AI" in white light weight (`DashWordmark` in
-  `ui/components/Components.kt`).
-
-This is a placeholder, not a replacement corporate logo. Supply the official vector asset
-(SVG or Android vector drawable, plus monochrome variant) and replace those three drawables and
-`DashWordmark`.
+## Brand mark — Director approval required
+The mark is the **faceted diamond** from the approved splash concept (working mark until the Director
+approves final artwork). Sources, variants (colour, monochrome, launcher, themed icon, favicon, splash) and
+the swap procedure: [branding.md](branding.md).
 
 ## Key screens
-- **Splash** — mark, wordmark, "Think. Create. Execute.".
+- **Splash** — the cinematic brand scene: planet, faceted diamond, "DASH AI", "Beyond the Digital.", flowing terrain, the luminous horizon and a tiny figure ([branding.md](branding.md)).
 - **Onboarding** — pager with Skip / Next / Get started and gold page indicator.
-- **Assistant** — top bar (history, title, model selector, new chat), status banners
+- **Assistant** — top bar (history, title, new chat), status banners
   (Demo, offline, errors), mode chips, message list (reverse layout so streaming stays anchored),
   composer (attachment chips, recipient line, attach, input, send/stop).
-- **Compare** — two equal cards side by side, each labelled with its provider and model.
 - **Documents, Prompt library, Settings, Account** — card-based layouts on black.
