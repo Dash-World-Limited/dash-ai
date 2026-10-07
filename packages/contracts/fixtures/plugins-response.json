@@ -1,0 +1,35 @@
+{
+  "toolsEnabled": true,
+  "plugins": [
+    {
+      "id": "dash-demo",
+      "name": "Dash demo tools",
+      "description": "Harmless built-in tools that show how tool calling works: the current time and text statistics.",
+      "version": "1.0.0",
+      "kind": "builtin",
+      "scopes": [{ "id": "demo:read", "description": "Read the server clock and measure text you provide.", "risk": "read" }],
+      "tools": [
+        { "name": "current_time", "qualifiedName": "dash-demo__current_time", "description": "Returns the current date and time.", "scope": "demo:read", "risk": "read", "executable": true },
+        { "name": "text_stats", "qualifiedName": "dash-demo__text_stats", "description": "Counts characters, words and lines.", "scope": "demo:read", "risk": "read", "executable": true }
+      ],
+      "enabled": true,
+      "grantedScopes": ["demo:read"]
+    },
+    {
+      "id": "example-service",
+      "name": "Example external service",
+      "description": "An illustrative external plugin that is not enabled.",
+      "version": "0.1.0",
+      "kind": "external",
+      "scopes": [
+        { "id": "items:read", "description": "Read items.", "risk": "read" },
+        { "id": "items:write", "description": "Create items.", "risk": "write" }
+      ],
+      "tools": [
+        { "name": "create_item", "qualifiedName": "example-service__create_item", "description": "Creates an item.", "scope": "items:write", "risk": "write", "executable": false }
+      ],
+      "enabled": false,
+      "grantedScopes": []
+    }
+  ]
+}

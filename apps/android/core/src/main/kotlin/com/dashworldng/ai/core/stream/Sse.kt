@@ -2,6 +2,7 @@ package com.dashworldng.ai.core.stream
 
 import com.dashworldng.ai.core.model.FinishReason
 import com.dashworldng.ai.core.model.ProviderId
+import com.dashworldng.ai.core.model.ToolCallStatus
 import com.dashworldng.ai.core.remote.ConversationTitleDto
 import com.dashworldng.ai.core.remote.DashJson
 import com.dashworldng.ai.core.remote.MessageDeltaDto
@@ -10,6 +11,8 @@ import com.dashworldng.ai.core.remote.MessageErrorDto
 import com.dashworldng.ai.core.remote.StreamEndDto
 import com.dashworldng.ai.core.remote.StreamErrorDto
 import com.dashworldng.ai.core.remote.StreamStartDto
+import com.dashworldng.ai.core.remote.ToolCallDto
+import com.dashworldng.ai.core.remote.ToolResultDto
 import kotlinx.serialization.json.Json
 
 data class RawSseEvent(val event: String, val data: String)
@@ -84,7 +87,18 @@ object StreamEventDecoder {
             ChatStreamEvent.MessageEnded(it.messageId, FinishReason.fromWire(it.finishReason), it.usage.inputTokens, it.usage.outputTokens)
         }
         "message.error" -> json.decodeFromString<MessageErrorDto>(raw.data).let {
-            ChatStreamEvent.MessageFailed(it.messageId, ApiError(it.error.code, it.error.message, it.error.retryable))
+            ChatStreamEvent.MessageFailed(
+                it.messageId,
+                ApiError(it.error.code, it.error.message, it.error.retryable),
+                attempts = it.recovery?.attempts ?: 1,
+                alternatives = it.recovery?.alternatives.orEmpty().mapNotNull { id -> ProviderId.fromWire(id) },
+            )
+        }
+        "tool.call" -> json.decodeFromString<ToolCallDto>(raw.data).let {
+            ChatStreamEvent.ToolCalled(it.messageId, it.callId, it.plugin, it.tool)
+        }
+        "tool.result" -> json.decodeFromString<ToolResultDto>(raw.data).let {
+            ChatStreamEvent.ToolFinished(it.messageId, it.callId, it.plugin, it.tool, ToolCallStatus.fromWire(it.status), it.durationMs)
         }
         "conversation.title" -> json.decodeFromString<ConversationTitleDto>(raw.data).let {
             ChatStreamEvent.TitleChanged(it.conversationId, it.title)

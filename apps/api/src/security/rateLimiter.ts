@@ -2,6 +2,8 @@ export interface RateDecision {
   allowed: boolean;
   /** Milliseconds until one more request would be allowed (0 when allowed). */
   retryAfterMs: number;
+  /** Whole requests left in the bucket after this one. */
+  remaining: number;
 }
 
 interface Bucket {
@@ -11,8 +13,8 @@ interface Bucket {
 
 /**
  * Token-bucket rate limiter kept in memory. Each key gets `capacity` requests that refill evenly
- * over `windowMs`. This is a foundation for a single instance; a multi-instance deployment should
- * move buckets to a shared store (see docs/roadmap.md).
+ * over `windowMs`. Per process: several API instances share limits through RedisRateLimitStore
+ * (rateLimit.ts), which runs the same algorithm inside Redis.
  */
 export class RateLimiter {
   private readonly buckets = new Map<string, Bucket>();
@@ -34,9 +36,9 @@ export class RateLimiter {
     let decision: RateDecision;
     if (bucket.tokens >= cost) {
       bucket.tokens -= cost;
-      decision = { allowed: true, retryAfterMs: 0 };
+      decision = { allowed: true, retryAfterMs: 0, remaining: Math.floor(bucket.tokens) };
     } else {
-      decision = { allowed: false, retryAfterMs: Math.ceil((cost - bucket.tokens) / refillPerMs) };
+      decision = { allowed: false, retryAfterMs: Math.ceil((cost - bucket.tokens) / refillPerMs), remaining: Math.floor(bucket.tokens) };
     }
     this.buckets.delete(key);
     this.buckets.set(key, bucket);

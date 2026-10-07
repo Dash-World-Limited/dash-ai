@@ -123,6 +123,69 @@ data class CreateConversationRequestDto(val id: String? = null, val title: Strin
 @Serializable
 data class UpdateConversationRequestDto(val title: String)
 
+// ---- Sync ---------------------------------------------------------------------------------------
+
+@Serializable
+data class SyncConversationDto(
+    val id: String,
+    val title: String,
+    val mode: String,
+    val createdAt: String,
+    val updatedAt: String,
+    val titleIsCustom: Boolean,
+    val titleRev: Long,
+)
+
+@Serializable
+data class SyncChangeDto(
+    val seq: Long,
+    val deleted: Boolean,
+    val conversation: SyncConversationDto,
+    val messages: List<ConversationMessageDto>,
+)
+
+@Serializable
+data class SyncPageDto(
+    val changes: List<SyncChangeDto>,
+    val cursor: String,
+    val latest: String,
+    val hasMore: Boolean,
+)
+
+@Serializable
+data class PushConversationDto(
+    val id: String,
+    val title: String,
+    val titleIsCustom: Boolean,
+    val mode: String,
+    val createdAt: String,
+)
+
+/** A user message written on this device. Devices never upload assistant messages. */
+@Serializable
+data class PushMessageDto(val id: String, val content: String, val createdAt: String)
+
+/** One device → server operation. `type` is "upload", "rename" or "delete"; unused fields are null. */
+@Serializable
+data class SyncOperationDto(
+    val opId: String,
+    val type: String,
+    val conversation: PushConversationDto? = null,
+    val messages: List<PushMessageDto>? = null,
+    val conversationId: String? = null,
+    val title: String? = null,
+    val baseTitleRev: Long? = null,
+)
+
+@Serializable
+data class SyncPushRequestDto(val operations: List<SyncOperationDto>)
+
+@Serializable
+data class SyncOperationResultDto(val opId: String, val status: String, val appended: Int? = null, val skipped: Int? = null)
+
+@Serializable
+data class SyncPushResponseDto(val results: List<SyncOperationResultDto>)
+
 // ---- Chat ---------------------------------------------------------------------------------------
 
 @Serializable
@@ -162,8 +225,25 @@ data class UsageDto(val inputTokens: Int?, val outputTokens: Int?)
 @Serializable
 data class MessageEndDto(val messageId: String, val finishReason: String, val usage: UsageDto)
 
+/** How a failed answer can be recovered: attempts made, and other providers the user may pick. */
 @Serializable
-data class MessageErrorDto(val messageId: String, val error: ApiErrorDto)
+data class MessageRecoveryDto(val attempts: Int, val alternatives: List<String> = emptyList())
+
+@Serializable
+data class MessageErrorDto(val messageId: String, val error: ApiErrorDto, val recovery: MessageRecoveryDto? = null)
+
+@Serializable
+data class ToolCallDto(val messageId: String, val callId: String, val plugin: String, val tool: String)
+
+@Serializable
+data class ToolResultDto(
+    val messageId: String,
+    val callId: String,
+    val plugin: String,
+    val tool: String,
+    val status: String,
+    val durationMs: Long,
+)
 
 @Serializable
 data class ConversationTitleDto(val conversationId: String, val title: String)
@@ -195,3 +275,61 @@ data class DocumentResponseDto(
 
 @Serializable
 data class DocumentListDto(val documents: List<DocumentResponseDto>)
+
+// ---- Plugins and tools --------------------------------------------------------------------------
+
+@Serializable
+data class PluginScopeDto(val id: String, val description: String, val risk: String)
+
+@Serializable
+data class PluginToolDto(
+    val name: String,
+    val qualifiedName: String,
+    val description: String,
+    val scope: String,
+    val risk: String,
+    val executable: Boolean,
+)
+
+@Serializable
+data class PluginDto(
+    val id: String,
+    val name: String,
+    val description: String,
+    val version: String,
+    val kind: String,
+    val scopes: List<PluginScopeDto>,
+    val tools: List<PluginToolDto>,
+    val enabled: Boolean,
+    val grantedScopes: List<String>,
+)
+
+@Serializable
+data class PluginsResponseDto(val toolsEnabled: Boolean, val plugins: List<PluginDto>)
+
+/** `grantedScopes` is left out (never sent as null) so the server applies its read-only default. */
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+@Serializable
+data class UpdatePluginRequestDto(
+    val enabled: Boolean,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val grantedScopes: List<String>? = null,
+)
+
+/** Audit metadata for one tool call. The API never includes arguments or results. */
+@Serializable
+data class ToolActivityDto(
+    val conversationId: String,
+    val messageId: String,
+    val callId: String,
+    val provider: String,
+    val plugin: String,
+    val tool: String,
+    val status: String,
+    val durationMs: Long,
+    val argBytes: Long,
+    val resultChars: Long,
+    val createdAt: String,
+)
+
+@Serializable
+data class ToolActivityResponseDto(val activity: List<ToolActivityDto>)

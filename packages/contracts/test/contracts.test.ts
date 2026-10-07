@@ -5,20 +5,29 @@ import {
   AuthResponse,
   ChatStreamRequest,
   ConversationDetailResponse,
+  DataExportResponse,
   DocumentResponse,
   ErrorResponse,
   FILE_RULES,
   HistoryMessage,
   LIMITS,
   MAX_UPLOAD_BYTES,
+  PluginsResponse,
   ProvidersResponse,
   SMART_ROUTING,
+  SyncConversationsResponse,
+  SyncPushRequest,
+  SyncPushResponse,
+  ToolActivityResponse,
   UsageSummaryResponse,
   checkFile,
   decodeStream,
   encodeSseEvent,
+  PluginId,
+  ToolName,
   otherProvider,
   parseSseText,
+  qualifiedToolName,
   resolveProviders,
   type ProviderId,
 } from "../src/index.js";
@@ -36,6 +45,11 @@ describe("JSON fixtures match the schemas", () => {
     ["document-response.json", DocumentResponse],
     ["error-response.json", ErrorResponse],
     ["usage-summary.json", UsageSummaryResponse],
+    ["plugins-response.json", PluginsResponse],
+    ["tool-activity.json", ToolActivityResponse],
+    ["sync-conversations.json", SyncConversationsResponse],
+    ["sync-push-request.json", SyncPushRequest],
+    ["sync-push-response.json", SyncPushResponse],
   ] as const)("%s", (name, schema) => {
     const result = schema.safeParse(json(name));
     expect(result.success, JSON.stringify(result.error?.issues)).toBe(true);
@@ -72,8 +86,28 @@ describe("SSE transcripts", () => {
       "openai",
       "anthropic",
     ]);
+    const failure = events[5];
+    expect(failure?.event === "message.error" && failure.data.recovery).toEqual({ attempts: 3, alternatives: ["openai"] });
     const third = events[3];
     expect(third?.event === "message.delta" && third.data.text).toBe(' — ünïcödé ✓ "quoted"');
+  });
+
+  it("decodes the tool-calling transcript", () => {
+    const events = decodeStream(fixture("chat-stream-tools.sse"));
+    expect(events.map((e) => e.event)).toEqual([
+      "stream.start", "message.delta", "tool.call", "tool.result", "message.delta", "message.delta", "message.end", "stream.end",
+    ]);
+    const result = events[3];
+    expect(result?.event === "tool.result" && result.data).toMatchObject({ plugin: "dash-demo", tool: "text_stats", status: "ok" });
+  });
+
+  it("tool events never carry arguments or results", () => {
+    for (const e of decodeStream(fixture("chat-stream-tools.sse"))) {
+      if (e.event === "tool.call" || e.event === "tool.result") {
+        expect(Object.keys(e.data).sort()).not.toContain("arguments");
+        expect(Object.keys(e.data).sort()).not.toContain("content");
+      }
+    }
   });
 
   it("decodes the error transcript", () => {
@@ -98,6 +132,56 @@ describe("SSE transcripts", () => {
 
   it("rejects unknown events", () => {
     expect(() => decodeStream("event: surprise\ndata: {}\n\n")).toThrow(/Unknown stream event/);
+  });
+});
+
+describe("plugin and tool schemas", () => {
+  it("rejects names that cannot form a valid provider function name", () => {
+    expect(PluginId.safeParse("Bad Id").success).toBe(false);
+    expect(PluginId.safeParse("mock-github").success).toBe(true);
+    expect(ToolName.safeParse("list-issues").success).toBe(false);
+    expect(ToolName.safeParse("list_issues").success).toBe(true);
+    expect(qualifiedToolName("mock-github", "list_issues")).toBe("mock-github__list_issues");
+    expect(qualifiedToolName("a".repeat(32), "b".repeat(30)).length).toBeLessThanOrEqual(64);
+  });
+
+  it("export fields added later default to empty so old exports still parse", () => {
+    const base = {
+      exportedAt: "2026-01-01T00:00:00.000Z",
+      user: { id: "u-12345678", email: "a@example.com", displayName: "A", createdAt: "2026-01-01T00:00:00.000Z" },
+      conversations: [], documents: [], usage: [],
+    };
+    expect(DataExportResponse.parse(base)).toMatchObject({ plugins: [], toolActivity: [] });
+  });
+});
+
+describe("registration", () => {
+  it("rejects display names with control characters (PostgreSQL cannot store NUL)", async () => {
+    const { RegisterRequest } = await import("../src/index.js");
+    const base = { email: "a@example.com", password: "correct horse battery" };
+    expect(RegisterRequest.safeParse({ ...base, displayName: "Ada Lovelace" }).success).toBe(true);
+    for (const bad of ["Ada\u0000Lovelace", "Ada\u001bLovelace", "Ada\nLovelace"]) {
+      expect(RegisterRequest.safeParse({ ...base, displayName: bad }).success).toBe(false);
+    }
+  });
+});
+
+describe("sync push schema", () => {
+  const upload = (messages: unknown[]) => ({
+    operations: [{ opId: "op-12345678", type: "upload", conversation: { id: "conv-12345678", title: "t", titleIsCustom: false, mode: "general", createdAt: "2026-01-01T00:00:00.000Z" }, messages }],
+  });
+  it("never accepts assistant messages, provider labels or attachments in an upload", () => {
+    const parsed = SyncPushRequest.parse(upload([{ id: "msg-12345678", content: "hi", createdAt: "2026-01-01T00:00:00.000Z", role: "assistant", origin: "openai", attachmentIds: ["x"] }]));
+    const op = parsed.operations[0]!;
+    expect(op.type === "upload" && Object.keys(op.messages[0]!).sort()).toEqual(["content", "createdAt", "id"]);
+  });
+  it("bounds operations, messages and content", () => {
+    expect(SyncPushRequest.safeParse({ operations: [] }).success).toBe(false);
+    const msg = (i: number) => ({ id: `msg-${String(i).padStart(8, "0")}`, content: "x", createdAt: "2026-01-01T00:00:00.000Z" });
+    expect(SyncPushRequest.safeParse(upload(Array.from({ length: 101 }, (_, i) => msg(i)))).success).toBe(false);
+    expect(SyncPushRequest.safeParse(upload([{ ...msg(1), content: "x".repeat(LIMITS.maxMessageChars + 1) }])).success).toBe(false);
+    expect(SyncPushRequest.safeParse(upload([{ ...msg(1), content: "   " }])).success).toBe(false);
+    expect(SyncPushRequest.safeParse({ operations: [{ opId: "bad id!", type: "delete", conversationId: "conv-12345678" }] }).success).toBe(false);
   });
 });
 

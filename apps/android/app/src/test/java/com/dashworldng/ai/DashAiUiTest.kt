@@ -33,7 +33,7 @@ import com.dashworldng.ai.data.settings.AppSettings
 import com.dashworldng.ai.di.InMemoryServices
 import com.dashworldng.ai.ui.DashAiApp
 import com.dashworldng.ai.ui.Routes
-import com.dashworldng.ai.ui.theme.DashAiTheme
+import com.dashworldng.ai.core.demo.DemoFailure
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -72,7 +72,7 @@ class DashAiUiTest {
     private val signedInDemo = AppSettings(loaded = true, onboardingComplete = true, demoMode = true, serverUrl = "http://127.0.0.1:8787/", account = demoAccount)
 
     private fun launch(services: InMemoryServices, start: String) {
-        compose.setContent { DashAiTheme { DashAiApp(services, startDestination = start) } }
+        compose.setContent { DashAiApp(services, startDestination = start) }
         compose.waitForIdle()
     }
 
@@ -115,23 +115,57 @@ class DashAiUiTest {
         compose.onNodeWithTag("splash").assertExists()
         compose.mainClock.autoAdvance = true
         waitForTag("onboarding")
-        compose.onNodeWithText("Welcome to Dash AI").assertIsDisplayed()
+        compose.onNodeWithText("What are we building today?").assertIsDisplayed()
     }
 
     @Test
-    fun onboardingExplainsModelsModesAndPrivacyThenOpensSignIn() {
+    fun onboardingIsOneCalmScreenThenOpensSignIn() {
         val services = InMemoryServices(AppSettings(loaded = true))
         launch(services, Routes.ONBOARDING)
-        compose.onNodeWithText("Welcome to Dash AI").assertIsDisplayed()
-        compose.onNodeWithTag("onboarding_next").performClick()
-        waitForText("Choose how Dash AI thinks")
-        compose.onNodeWithTag("onboarding_next").performClick()
-        waitForText("Five focused modes")
-        compose.onNodeWithTag("onboarding_next").performClick()
-        waitForText("Private by design")
-        compose.onNodeWithTag("onboarding_start").performClick()
+        compose.onNodeWithTag("onboarding_title").assertTextContains("What are we building today?")
+        compose.onNodeWithText("Get answers faster").assertExists()
+        compose.onNodeWithText("Go deeper with context").assertExists()
+        compose.onNodeWithText("Turn ideas into action").assertExists()
+        compose.onNodeWithTag("onboarding_start").performScrollTo().performClick()
         waitForTag("auth_screen")
         assertTrue(services.settings.settings.value.onboardingComplete)
+    }
+
+    @Test
+    fun returningUsersSkipOnboardingAndGoHome() {
+        val services = InMemoryServices(signedInDemo)
+        compose.mainClock.autoAdvance = true
+        launch(services, Routes.SPLASH)
+        waitForTag("home_screen")
+        assertEquals(0, compose.onAllNodesWithTag("onboarding").fetchSemanticsNodes().size)
+    }
+
+    @Test
+    fun authOffersOnlyEmailAndPasswordAndDemoMode() {
+        val services = InMemoryServices(AppSettings(loaded = true, onboardingComplete = true, serverUrl = "http://127.0.0.1:8787/"))
+        launch(services, Routes.AUTH)
+        for (absent in listOf("Google", "Microsoft", "Apple")) {
+            assertEquals(0, compose.onAllNodes(hasText(absent, substring = true)).fetchSemanticsNodes().size, "no $absent sign-in")
+        }
+        compose.onNodeWithTag("tab_create").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("auth_name").assertExists()
+        compose.onNodeWithText("Create your account").assertExists()
+    }
+
+    @Test
+    fun signingInWhileOfflineExplainsInsteadOfFailingSilently() {
+        val services = InMemoryServices(
+            AppSettings(loaded = true, onboardingComplete = true, serverUrl = "http://127.0.0.1:8787/"),
+            fixedConnectivity = com.dashworldng.ai.data.FixedConnectivity(false),
+        )
+        launch(services, Routes.AUTH)
+        compose.onNodeWithTag("auth_offline").assertExists()
+        compose.onNodeWithTag("auth_email").performTextInput("ada@example.com")
+        compose.onNodeWithTag("auth_password").performTextInput("correct horse battery")
+        compose.onNodeWithTag("auth_submit").performScrollTo().performClick()
+        waitForTag("auth_error")
+        compose.onNodeWithText("Connect to the internet and try again", substring = true).assertExists()
     }
 
     @Test
@@ -139,9 +173,14 @@ class DashAiUiTest {
         val services = InMemoryServices(AppSettings(loaded = true, onboardingComplete = true, serverUrl = "http://127.0.0.1:8787/"))
         launch(services, Routes.AUTH)
         compose.onNodeWithTag("continue_demo").performScrollTo().performClick()
+        waitForTag("home_screen")
+        // Demo users get no invented name.
+        compose.onNodeWithTag("home_greeting").assertTextContains("Good", substring = true)
+        assertEquals(0, compose.onAllNodes(hasText("Demo user", substring = true)).fetchSemanticsNodes().size)
+        assertEquals(true, services.settings.settings.value.account?.isDemo)
+        compose.onNodeWithTag("quick_write").performClick()
         waitForTag("empty_chat")
         compose.onNodeWithTag("demo_banner").assertExists()
-        assertEquals(true, services.settings.settings.value.account?.isDemo)
     }
 
     @Test
@@ -178,15 +217,19 @@ class DashAiUiTest {
         compose.onNodeWithTag("selected_model", useUnmergedTree = true).assertTextContains("Dash Smart")
 
         compose.onNodeWithTag("model_selector").performClick()
-        compose.onNodeWithTag("model_option_claude").performClick()
+        waitForTag("provider_sheet")
+        compose.onNodeWithTag("model_option_claude").performSemanticsAction(SemanticsActions.OnClick)
         compose.waitForIdle()
         compose.onNodeWithTag("selected_model", useUnmergedTree = true).assertTextContains("Claude")
+        // The choice is remembered for new chats.
+        assertEquals(com.dashworldng.ai.core.model.ModelChoice.CLAUDE, services.settings.settings.value.defaultModelChoice)
 
         compose.onNodeWithTag("model_selector").performClick()
-        compose.onNodeWithTag("model_option_compare").performClick()
+        waitForTag("provider_sheet")
+        compose.onNodeWithTag("model_option_compare").performSemanticsAction(SemanticsActions.OnClick)
         compose.waitForIdle()
         compose.onNodeWithText("Compare uses both providers").assertIsDisplayed()
-        compose.onNodeWithText("may cost more", substring = true).assertExists()
+        compose.onNodeWithText("two requests", substring = true).assertExists()
         compose.onNodeWithTag("confirm_compare").performClick()
         compose.waitForIdle()
         compose.onNodeWithTag("selected_model", useUnmergedTree = true).assertTextContains("Compare")
@@ -202,7 +245,9 @@ class DashAiUiTest {
     fun switchingModeChangesSuggestionsAndShowsResearchLimits() {
         val services = InMemoryServices(signedInDemo)
         launch(services, Routes.CHAT)
-        compose.onNodeWithTag("mode_research").performClick()
+        compose.onNodeWithTag("mode_selector").performClick()
+        waitForTag("mode_sheet")
+        compose.onNodeWithTag("mode_research").performSemanticsAction(SemanticsActions.OnClick)
         compose.waitForIdle()
         compose.onNodeWithTag("mode_limitation").assertExists()
         compose.onNodeWithText("Live web research is not connected", substring = true).assertExists()
@@ -218,7 +263,6 @@ class DashAiUiTest {
         compose.onNodeWithTag("send_button").performClick()
         waitForTag("stop_button")
         waitForText("Partial answer")
-        compose.onNodeWithText("Generating…").assertExists()
 
         compose.onNodeWithTag("stop_button").performClick()
         waitForTag("send_button")
@@ -259,7 +303,7 @@ class DashAiUiTest {
         waitForTag("assistant_message")
         compose.onNodeWithTag("new_chat").performClick()
         waitForTag("empty_chat")
-        compose.onNodeWithTag("chat_title").assertTextContains("Dash AI")
+        compose.onNodeWithTag("chat_title").assertTextContains("New chat")
     }
 
     @Test
@@ -275,5 +319,65 @@ class DashAiUiTest {
         compose.onAllNodes(hasTestTag("use_prompt"))[0].performClick()
         waitForTag("composer_input")
         compose.onNodeWithTag("composer_input").assertTextContains("SWOT analysis", substring = true)
+    }
+
+    @Test
+    fun homeGreetsTheSignedInUserByTheirOwnName() {
+        val account = AccountInfo("user-1", "ngozi@example.com", "Ngozi Adeyemi", isDemo = false)
+        val services = InMemoryServices(AppSettings(loaded = true, onboardingComplete = true, demoMode = false, serverUrl = "http://127.0.0.1:8787/", account = account))
+        launch(services, Routes.HOME)
+        compose.onNodeWithTag("home_greeting").assertTextContains("Ngozi", substring = true)
+        compose.onNodeWithTag("home_empty").assertExists()
+    }
+
+    @Test
+    fun aProviderFailureOffersRetryChangeProviderAndContinueLaterWithoutSwitching() {
+        val services = InMemoryServices(signedInDemo.copy(demoFailure = DemoFailure.PROVIDER), chatGatewayOverride = DemoChatGateway(chunkDelayMillis = 0, failure = { DemoFailure.PROVIDER }))
+        launch(services, Routes.CHAT)
+        compose.onNodeWithTag("composer_input").performTextInput("Hello")
+        compose.onNodeWithTag("send_button").performClick()
+        waitForTag("recovery_card")
+        compose.onNodeWithText("Provider temporarily unavailable").assertExists()
+        compose.onNodeWithTag("recovery_retry").assertExists()
+        compose.onNodeWithTag("recovery_later").assertExists()
+        // Nothing switched on its own: the composer still targets the original choice.
+        compose.onNodeWithTag("selected_model", useUnmergedTree = true).assertTextContains("Dash Smart")
+        compose.onNodeWithTag("recovery_change_provider").performSemanticsAction(SemanticsActions.OnClick)
+        waitForTag("alternative_sheet")
+    }
+
+    @Test
+    fun toolsNeedAnAccountAndAreNeverInventedInDemoMode() {
+        val services = InMemoryServices(signedInDemo)
+        launch(services, Routes.TOOLS)
+        compose.onNodeWithText("Connect tools to give DASH AI access to the information and actions you choose.").assertExists()
+        compose.onNodeWithTag("tools_signed_out").assertExists()
+        assertEquals(0, compose.onAllNodesWithTag("tool_connection").fetchSemanticsNodes().size)
+    }
+
+    @Test
+    fun documentsLibraryHasAnHonestEmptyState() {
+        val services = InMemoryServices(signedInDemo)
+        launch(services, Routes.DOCUMENTS)
+        waitForTag("documents_empty")
+        compose.onNodeWithText("Add document").assertExists()
+    }
+
+    @Test
+    fun appearanceCanBeSwitchedToDarkAndIsRemembered() {
+        val services = InMemoryServices(signedInDemo)
+        launch(services, Routes.SETTINGS)
+        compose.onNodeWithTag("theme_dark").performScrollTo().performClick()
+        compose.waitForIdle()
+        assertEquals(com.dashworldng.ai.data.settings.ThemePreference.DARK, services.settings.settings.value.theme)
+    }
+
+    @Test
+    fun securityTextNeverClaimsEndToEndEncryption() {
+        val services = InMemoryServices(signedInDemo)
+        launch(services, Routes.SETTINGS)
+        compose.onNodeWithTag("data_protection").performScrollTo().performClick()
+        waitForText("encrypted at rest")
+        compose.onNodeWithText("not end-to-end encryption", substring = true).assertExists()
     }
 }

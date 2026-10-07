@@ -1,3 +1,4 @@
+import type { PluginSettingRecord, ToolInvocationRow } from "../tools/types.js";
 import type {
   AssistantMode,
   DocumentKind,
@@ -46,7 +47,8 @@ export interface MessageRecord {
   createdAt: string;
 }
 
-export interface DocumentRecord {
+/** Document metadata. Listing documents never reads (or decrypts) their text. */
+export interface DocumentSummary {
   id: string;
   userId: string;
   name: string;
@@ -55,11 +57,22 @@ export interface DocumentRecord {
   sizeBytes: number;
   status: DocumentStatus;
   statusDetail: string;
-  /** Extracted plain text. Raw uploaded bytes are never stored. */
-  extractedText: string;
+  extractedChars: number;
   pageCount: number | null;
   createdAt: string;
 }
+
+export interface DocumentRecord extends Omit<DocumentSummary, "extractedChars"> {
+  /** Extracted plain text. Raw uploaded bytes are never stored. Encrypted at rest by durable stores. */
+  extractedText: string;
+}
+
+export const summarizeDocument = (d: DocumentRecord): DocumentSummary => {
+  const { extractedText, ...meta } = d;
+  return { ...meta, extractedChars: extractedText.length };
+};
+
+export type { PluginSettingRecord, ToolInvocationRow };
 
 export interface UsageRow {
   userId: string;
@@ -74,38 +87,133 @@ export interface UsageRow {
 }
 
 /**
- * Persistence boundary. The MVP ships an in-memory implementation; a database-backed
- * implementation can replace it without touching routes (see docs/decisions).
+ * One conversation as seen by sync. `seq` is a per-user, strictly increasing change counter that
+ * is bumped by every conversation, message or deletion change. A deleted conversation is kept as
+ * a tombstone (`deleted: true`, no messages) so other devices learn about the deletion.
+ */
+export interface ConversationChange {
+  seq: number;
+  /** Increases on every title change (see SyncConversation.titleRev). */
+  titleRev: number;
+  deleted: boolean;
+  conversation: ConversationRecord;
+  messages: MessageRecord[];
+}
+
+export interface ConversationChangePage {
+  changes: ConversationChange[];
+  /** True when more changes exist after the last one returned. */
+  hasMore: boolean;
+}
+
+/** Where a conversation id stands for one user. Another user's id is reported as "absent". */
+export type ConversationState = "live" | "deleted" | "absent";
+
+export interface PushConversationInput {
+  conversation: ConversationRecord;
+  /** User messages written on a device, oldest first. Assistant messages are never accepted from devices. */
+  messages: MessageRecord[];
+}
+
+export interface PushConversationResult {
+  /** created/merged: applied. deleted: the user's own tombstone. rejected: the id belongs to someone else. */
+  status: "created" | "merged" | "deleted" | "rejected";
+  appended: number;
+  skipped: number;
+}
+
+export interface RenameResult {
+  status: "applied" | "conflict" | "deleted" | "not_found";
+}
+
+/**
+ * Persistence boundary. `PostgresStore` is the production implementation and `MemoryStore` is
+ * for isolated tests and local demos. Both are held to the same contract tests
+ * (test/store.contract.test.ts).
  */
 export interface Store {
+  /** True when the store can serve requests (PostgreSQL: a trivial query succeeds). */
+  ping(): Promise<boolean>;
   createUser(user: UserRecord): Promise<boolean>;
   findUserByEmail(email: string): Promise<UserRecord | undefined>;
   findUserById(id: string): Promise<UserRecord | undefined>;
+  /** Replaces the password hash only if it is still `expected` (a re-hash never overwrites a newer change). */
+  replacePasswordHash(userId: string, expected: string, next: string): Promise<boolean>;
   /** Deletes the user and everything they own. */
   deleteUserData(userId: string): Promise<void>;
 
   createSession(session: SessionRecord): Promise<void>;
   findSession(tokenHash: string): Promise<SessionRecord | undefined>;
   deleteSession(tokenHash: string): Promise<void>;
+  /** Signs the user out everywhere. Returns how many sessions were removed. */
+  deleteSessionsForUser(userId: string): Promise<number>;
 
-  /** Returns the conversation only if it belongs to userId. */
+  /** Returns the conversation only if it belongs to userId and has not been deleted. */
   getConversation(userId: string, id: string): Promise<ConversationRecord | undefined>;
-  /** True if any user already owns a conversation with this id. */
+  /** True if any user owns (or owned and deleted) a conversation with this id: ids are never reused. */
   conversationExists(id: string): Promise<boolean>;
+  /** Creates or updates. A no-op for a deleted conversation (deletion is final). */
   saveConversation(conversation: ConversationRecord): Promise<void>;
+  /** Live (not deleted) conversations, most recently updated first. */
   listConversations(userId: string): Promise<ConversationRecord[]>;
+  /** Soft-deletes: removes the messages and leaves a tombstone for sync. */
   deleteConversation(userId: string, id: string): Promise<boolean>;
+  /** Conversations (with messages) and tombstones whose seq is greater than afterSeq, oldest first. */
+  listConversationChanges(userId: string, afterSeq: number, limit: number): Promise<ConversationChangePage>;
+
+  /** live, deleted (own tombstone) or absent (never existed, or belongs to another user). */
+  conversationState(userId: string, id: string): Promise<ConversationState>;
+
+  /**
+   * Device upload, atomic per conversation. Unknown id: creates it with the messages. The user's live
+   * conversation: appends only messages with unknown ids that are newer than the newest stored message
+   * (so truncated or replaced history is never resurrected). Own tombstone: nothing changes ("deleted").
+   * Someone else's id: nothing changes ("rejected").
+   */
+  pushConversation(userId: string, input: PushConversationInput): Promise<PushConversationResult>;
+
+  /**
+   * Compare-and-set rename. Applied when the title is already the requested one (idempotent), when the
+   * server title was never set by a user, or when baseTitleRev matches; otherwise "conflict".
+   */
+  renameConversationIfCurrent(userId: string, id: string, title: string, baseTitleRev: number | null, now: string): Promise<RenameResult>;
+
+  /** The user's newest change number (0 when nothing has changed yet). */
+  latestSyncSeq(userId: string): Promise<number>;
 
   listMessages(conversationId: string): Promise<MessageRecord[]>;
+  /** Creates or replaces by id within the conversation. A no-op if the conversation was deleted. */
   saveMessage(message: MessageRecord): Promise<void>;
   /** Removes the message with this id and every later message in the conversation. */
   truncateMessagesFrom(conversationId: string, messageId: string): Promise<void>;
 
   saveDocument(document: DocumentRecord): Promise<void>;
   getDocument(userId: string, id: string): Promise<DocumentRecord | undefined>;
-  listDocuments(userId: string): Promise<DocumentRecord[]>;
+  listDocuments(userId: string): Promise<DocumentSummary[]>;
   deleteDocument(userId: string, id: string): Promise<boolean>;
 
   recordUsage(row: UsageRow): Promise<void>;
   listUsage(userId: string): Promise<UsageRow[]>;
+
+  /** The user's plugin choices (only plugins they have ever configured). */
+  getPluginSettings(userId: string): Promise<PluginSettingRecord[]>;
+  savePluginSetting(userId: string, setting: PluginSettingRecord): Promise<void>;
+
+  /** Audit metadata for tool calls (never arguments or results). */
+  recordToolInvocation(row: ToolInvocationRow): Promise<void>;
+  /**
+   * Claims an at-most-once tool execution. True only for the first claim of `keyHash`; every later
+   * claim (another call id, a retried stream, another instance, after a restart) gets false.
+   */
+  claimToolExecution(claim: { keyHash: string; userId: string; createdAt: string }): Promise<boolean>;
+  /** Records how a claimed execution ended. The claim itself is never released. */
+  finishToolExecution(keyHash: string, status: string, finishedAt: string): Promise<void>;
+  /** Most recent first. */
+  listToolInvocations(userId: string, limit: number): Promise<ToolInvocationRow[]>;
+
+  /** Deletes sessions that expired before `now`. Returns how many were removed. */
+  purgeExpiredSessions(now: Date): Promise<number>;
+
+  /** Releases connections. Safe to call more than once. */
+  close(): Promise<void>;
 }

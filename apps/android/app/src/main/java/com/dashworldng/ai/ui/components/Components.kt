@@ -1,209 +1,577 @@
 package com.dashworldng.ai.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.WarningAmber
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.ExperimentalTextApi
-import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.dashworldng.ai.ui.theme.DashColors
+import com.dashworldng.ai.core.presentation.StatusLabel
+import com.dashworldng.ai.core.presentation.StatusTone
+import com.dashworldng.ai.ui.theme.DashTheme
+import com.dashworldng.ai.ui.theme.Radii
+import com.dashworldng.ai.ui.theme.Sizing
+import com.dashworldng.ai.ui.theme.Spacing
+
+// ---- Brand -------------------------------------------------------------------------------------
 
 /**
- * Temporary typographic Dash AI wordmark. The official Dash World logo is not in this repository;
- * replace this with the approved asset when it is supplied (see docs/design.md).
+ * The DASH AI mark: a gold "D" drawn in code (same geometry as res/drawable/ic_splash_mark.xml).
+ * Temporary typographic mark until the official Dash World asset is supplied.
  */
-@OptIn(ExperimentalTextApi::class)
 @Composable
-fun DashWordmark(modifier: Modifier = Modifier, size: Dp = 28.dp) {
-    val fontSize = (size.value).sp
-    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            text = "DASH",
-            style = TextStyle(
-                brush = DashColors.GoldGradient,
-                fontSize = fontSize,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = (size.value * 0.18f).sp,
-            ),
-        )
-        Spacer(Modifier.width(size * 0.3f))
-        Text(
-            text = "AI",
-            style = TextStyle(
-                color = DashColors.White,
-                fontSize = fontSize,
-                fontWeight = FontWeight.Light,
-                letterSpacing = (size.value * 0.12f).sp,
-            ),
-        )
+fun BrandMark(size: Dp, modifier: Modifier = Modifier) {
+    val c = DashTheme.colors
+    val gold = Brush.linearGradient(listOf(c.accent, c.accentInk))
+    Canvas(modifier.size(size).semantics { contentDescription = "DASH AI" }) {
+        // The glyph occupies x 37..73 and y 33..75 of the drawable's 108-unit viewport; scale that
+        // box (plus a hairline margin) to this size and centre it.
+        val s = this.size.minDimension / 44f
+        translate(left = (this.size.width - 36f * s) / 2f - 37f * s, top = (this.size.height - 42f * s) / 2f - 33f * s) {
+        val outer = Path().apply {
+            moveTo(37f * s, 33f * s)
+            lineTo(52f * s, 33f * s)
+            arcTo(Rect(Offset(31f * s, 33f * s), Offset(73f * s, 75f * s)), -90f, 180f, false)
+            lineTo(37f * s, 75f * s)
+            close()
+            moveTo(44.5f * s, 40.5f * s)
+            lineTo(52f * s, 40.5f * s)
+            arcTo(Rect(Offset(38.5f * s, 40.5f * s), Offset(65.5f * s, 67.5f * s)), -90f, 180f, false)
+            lineTo(44.5f * s, 67.5f * s)
+            close()
+            fillType = PathFillType.EvenOdd
+        }
+        drawPath(outer, gold)
+        }
     }
 }
 
+/** "DASH AI" set in spaced capitals; "AI" carries the gold accent. */
 @Composable
-fun GoldButton(
+fun BrandWordmark(modifier: Modifier = Modifier, fontSize: TextUnit = 15.sp, onDark: Boolean = false) {
+    val c = DashTheme.colors
+    val ink = if (onDark) c.brandInk else c.ink
+    Text(
+        buildAnnotatedString {
+            withStyle(SpanStyle(color = ink, fontWeight = FontWeight.SemiBold)) { append("DASH") }
+            withStyle(SpanStyle(color = if (onDark) c.accent else c.accentInk, fontWeight = FontWeight.Medium)) { append(" AI") }
+        },
+        modifier = modifier.semantics { contentDescription = "DASH AI" },
+        fontSize = fontSize,
+        letterSpacing = (fontSize.value * 0.22f).sp,
+        maxLines = 1,
+    )
+}
+
+/** Initials in a soft circle; used for the account entry point. */
+@Composable
+fun Avatar(initials: String?, contentDescription: String, onClick: (() -> Unit)?, modifier: Modifier = Modifier) {
+    val c = DashTheme.colors
+    Box(
+        modifier
+            .size(Sizing.minTouch)
+            .clip(CircleShape)
+            .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClickLabel = contentDescription, onClick = onClick) else Modifier)
+            .semantics { this.contentDescription = contentDescription },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier.size(Sizing.avatar).clip(CircleShape).background(c.accentContainer).border(1.dp, c.outline, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (initials != null) {
+                Text(initials, style = MaterialTheme.typography.labelLarge, color = c.ink)
+            } else {
+                Icon(Icons.Rounded.Info, contentDescription = null, tint = c.inkSecondary, modifier = Modifier.size(Sizing.iconSmall))
+            }
+        }
+    }
+}
+
+// ---- Buttons -----------------------------------------------------------------------------------
+
+/** The one primary action on a screen: champagne gold, charcoal label. */
+@Composable
+fun PrimaryButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    loading: Boolean = false,
+    icon: ImageVector? = null,
+) {
+    val c = DashTheme.colors
+    androidx.compose.material3.Button(
+        onClick = onClick,
+        enabled = enabled && !loading,
+        modifier = modifier.heightIn(min = Sizing.buttonHeight),
+        shape = Radii.pill,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = c.accent,
+            contentColor = c.onAccent,
+            disabledContainerColor = c.surfaceMuted,
+            disabledContentColor = c.inkTertiary,
+        ),
+        contentPadding = PaddingValues(horizontal = Spacing.xl, vertical = Spacing.md),
+        elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp, pressedElevation = 0.dp),
+    ) {
+        if (loading) {
+            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = c.inkSecondary)
+            Spacer(Modifier.width(Spacing.sm))
+        } else if (icon != null) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(Sizing.icon))
+            Spacer(Modifier.width(Spacing.sm))
+        }
+        Text(text, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** A secondary action: outlined, neutral. */
+@Composable
+fun SecondaryButton(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     icon: ImageVector? = null,
+    destructive: Boolean = false,
 ) {
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        modifier = modifier.heightIn(min = 52.dp),
-        shape = RoundedCornerShape(14.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = DashColors.Gold,
-            contentColor = DashColors.Black,
-            disabledContainerColor = DashColors.SurfaceHighest,
-            disabledContentColor = DashColors.GreyDim,
-        ),
-        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 14.dp),
-    ) {
-        if (icon != null) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
-        }
-        Text(text, style = MaterialTheme.typography.labelLarge)
-    }
-}
-
-@Composable
-fun QuietButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+    val c = DashTheme.colors
+    val ink = if (destructive) c.error else c.ink
     OutlinedButton(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier.heightIn(min = 52.dp),
-        shape = RoundedCornerShape(14.dp),
-        border = BorderStroke(1.dp, DashColors.Outline),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = DashColors.White),
+        modifier = modifier.heightIn(min = Sizing.minTouch),
+        shape = Radii.pill,
+        border = BorderStroke(1.dp, if (enabled) c.outlineStrong else c.outline),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = ink, disabledContentColor = c.inkTertiary),
+        contentPadding = PaddingValues(horizontal = Spacing.lg, vertical = Spacing.sm),
     ) {
-        Text(text, style = MaterialTheme.typography.labelLarge)
+        if (icon != null) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(Spacing.sm))
+        }
+        Text(text, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
-/** Marks simulated content everywhere it appears. */
+/** A quiet text action. */
 @Composable
-fun DemoBadge(modifier: Modifier = Modifier, text: String = "DEMO") {
-    Surface(
+fun TextAction(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, destructive: Boolean = false) {
+    val c = DashTheme.colors
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.heightIn(min = Sizing.minTouch),
+        colors = ButtonDefaults.textButtonColors(contentColor = if (destructive) c.error else c.accentInk),
+    ) { Text(text, style = MaterialTheme.typography.labelLarge) }
+}
+
+// ---- Inputs ------------------------------------------------------------------------------------
+
+@Composable
+fun DashTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    placeholder: String? = null,
+    error: String? = null,
+    supporting: String? = null,
+    singleLine: Boolean = true,
+    enabled: Boolean = true,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
+    visualTransformation: VisualTransformation = VisualTransformation.None,
+    leading: (@Composable () -> Unit)? = null,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    val c = DashTheme.colors
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier.fillMaxWidth(),
+        label = { Text(label) },
+        placeholder = placeholder?.let { { Text(it, color = c.inkTertiary) } },
+        isError = error != null,
+        supportingText = (error ?: supporting)?.let { { Text(it) } },
+        singleLine = singleLine,
+        enabled = enabled,
+        keyboardOptions = keyboardOptions,
+        keyboardActions = keyboardActions,
+        visualTransformation = visualTransformation,
+        leadingIcon = leading,
+        trailingIcon = trailing,
+        shape = Radii.md,
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = c.accentInk,
+            unfocusedBorderColor = c.fieldOutline,
+            focusedLabelColor = c.accentInk,
+            unfocusedLabelColor = c.inkSecondary,
+            cursorColor = c.accentInk,
+            focusedContainerColor = c.surface,
+            unfocusedContainerColor = c.surface,
+            errorBorderColor = c.error,
+            errorLabelColor = c.error,
+            errorSupportingTextColor = c.error,
+            focusedSupportingTextColor = c.inkSecondary,
+            unfocusedSupportingTextColor = c.inkSecondary,
+        ),
+    )
+}
+
+// ---- Structure ---------------------------------------------------------------------------------
+
+/** Centres content and caps its width so long lines stay readable on tablets and in landscape. */
+@Composable
+fun ContentWidth(modifier: Modifier = Modifier, maxWidth: Dp = Sizing.maxContentWidth, content: @Composable BoxScope.() -> Unit) {
+    Box(modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+        Box(Modifier.widthIn(max = maxWidth).fillMaxWidth(), content = content)
+    }
+}
+
+/** The standard top bar: back or menu on the left, a calm title, actions on the right. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DashTopBar(
+    title: String,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    onBack: (() -> Unit)? = null,
+    navigationIcon: (@Composable () -> Unit)? = null,
+    titleContent: (@Composable () -> Unit)? = null,
+    actions: @Composable RowScope.() -> Unit = {},
+) {
+    val c = DashTheme.colors
+    TopAppBar(
         modifier = modifier,
-        shape = RoundedCornerShape(6.dp),
-        color = DashColors.GoldContainer,
-        border = BorderStroke(1.dp, DashColors.GoldDeep),
-    ) {
-        Text(
-            text,
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-            style = MaterialTheme.typography.labelSmall,
-            color = DashColors.GoldLight,
-        )
+        title = {
+            if (titleContent != null) {
+                titleContent()
+            } else {
+                Column {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = c.ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.semantics { heading() },
+                    )
+                    if (subtitle != null) Text(subtitle, style = MaterialTheme.typography.bodySmall, color = c.inkTertiary, maxLines = 1)
+                }
+            }
+        },
+        navigationIcon = {
+            when {
+                navigationIcon != null -> navigationIcon()
+                onBack != null -> IconButton(onClick = onBack) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = c.ink)
+                }
+            }
+        },
+        actions = actions,
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = c.background,
+            scrolledContainerColor = c.background,
+            titleContentColor = c.ink,
+            navigationIconContentColor = c.ink,
+            actionIconContentColor = c.ink,
+        ),
+    )
+}
+
+/** A subtle card: white (or raised charcoal) surface, hairline outline, generous radius. */
+@Composable
+fun QuietCard(
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+    selected: Boolean = false,
+    contentPadding: PaddingValues = PaddingValues(Spacing.lg),
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val c = DashTheme.colors
+    val border = BorderStroke(1.dp, if (selected) c.accent else c.outline)
+    val color = if (selected) c.accentContainer else c.surface
+    if (onClick != null) {
+        Surface(onClick = onClick, modifier = modifier, shape = Radii.lg, color = color, border = border) {
+            Column(Modifier.padding(contentPadding), content = content)
+        }
+    } else {
+        Surface(modifier = modifier, shape = Radii.lg, color = color, border = border) {
+            Column(Modifier.padding(contentPadding), content = content)
+        }
     }
 }
 
-enum class BannerTone { INFO, WARNING, ERROR }
+@Composable
+fun SectionHeader(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelMedium,
+        color = DashTheme.colors.inkTertiary,
+        modifier = modifier.padding(top = Spacing.xl, bottom = Spacing.sm).semantics { heading() },
+    )
+}
+
+/** A group of settings rows inside one card, separated by hairlines. */
+@Composable
+fun SettingsGroup(title: String?, modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    Column(modifier) {
+        if (title != null) SectionHeader(title)
+        QuietCard(contentPadding = PaddingValues(0.dp), content = content)
+    }
+}
 
 @Composable
-fun Banner(
+fun SettingsDivider() {
+    HorizontalDivider(Modifier.padding(start = Spacing.lg), color = DashTheme.colors.outline)
+}
+
+@Composable
+fun SettingsRow(
+    title: String,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    icon: ImageVector? = null,
+    onClick: (() -> Unit)? = null,
+    destructive: Boolean = false,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    val c = DashTheme.colors
+    Row(
+        modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClick = onClick) else Modifier)
+            .padding(horizontal = Spacing.lg, vertical = Spacing.md),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (icon != null) {
+            Icon(icon, contentDescription = null, tint = if (destructive) c.error else c.inkSecondary, modifier = Modifier.size(Sizing.icon))
+            Spacer(Modifier.width(Spacing.lg))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, color = if (destructive) c.error else c.ink)
+            if (subtitle != null) Text(subtitle, style = MaterialTheme.typography.bodySmall, color = c.inkSecondary)
+        }
+        if (trailing != null) {
+            Spacer(Modifier.width(Spacing.md))
+            trailing()
+        }
+    }
+}
+
+// ---- Status ------------------------------------------------------------------------------------
+
+@Composable
+fun StatusBadge(label: StatusLabel, modifier: Modifier = Modifier) = StatusBadge(label.text, label.tone, modifier)
+
+@Composable
+fun StatusBadge(text: String, tone: StatusTone, modifier: Modifier = Modifier) {
+    val (ink, fill) = DashTheme.toneColor(DashTheme.colors, tone)
+    Row(
+        modifier.clip(Radii.pill).background(fill).padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(6.dp).clip(CircleShape).background(ink))
+        Spacer(Modifier.width(6.dp))
+        Text(text, style = MaterialTheme.typography.labelMedium, color = ink, maxLines = 1)
+    }
+}
+
+/** Marks everything simulated in Demo Mode. */
+@Composable
+fun DemoBadge(modifier: Modifier = Modifier) {
+    val c = DashTheme.colors
+    Text(
+        "DEMO",
+        modifier = modifier
+            .clip(Radii.pill)
+            .border(1.dp, c.accent, Radii.pill)
+            .padding(horizontal = 8.dp, vertical = 2.dp)
+            .semantics { contentDescription = "Demo Mode: simulated, not a real provider" },
+        style = MaterialTheme.typography.labelSmall,
+        color = c.accentInk,
+    )
+}
+
+/** An inline notice. Calm by default; warning and error tones for problems. */
+@Composable
+fun Notice(
     text: String,
     modifier: Modifier = Modifier,
-    tone: BannerTone = BannerTone.INFO,
-    icon: ImageVector? = null,
+    tone: StatusTone = StatusTone.NEUTRAL,
+    title: String? = null,
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null,
     onDismiss: (() -> Unit)? = null,
 ) {
-    val (container, border, content) = when (tone) {
-        BannerTone.INFO -> Triple(DashColors.Surface, DashColors.OutlineSoft, DashColors.Grey)
-        BannerTone.WARNING -> Triple(DashColors.GoldContainer, DashColors.GoldDeep, DashColors.GoldLight)
-        BannerTone.ERROR -> Triple(DashColors.ErrorContainer, DashColors.Error.copy(alpha = 0.5f), DashColors.White)
+    val c = DashTheme.colors
+    val (ink, fill) = DashTheme.toneColor(c, tone)
+    val icon = when (tone) {
+        StatusTone.ERROR -> Icons.Rounded.ErrorOutline
+        StatusTone.WARNING -> Icons.Rounded.WarningAmber
+        else -> Icons.Rounded.Info
     }
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        color = container,
-        border = BorderStroke(1.dp, border),
+    Row(
+        modifier.fillMaxWidth().clip(Radii.md).background(fill).padding(start = Spacing.md, top = Spacing.sm, bottom = Spacing.sm, end = Spacing.xs),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(Modifier.padding(start = 12.dp, top = 6.dp, bottom = 6.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (icon != null) {
-                Icon(icon, contentDescription = null, tint = content, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(10.dp))
-            }
-            Text(text, style = MaterialTheme.typography.bodySmall, color = content, modifier = Modifier.weight(1f).padding(vertical = 6.dp))
-            if (actionLabel != null && onAction != null) {
-                androidx.compose.material3.TextButton(onClick = onAction) {
-                    Text(actionLabel, color = DashColors.Gold, style = MaterialTheme.typography.labelMedium)
-                }
-            }
-            if (onDismiss != null) {
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Rounded.Close, contentDescription = "Dismiss", tint = content, modifier = Modifier.size(18.dp))
-                }
-            }
+        Icon(icon, contentDescription = null, tint = ink, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(Spacing.md))
+        Column(Modifier.weight(1f).padding(vertical = Spacing.xs)) {
+            if (title != null) Text(title, style = MaterialTheme.typography.titleSmall, color = c.ink)
+            Text(text, style = MaterialTheme.typography.bodySmall, color = c.inkSecondary)
+        }
+        if (actionLabel != null && onAction != null) TextAction(actionLabel, onAction)
+        if (onDismiss != null) TextAction("Dismiss", onDismiss)
+    }
+}
+
+// ---- Screen states -----------------------------------------------------------------------------
+
+@Composable
+fun EmptyState(
+    icon: ImageVector,
+    title: String,
+    message: String,
+    modifier: Modifier = Modifier,
+    action: (@Composable () -> Unit)? = null,
+) {
+    val c = DashTheme.colors
+    Column(
+        modifier.fillMaxWidth().padding(horizontal = Spacing.xl, vertical = Spacing.xxl),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(Spacing.md),
+    ) {
+        Box(Modifier.size(56.dp).clip(CircleShape).background(c.accentContainer), contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = null, tint = c.accentInk, modifier = Modifier.size(26.dp))
+        }
+        Text(title, style = MaterialTheme.typography.titleMedium, color = c.ink, textAlign = TextAlign.Center, modifier = Modifier.semantics { heading() })
+        Text(message, style = MaterialTheme.typography.bodyMedium, color = c.inkSecondary, textAlign = TextAlign.Center)
+        if (action != null) {
+            Spacer(Modifier.size(Spacing.xs))
+            action()
         }
     }
 }
 
 @Composable
-fun SectionTitle(text: String, modifier: Modifier = Modifier) {
-    Text(
-        text.uppercase(),
-        modifier = modifier.padding(top = 20.dp, bottom = 8.dp),
-        style = MaterialTheme.typography.labelMedium,
-        color = DashColors.Gold,
+fun ErrorState(title: String, message: String, modifier: Modifier = Modifier, onRetry: (() -> Unit)? = null) {
+    EmptyState(
+        icon = Icons.Rounded.ErrorOutline,
+        title = title,
+        message = message,
+        modifier = modifier,
+        action = onRetry?.let { { SecondaryButton("Try again", it) } },
     )
 }
 
 @Composable
-fun EmptyState(title: String, body: String, modifier: Modifier = Modifier, icon: ImageVector? = null) {
+fun LoadingState(label: String, modifier: Modifier = Modifier) {
+    val c = DashTheme.colors
     Column(
-        modifier = modifier.fillMaxWidth().padding(32.dp),
+        modifier.fillMaxWidth().padding(vertical = Spacing.xxl).semantics(mergeDescendants = true) {},
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(Spacing.md),
     ) {
-        if (icon != null) {
-            Box(
-                Modifier.size(56.dp).background(DashColors.SurfaceHigh, CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(icon, contentDescription = null, tint = DashColors.Gold)
-            }
-        }
-        Text(title, style = MaterialTheme.typography.titleMedium, color = DashColors.White)
-        Text(body, style = MaterialTheme.typography.bodyMedium, color = DashColors.Grey)
+        CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.5.dp, color = c.accent, trackColor = c.surfaceMuted)
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = c.inkSecondary)
     }
 }
 
 @Composable
-fun Dot(color: Color, modifier: Modifier = Modifier, size: Dp = 8.dp) {
-    Box(modifier.size(size).background(color, CircleShape))
+fun ConfirmDialog(
+    title: String,
+    text: String,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    destructive: Boolean = false,
+) {
+    val c = DashTheme.colors
+    AlertDialog(
+        modifier = modifier,
+        onDismissRequest = onDismiss,
+        containerColor = c.surface,
+        titleContentColor = c.ink,
+        textContentColor = c.inkSecondary,
+        title = { Text(title) },
+        text = { Text(text) },
+        confirmButton = { TextAction(confirmLabel, onConfirm, destructive = destructive) },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = c.inkSecondary) } },
+    )
+}
+
+/** Full-screen centred box with the screen background. */
+@Composable
+fun ScreenBackground(modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit) {
+    Box(modifier.fillMaxSize().background(DashTheme.colors.background), content = content)
 }

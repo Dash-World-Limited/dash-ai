@@ -30,6 +30,7 @@ object AuthValidation {
     fun nameError(value: String): String? = when {
         value.isBlank() -> "Enter your name."
         value.trim().length > Limits.MAX_DISPLAY_NAME_CHARS -> "Names can be up to ${Limits.MAX_DISPLAY_NAME_CHARS} characters."
+        value.trim().any { it.code < 0x20 || it.code == 0x7f } -> "Names can't contain control characters."
         else -> null
     }
 }
@@ -43,6 +44,9 @@ class AuthService(private val client: () -> DashApiClient) {
         client().call { login(LoginRequestDto(email.trim(), password)) }.toSession()
 
     suspend fun logout() = client().callNoContent { logout() }
+
+    /** Revokes every session of this account, on every device (lost phone, leaked token). */
+    suspend fun signOutEverywhere() = client().callNoContent { logoutAll() }
 
     suspend fun deleteAccount() = client().callNoContent { deleteAccount() }
 

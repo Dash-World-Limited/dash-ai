@@ -6,3 +6,5 @@ export * from "./conversations.js";
 export * from "./chat.js";
 export * from "./documents.js";
 export * from "./account.js";
+export * from "./tools.js";
+export * from "./sync.js";

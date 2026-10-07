@@ -14,10 +14,13 @@ import com.dashworldng.ai.core.model.DocumentItem
 import com.dashworldng.ai.core.model.DocumentStatus
 import com.dashworldng.ai.core.model.ModelChoice
 import com.dashworldng.ai.core.model.ProviderId
-import com.dashworldng.ai.core.remote.DashApiClient
-import com.dashworldng.ai.core.remote.UpdateConversationRequestDto
+import com.dashworldng.ai.core.presentation.Documents
+import com.dashworldng.ai.core.presentation.ProviderAvailability
+import com.dashworldng.ai.core.presentation.ProviderOptions
+import com.dashworldng.ai.core.presentation.SyncStatuses
 import com.dashworldng.ai.core.routing.SmartRouting
 import com.dashworldng.ai.core.stream.ApiException
+import com.dashworldng.ai.core.sync.ConversationSyncService
 import com.dashworldng.ai.data.settings.AccountInfo
 import com.dashworldng.ai.di.AppServices
 import com.dashworldng.ai.di.ComposerPrefill
@@ -29,6 +32,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
@@ -36,22 +40,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
-
-/** Which providers can be selected right now. */
-data class ProviderAvailability(
-    val configured: Set<ProviderId> = ProviderId.entries.toSet(),
-    val models: Map<ProviderId, String> = emptyMap(),
-    val fake: Boolean = false,
-    val loading: Boolean = false,
-    val error: String? = null,
-) {
-    fun isAvailable(choice: ModelChoice): Boolean = when (choice) {
-        ModelChoice.SMART -> configured.isNotEmpty()
-        ModelChoice.OPENAI -> ProviderId.OPENAI in configured
-        ModelChoice.CLAUDE -> ProviderId.ANTHROPIC in configured
-        ModelChoice.COMPARE -> configured.size == ProviderId.entries.size
-    }
-}
 
 /** A file in the composer: uploading, ready, or rejected with a reason. */
 data class PendingAttachment(
@@ -80,6 +68,10 @@ data class ChatUiState(
     val confirmCompare: Boolean = false,
     val notice: String? = null,
     val account: AccountInfo? = null,
+    /** Failed answers whose recovery card the user put aside ("Continue later"). */
+    val dismissedRecovery: Set<String> = emptySet(),
+    /** Plugin id → display name, for tool activity labels (empty until the registry loads). */
+    val pluginNames: Map<String, String> = emptyMap(),
 ) {
     val isGenerating: Boolean get() = session.isGenerating
     val usableAttachments: List<DocumentItem>
@@ -93,8 +85,7 @@ data class ChatUiState(
 
     companion object {
         /** Live mode can only use documents whose text the server extracted. */
-        fun usableNow(document: DocumentItem, demoMode: Boolean): Boolean =
-            if (demoMode) document.canAttach else document.status == DocumentStatus.READY && document.remoteId != null
+        fun usableNow(document: DocumentItem, demoMode: Boolean): Boolean = Documents.usableInChat(document, demoMode)
     }
 }
 
@@ -106,6 +97,8 @@ private data class LocalState(
     val providers: ProviderAvailability = ProviderAvailability(),
     val confirmCompare: Boolean = false,
     val notice: String? = null,
+    val dismissedRecovery: Set<String> = emptySet(),
+    val pluginNames: Map<String, String> = emptyMap(),
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -115,6 +108,11 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
         repository = services.conversations,
         gatewayProvider = { services.chatGateway() },
         clock = services.clock,
+        // Marks live conversations for upload, so messages written while offline reach the server later.
+        onUserMessageSaved = { conversationId ->
+            val userId = signedInUserId()
+            if (userId != null) services.syncService()?.onLocalConversationChanged(userId, conversationId)
+        },
     )
 
     private val initialSettings = services.settings.settings.value
@@ -146,14 +144,38 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
             confirmCompare = l.confirmCompare,
             notice = l.notice,
             account = settings.account,
+            dismissedRecovery = l.dismissedRecovery,
+            pluginNames = l.pluginNames,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatUiState(choice = local.value.choice, mode = local.value.mode))
 
     init {
+        // A pull must never overwrite a response that is still streaming.
+        services.syncGuard = { !session.state.value.isGenerating }
         viewModelScope.launch {
             services.settings.settings.map { it.demoMode to it.serverUrl }.distinctUntilChanged().collect { (demo, _) ->
                 if (!demo) refreshProviders()
             }
+        }
+        // After sign-in (and whenever the app starts signed in) pull the account's conversations into Room.
+        viewModelScope.launch {
+            services.settings.settings.map { s -> if (s.demoMode) null else s.account?.takeUnless { it.isDemo }?.userId }.distinctUntilChanged().collect { userId ->
+                if (userId != null) syncNow()
+            }
+        }
+        // Another account (or Demo Mode) took over: nothing of the previous one stays on screen.
+        viewModelScope.launch {
+            services.settings.settings.map { it.account?.userId to it.demoMode }.distinctUntilChanged().drop(1).collect {
+                newChat()
+                search.value = ""
+                local.update { it.copy(notice = null, pluginNames = emptyMap()) }
+                loadPluginNames()
+            }
+        }
+        // Coming back online: deliver anything written or changed while offline.
+        viewModelScope.launch {
+            // A StateFlow already emits only distinct values.
+            services.connectivity.isOnline.collect { online -> if (online) syncNow() }
         }
         viewModelScope.launch {
             services.prefill.pending.filterNotNull().collect {
@@ -167,18 +189,29 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
         local.update { it.copy(providers = it.providers.copy(loading = true, error = null)) }
         viewModelScope.launch {
             val result = try {
-                val response = auth.providers()
-                val statuses = response.providers.mapNotNull { p -> ProviderId.fromWire(p.id)?.let { it to p } }
-                ProviderAvailability(
-                    configured = statuses.filter { it.second.configured }.map { it.first }.toSet(),
-                    models = statuses.mapNotNull { (id, p) -> p.model?.let { id to it } }.toMap(),
-                    fake = statuses.any { it.second.mode == "fake" },
-                )
+                ProviderAvailability.from(auth.providers())
             } catch (e: ApiException) {
                 // Keep every choice selectable; sending will report the problem clearly.
                 ProviderAvailability(error = e.error.message)
             }
             local.update { it.copy(providers = result) }
+        }
+        loadPluginNames()
+    }
+
+    /** Names for tool activity labels. Best effort: without them labels fall back to the plugin id. */
+    private fun loadPluginNames() {
+        val tools = services.toolsService() ?: return
+        if (signedInUserId() == null) return
+        viewModelScope.launch {
+            try {
+                val names = tools.plugins().plugins.associate { it.id to it.name }
+                local.update { it.copy(pluginNames = names) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Labels still work without names.
+            }
         }
     }
 
@@ -190,16 +223,60 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
         local.update { it.copy(mode = mode) }
     }
 
+    /**
+     * Picks the provider for the next messages. Refused while an answer streams (switching never
+     * interrupts one) or when the server has not configured it. The choice is remembered.
+     */
     fun selectChoice(choice: ModelChoice) {
+        val s = state.value
+        if (!ProviderOptions.canSwitch(choice, s.providers, s.demoMode, s.isGenerating)) return
         if (choice == ModelChoice.COMPARE && local.value.choice != ModelChoice.COMPARE) {
             local.update { it.copy(confirmCompare = true) }
         } else {
-            local.update { it.copy(choice = choice) }
+            applyChoice(choice)
         }
     }
 
     fun confirmCompare(accepted: Boolean) {
-        local.update { it.copy(confirmCompare = false, choice = if (accepted) ModelChoice.COMPARE else it.choice) }
+        local.update { it.copy(confirmCompare = false) }
+        if (accepted) applyChoice(ModelChoice.COMPARE)
+    }
+
+    private fun applyChoice(choice: ModelChoice) {
+        local.update { it.copy(choice = choice) }
+        viewModelScope.launch { services.settings.update { it.copy(defaultModelChoice = choice) } }
+    }
+
+    /** Recovery: ask the same provider again. */
+    fun retryAnswer(messageId: String) {
+        local.update { it.copy(dismissedRecovery = it.dismissedRecovery - messageId) }
+        session.regenerate(messageId)
+    }
+
+    /** Recovery: the user explicitly picks another provider for this answer and the next ones. */
+    fun answerWith(messageId: String, provider: ProviderId) {
+        val choice = ModelChoice.forProvider(provider)
+        if (!state.value.demoMode && !state.value.providers.isAvailable(choice)) return
+        if (session.regenerate(messageId, choice)) applyChoice(choice)
+    }
+
+    /** Recovery: keep the failed answer as it is; the conversation is saved and can be resumed. */
+    fun continueLater(messageId: String) {
+        local.update { it.copy(dismissedRecovery = it.dismissedRecovery + messageId) }
+    }
+
+    /** Starts a fresh chat in [mode], optionally with text ready in the composer (Home quick actions). */
+    fun startChat(mode: AssistantMode, text: String = "") {
+        newChat()
+        local.update { it.copy(mode = mode, composer = text) }
+    }
+
+    /** Home's prompt field: a new chat that sends right away. */
+    fun sendFromHome(text: String) {
+        if (text.isBlank()) return
+        newChat()
+        local.update { it.copy(composer = text.take(Limits.MAX_MESSAGE_CHARS), mode = AssistantMode.GENERAL) }
+        send()
     }
 
     fun useSuggestion(text: String) {
@@ -241,7 +318,7 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
         session.newChat()
         uploads.values.forEach { it.cancel() }
         uploads.clear()
-        local.update { it.copy(composer = "", attachments = emptyList()) }
+        local.update { it.copy(composer = "", attachments = emptyList(), dismissedRecovery = emptySet()) }
     }
 
     fun openConversation(id: String) {
@@ -262,7 +339,7 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
         viewModelScope.launch {
             services.conversations.renameConversation(id, clean)
             session.onConversationRenamed(id, clean)
-            remote { call { this.renameConversation(id, UpdateConversationRequestDto(clean)) } }
+            viewModelScope.launch { syncRemote { onLocalRename(it, id, clean) } }
         }
     }
 
@@ -270,7 +347,7 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
         viewModelScope.launch {
             if (session.state.value.conversation?.id == id) newChat()
             services.conversations.deleteConversation(id)
-            remote { callNoContent { this.deleteConversation(id) } }
+            viewModelScope.launch { syncRemote { onLocalDelete(it, id) } }
             notice("Conversation deleted")
         }
     }
@@ -325,10 +402,47 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
         if (prefill.sendNow) send()
     }
 
-    /** Mirrors history changes to the server for signed-in users; failures are ignored (local-first). */
-    private fun remote(block: suspend DashApiClient.() -> Unit) {
-        if (services.settings.settings.value.demoMode) return
-        val client = services.apiClient() ?: return
-        viewModelScope.launch { runCatching { client.block() } }
+    private fun signedInUserId(): String? {
+        val settings = services.settings.settings.value
+        return if (settings.demoMode) null else settings.account?.takeUnless { it.isDemo }?.userId
+    }
+
+    /**
+     * Pulls the account's conversations from the server into Room (see ConversationSyncService for the
+     * merge rules). Offline or failing syncs are silent: Room keeps working as the local cache.
+     */
+    fun syncNow() {
+        val userId = signedInUserId() ?: return
+        val sync = services.syncService() ?: return
+        viewModelScope.launch {
+            services.syncTracker.started(userId)
+            try {
+                val result = sync.sync(userId)
+                if (result.deferred) services.syncTracker.deferred(userId) else services.syncTracker.succeeded(userId)
+                val open = session.state.value.conversation?.id
+                // The open conversation was deleted on another device: leave it instead of resurrecting it.
+                if (open != null && open in result.deletedIds) newChat()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: ApiException) {
+                // Offline, server down or an unexpected response: shown as a sync issue, retried at the next sync.
+                services.syncTracker.failed(userId, SyncStatuses.messageFor(e.error))
+            } catch (e: Exception) {
+                services.syncTracker.failed(userId, SyncStatuses.messageFor(com.dashworldng.ai.core.stream.ApiError.unexpected))
+            }
+        }
+    }
+
+    /** Mirrors a local rename/delete to the server; if that fails it is remembered and retried at the next sync. */
+    private suspend fun syncRemote(block: suspend ConversationSyncService.(String) -> Unit) {
+        val userId = signedInUserId() ?: return
+        val sync = services.syncService() ?: return
+        try {
+            sync.block(userId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Local-first: the change is already applied on this device.
+        }
     }
 }

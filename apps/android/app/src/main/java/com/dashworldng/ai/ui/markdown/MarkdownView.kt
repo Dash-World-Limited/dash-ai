@@ -28,6 +28,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.layout.Layout
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,7 +55,7 @@ import com.dashworldng.ai.core.markdown.Markdown
 import com.dashworldng.ai.core.markdown.MdAlign
 import com.dashworldng.ai.core.markdown.MdBlock
 import com.dashworldng.ai.core.markdown.MdSpan
-import com.dashworldng.ai.ui.theme.DashColors
+import com.dashworldng.ai.ui.theme.DashTheme
 
 /** Renders assistant Markdown: headings, lists, tables, quotes, links and code blocks. */
 @Composable
@@ -76,9 +81,9 @@ private fun MarkdownBlock(block: MdBlock, textStyle: TextStyle, onCopied: (Strin
                 2 -> MaterialTheme.typography.titleLarge
                 else -> MaterialTheme.typography.titleMedium
             },
-            color = if (block.level <= 2) DashColors.GoldLight else DashColors.White,
+            color = DashTheme.colors.ink,
         )
-        is MdBlock.Paragraph -> Text(inline(block.spans), style = textStyle, color = DashColors.White)
+        is MdBlock.Paragraph -> Text(inline(block.spans), style = textStyle, color = DashTheme.colors.ink)
         is MdBlock.CodeBlock -> CodeBlockView(block, onCopied)
         is MdBlock.ListBlock -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             block.items.forEach { item ->
@@ -89,18 +94,18 @@ private fun MarkdownBlock(block: MdBlock, textStyle: TextStyle, onCopied: (Strin
                         item.ordered -> "${item.number}."
                         else -> "•"
                     }
-                    Text(marker, style = textStyle, color = DashColors.Gold, modifier = Modifier.width(24.dp))
-                    Text(inline(item.spans), style = textStyle, color = DashColors.White)
+                    Text(marker, style = textStyle, color = DashTheme.colors.accentInk, modifier = Modifier.width(24.dp))
+                    Text(inline(item.spans), style = textStyle, color = DashTheme.colors.ink)
                 }
             }
         }
         is MdBlock.Quote -> Row(Modifier.height(IntrinsicSize.Min)) {
-            Box(Modifier.width(3.dp).fillMaxHeight().background(DashColors.Gold, RoundedCornerShape(2.dp)))
+            Box(Modifier.width(3.dp).fillMaxHeight().background(DashTheme.colors.accentInk, RoundedCornerShape(2.dp)))
             Spacer(Modifier.width(12.dp))
-            Text(inline(block.spans), style = textStyle.copy(fontStyle = FontStyle.Italic), color = DashColors.Grey)
+            Text(inline(block.spans), style = textStyle.copy(fontStyle = FontStyle.Italic), color = DashTheme.colors.inkSecondary)
         }
         is MdBlock.Table -> TableView(block, textStyle)
-        MdBlock.Rule -> HorizontalDivider(color = DashColors.Outline)
+        MdBlock.Rule -> HorizontalDivider(color = DashTheme.colors.outlineStrong)
     }
 }
 
@@ -109,32 +114,32 @@ private fun CodeBlockView(block: MdBlock.CodeBlock, onCopied: (String) -> Unit) 
     val clipboard = LocalClipboardManager.current
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = DashColors.CodeBackground,
-        border = BorderStroke(1.dp, DashColors.Outline),
+        color = DashTheme.colors.codeBackground,
+        border = BorderStroke(1.dp, DashTheme.colors.outlineStrong),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column {
             Row(
-                Modifier.fillMaxWidth().background(DashColors.SurfaceHigh).padding(start = 12.dp),
+                Modifier.fillMaxWidth().background(DashTheme.colors.surfaceMuted).padding(start = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     text = block.language ?: "code",
                     style = MaterialTheme.typography.labelMedium,
-                    color = DashColors.Gold,
+                    color = DashTheme.colors.accentInk,
                     modifier = Modifier.weight(1f),
                 )
                 IconButton(onClick = {
                     clipboard.setText(AnnotatedString(block.code))
                     onCopied("Code copied")
                 }) {
-                    Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy code", tint = DashColors.Grey, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Rounded.ContentCopy, contentDescription = "Copy code", tint = DashTheme.colors.inkSecondary, modifier = Modifier.size(18.dp))
                 }
             }
             Text(
                 text = block.code,
                 style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                color = DashColors.White,
+                color = DashTheme.colors.ink,
                 softWrap = false,
                 modifier = Modifier.horizontalScroll(rememberScrollState()).padding(12.dp),
             )
@@ -142,65 +147,86 @@ private fun CodeBlockView(block: MdBlock.CodeBlock, onCopied: (String) -> Unit) 
     }
 }
 
+/**
+ * A grid table: every column is as wide as its widest cell (within 96–240 dp), so cells line up;
+ * wide tables scroll horizontally instead of squeezing the text.
+ */
 @Composable
 private fun TableView(table: MdBlock.Table, textStyle: TextStyle) {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-    ) {
-        Column(Modifier.border(1.dp, DashColors.Outline, RoundedCornerShape(10.dp))) {
-            TableRow(table.header, table.alignments, textStyle, header = true)
-            table.rows.forEach { row ->
-                HorizontalDivider(color = DashColors.OutlineSoft)
-                TableRow(row, table.alignments, textStyle, header = false)
+    val c = DashTheme.colors
+    val columns = maxOf(table.header.size, table.rows.maxOfOrNull { it.size } ?: 0)
+    val rows = listOf(table.header) + table.rows
+    Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+        Layout(
+            modifier = Modifier.border(1.dp, c.outlineStrong, RoundedCornerShape(10.dp)).clip(RoundedCornerShape(10.dp)),
+            content = {
+                rows.forEachIndexed { r, cells ->
+                    for (col in 0 until columns) {
+                        val header = r == 0
+                        Text(
+                            text = inline(cells.getOrNull(col).orEmpty()),
+                            style = textStyle.copy(fontWeight = if (header) FontWeight.SemiBold else textStyle.fontWeight),
+                            color = c.ink,
+                            textAlign = when (table.alignments.getOrNull(col)) {
+                                MdAlign.CENTER -> TextAlign.Center
+                                MdAlign.END -> TextAlign.End
+                                else -> TextAlign.Start
+                            },
+                            modifier = Modifier
+                                .background(if (header) c.surfaceMuted else c.surface)
+                                .drawBehind { if (r > 0) drawLine(c.outline, Offset(0f, 0f), Offset(size.width, 0f), 1.dp.toPx()) }
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                    }
+                }
+            },
+        ) { measurables, _ ->
+            val min = 96.dp.roundToPx()
+            val max = 240.dp.roundToPx()
+            val widths = IntArray(columns) { col ->
+                rows.indices.maxOf { r -> measurables[r * columns + col].maxIntrinsicWidth(Int.MAX_VALUE) }.coerceIn(min, max)
+            }
+            // Each cell is measured once, at its column's width and its row's tallest height.
+            val heights = IntArray(rows.size) { r -> (0 until columns).maxOf { col -> measurables[r * columns + col].minIntrinsicHeight(widths[col]) } }
+            val remeasured = measurables.mapIndexed { i, m -> m.measure(Constraints.fixed(widths[i % columns], heights[i / columns])) }
+            layout(widths.sum(), heights.sum()) {
+                var y = 0
+                for (r in rows.indices) {
+                    var x = 0
+                    for (col in 0 until columns) {
+                        remeasured[r * columns + col].place(x, y)
+                        x += widths[col]
+                    }
+                    y += heights[r]
+                }
             }
         }
     }
 }
 
 @Composable
-private fun TableRow(cells: List<List<MdSpan>>, alignments: List<MdAlign>, textStyle: TextStyle, header: Boolean) {
-    Row(
-        Modifier
-            .height(IntrinsicSize.Min)
-            .background(if (header) DashColors.SurfaceHigh else DashColors.Black),
-    ) {
-        cells.forEachIndexed { index, cell ->
-            Text(
-                text = inline(cell),
-                style = textStyle.copy(fontWeight = if (header) FontWeight.SemiBold else textStyle.fontWeight),
-                color = if (header) DashColors.GoldLight else DashColors.White,
-                textAlign = when (alignments.getOrNull(index)) {
-                    MdAlign.CENTER -> TextAlign.Center
-                    MdAlign.END -> TextAlign.End
-                    else -> TextAlign.Start
-                },
-                modifier = Modifier
-                    .widthIn(min = 96.dp, max = 240.dp)
-                    .fillMaxHeight()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-            )
-        }
-    }
+private fun inline(spans: List<MdSpan>): AnnotatedString {
+    val codeBackground = DashTheme.colors.surfaceSelected
+    val accent = DashTheme.colors.accentInk
+    return remember(spans, codeBackground, accent) { inlineText(spans, codeBackground, accent) }
 }
 
-private fun inline(spans: List<MdSpan>): AnnotatedString = buildAnnotatedString {
+private fun inlineText(spans: List<MdSpan>, codeBackground: androidx.compose.ui.graphics.Color, accent: androidx.compose.ui.graphics.Color): AnnotatedString = buildAnnotatedString {
     spans.forEach { span ->
         val style = SpanStyle(
             fontWeight = if (span.bold) FontWeight.Bold else null,
             fontStyle = if (span.italic) FontStyle.Italic else null,
             fontFamily = if (span.code) FontFamily.Monospace else null,
-            background = if (span.code) DashColors.SurfaceHighest else androidx.compose.ui.graphics.Color.Unspecified,
+            background = if (span.code) codeBackground else androidx.compose.ui.graphics.Color.Unspecified,
             textDecoration = if (span.strike) TextDecoration.LineThrough else null,
-            color = if (span.code) DashColors.GoldLight else androidx.compose.ui.graphics.Color.Unspecified,
+            color = if (span.code) accent else androidx.compose.ui.graphics.Color.Unspecified,
         )
         val link = span.link
         if (link != null) {
             withLink(
                 LinkAnnotation.Url(
                     url = link,
-                    styles = TextLinkStyles(style = SpanStyle(color = DashColors.Gold, textDecoration = TextDecoration.Underline)),
+                    styles = TextLinkStyles(style = SpanStyle(color = accent, textDecoration = TextDecoration.Underline)),
                 ),
             ) {
                 withStyle(style) { append(span.text) }

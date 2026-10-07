@@ -17,7 +17,7 @@ enum class AssistantMode(
         wire = "general",
         label = "General",
         tagline = "Everyday questions, ideas and conversation.",
-        composerHint = "Ask Dash AI anything…",
+        composerHint = "Ask DASH AI anything…",
         suggestions = listOf(
             "Explain a complex topic to me in simple terms",
             "Help me plan my week around three priorities",

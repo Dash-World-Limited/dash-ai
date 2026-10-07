@@ -1,5 +1,23 @@
-import type { Conversation, ConversationMessage, DocumentResponse, UsageRecord, User } from "@dash-ai/contracts";
-import type { ConversationRecord, DocumentRecord, MessageRecord, UsageRow, UserRecord } from "../store/store.js";
+import type {
+  Conversation,
+  ConversationMessage,
+  DocumentResponse,
+  PluginSetting,
+  SyncChange,
+  ToolActivity,
+  UsageRecord,
+  User,
+} from "@dash-ai/contracts";
+import type {
+  ConversationChange,
+  ConversationRecord,
+  DocumentSummary,
+  MessageRecord,
+  PluginSettingRecord,
+  ToolInvocationRow,
+  UsageRow,
+  UserRecord,
+} from "../store/store.js";
 
 export const toUser = (u: UserRecord): User => ({
   id: u.id,
@@ -28,7 +46,7 @@ export const toMessage = (m: MessageRecord): ConversationMessage => ({
   createdAt: m.createdAt,
 });
 
-export const toDocument = (d: DocumentRecord): DocumentResponse => ({
+export const toDocument = (d: DocumentSummary): DocumentResponse => ({
   id: d.id,
   name: d.name,
   kind: d.kind,
@@ -36,7 +54,7 @@ export const toDocument = (d: DocumentRecord): DocumentResponse => ({
   sizeBytes: d.sizeBytes,
   status: d.status,
   statusDetail: d.statusDetail,
-  extractedChars: d.extractedText.length,
+  extractedChars: d.extractedChars,
   pageCount: d.pageCount,
   createdAt: d.createdAt,
 });
@@ -50,4 +68,32 @@ export const toUsage = (u: UsageRow): UsageRecord => ({
   inputTokens: u.inputTokens,
   outputTokens: u.outputTokens,
   createdAt: u.createdAt,
+});
+
+export const toToolActivity = (t: ToolInvocationRow): ToolActivity => ({
+  conversationId: t.conversationId,
+  messageId: t.messageId,
+  callId: t.callId,
+  provider: t.provider,
+  plugin: t.plugin,
+  tool: t.tool,
+  status: t.status,
+  durationMs: t.durationMs,
+  argBytes: t.argBytes,
+  resultChars: t.resultChars,
+  createdAt: t.createdAt,
+});
+
+export const toPluginSetting = (s: PluginSettingRecord): PluginSetting => ({
+  pluginId: s.pluginId,
+  enabled: s.enabled,
+  grantedScopes: s.grantedScopes,
+  updatedAt: s.updatedAt,
+});
+
+export const toSyncChange = (c: ConversationChange): SyncChange => ({
+  seq: c.seq,
+  deleted: c.deleted,
+  conversation: { ...toConversation(c.conversation), titleIsCustom: c.conversation.titleIsCustom, titleRev: c.titleRev },
+  messages: c.messages.map(toMessage),
 });

@@ -1,3 +1,6 @@
+# Fast verification on every push and pull request. Each job is isolated so a failure points at
+# one layer. The Android app module runs in android.yml (path-filtered); release builds only in
+# release.yml (manual).
 name: CI
 
 on:
@@ -36,8 +39,22 @@ jobs:
           /tmp/gitleaks detect --source . --config .gitleaks.toml --redact --no-banner
           /tmp/gitleaks detect --no-git --source . --config .gitleaks.toml --redact --no-banner
 
-  api:
-    name: API and contracts (lint, typecheck, tests)
+  workflows:
+    name: Workflow lint (actionlint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint (pinned release)
+        env:
+          ACTIONLINT_VERSION: 1.7.7
+        run: |
+          curl -sSfL -o /tmp/actionlint.tgz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
+          /tmp/actionlint -color
+
+  backend:
+    name: Backend and web (lint, typecheck, unit + API tests on the in-memory store, build)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -50,13 +67,84 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
-      - run: pnpm test
+      - name: Contract and API tests (PostgreSQL tests are skipped here and run in the next job)
+        run: pnpm test
       - run: pnpm build
+      - name: The live smoke command stays a no-op unless explicitly enabled
+        run: pnpm smoke:live
 
-  android-core:
-    name: Android core (pure Kotlin) + live API contract tests
+  postgres:
+    name: PostgreSQL + Redis integration (store contract, encryption, shared rate limits, whole API suite, migrations from zero)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      # Throwaway Redis for the shared rate-limit tests. No password: it only exists for this job.
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      # Throwaway database for this job only. Trust auth: no password exists anywhere.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: dash_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/dash_test
+      # A missing database must fail the job, not silently skip the PostgreSQL tests.
+      REQUIRE_DB_TESTS: "1"
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+      REQUIRE_REDIS_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Whole API suite on PostgreSQL and Redis (store contract, encryption, restart and shared rate-limit tests)
+        run: pnpm --filter @dash-ai/api test:pg
+      - name: Migrations from zero, twice, then encryption maintenance, through the built CLIs
+        run: |
+          psql "postgres://postgres@127.0.0.1:5432/postgres" -c "CREATE DATABASE dash_fresh"
+          export DATABASE_URL=postgres://postgres@127.0.0.1:5432/dash_fresh
+          DATA_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+          export DATA_ENCRYPTION_KEY
+          node apps/api/dist/migrate-cli.js
+          node apps/api/dist/migrate-cli.js
+          node apps/api/dist/data-cli.js
+
+  kotlin-core:
+    name: Kotlin core (pure Kotlin) + live contract tests against the API on PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: dash_live
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -69,12 +157,18 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - name: Start the API with fake providers
+      - name: Start the API (fake providers, PostgreSQL store, key generated for this run only)
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-          PROVIDER_MODE=fake PORT=8787 FAKE_STREAM_DELAY_MS=2 LOG_LEVEL=warn node apps/api/dist/index.js > /tmp/api.log 2>&1 &
-          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8787/health && break; sleep 1; done
+          export DATABASE_URL=postgres://postgres@127.0.0.1:5432/dash_live
+          DATA_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+          export DATA_ENCRYPTION_KEY
+          # Every live contract test signs up a fresh account from one IP, so the CI-only server
+          # allows more sign-ins per minute than the production default (10).
+          PROVIDER_MODE=fake PORT=8787 FAKE_STREAM_DELAY_MS=2 LOG_LEVEL=warn RATE_LIMIT_AUTH_PER_MINUTE=60 node apps/api/dist/index.js > /tmp/api.log 2>&1 &
+          for _ in $(seq 1 30); do curl -sf http://127.0.0.1:8787/health && break; sleep 1; done
+          curl -sf http://127.0.0.1:8787/health
       - name: Core unit, contract and live contract tests
         working-directory: apps/android/core
         env:
@@ -87,48 +181,67 @@ jobs:
           name: core-test-reports
           path: apps/android/core/build/reports/tests/
           if-no-files-found: ignore
+          retention-days: 7
       - name: API log
         if: failure()
         run: cat /tmp/api.log || true
 
-  android-app:
-    name: Android app (build, lint, Compose UI tests, APK)
+  web-e2e:
+    name: Web app in Chromium against the real API (fake providers, PostgreSQL) + screenshots
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: dash_web
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
         with:
-          distribution: temurin
-          java-version: 17
-      - uses: gradle/actions/setup-gradle@v4
-      - uses: android-actions/setup-android@v3
-        with:
-          # The legacy "tools" package in the action's default list no longer exists.
-          packages: "platform-tools platforms;android-35 build-tools;35.0.0"
-      - name: Build debug APK
-        working-directory: apps/android
-        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
-      - name: Robolectric Compose UI and unit tests
-        working-directory: apps/android
-        run: ./gradlew :app:testDebugUnitTest --no-daemon
-      - name: Android lint
-        working-directory: apps/android
-        run: ./gradlew :app:lintDebug --no-daemon
-      - name: Check the APK contains no provider keys or endpoints
-        run: scripts/check-apk.sh apps/android/app/build/outputs/apk/debug/app-debug.apk
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: dash-ai-debug-apk
-          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-      - name: Upload app test and lint reports
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Install Chromium for Playwright
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+      - name: Start the API (fake providers) and the built web app
+        run: |
+          export DATABASE_URL=postgres://postgres@127.0.0.1:5432/dash_web
+          DATA_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+          export DATA_ENCRYPTION_KEY
+          node apps/api/dist/migrate-cli.js
+          PROVIDER_MODE=fake PORT=8787 FAKE_STREAM_DELAY_MS=5 LOG_LEVEL=warn RATE_LIMIT_AUTH_PER_MINUTE=100 node apps/api/dist/index.js > /tmp/api.log 2>&1 &
+          (cd apps/web && npx vite preview --host 127.0.0.1 --port 4173 > /tmp/web.log 2>&1 &)
+          for _ in $(seq 1 30); do curl -sf http://127.0.0.1:4173/health && break; sleep 1; done
+          curl -sf http://127.0.0.1:4173/health
+      - name: End-to-end tests (phone and desktop sizes)
+        working-directory: apps/web
+        env:
+          DASH_SHOTS_DIR: ${{ github.workspace }}/apps/web/test-results/screenshots
+        run: |
+          mkdir -p "$DASH_SHOTS_DIR"
+          npx playwright test
+      - name: Upload screenshots and the Playwright report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: android-app-reports
+          name: web-e2e-report
           path: |
-            apps/android/app/build/reports/
-            apps/android/app/build/test-results/
+            apps/web/test-results/
+            apps/web/playwright-report/
           if-no-files-found: ignore
+          retention-days: 7
+      - name: API log
+        if: failure()
+        run: cat /tmp/api.log /tmp/web.log || true

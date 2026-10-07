@@ -10,6 +10,9 @@ import com.dashworldng.ai.core.model.FinishReason
 import com.dashworldng.ai.core.model.MessageRole
 import com.dashworldng.ai.core.model.MessageStatus
 import com.dashworldng.ai.core.model.ModelChoice
+import com.dashworldng.ai.core.model.AnswerRecovery
+import com.dashworldng.ai.core.model.ToolCallStatus
+import com.dashworldng.ai.core.model.ToolUse
 import com.dashworldng.ai.core.routing.ContextBuilder
 import com.dashworldng.ai.core.stream.ApiError
 import com.dashworldng.ai.core.stream.ApiException
@@ -35,6 +38,13 @@ data class ChatSessionState(
     val activeStreamId: String? = null,
     /** A request-level failure (e.g. offline, provider not configured). Per-answer failures live on messages. */
     val error: ApiError? = null,
+    /**
+     * Tools each answer used in this session (message id → calls, in order). Metadata only, kept in
+     * memory: a reopened conversation shows its text, not its past tool activity.
+     */
+    val toolUses: Map<String, List<ToolUse>> = emptyMap(),
+    /** Recovery options for answers that failed in this session (message id → options from the server). */
+    val recovery: Map<String, AnswerRecovery> = emptyMap(),
 ) {
     val isEmpty: Boolean get() = messages.isEmpty()
     val lastUserMessage: ChatMessage? get() = messages.lastOrNull { it.isUser }
@@ -53,6 +63,11 @@ class ChatSession(
     private val gatewayProvider: () -> ChatGateway,
     clock: Clock = Clock.System,
     private val ids: IdGenerator = IdGenerator.Uuid,
+    /**
+     * Called after a live (non-demo) user message is saved locally, so sync can upload it if the request
+     * never reaches the server. Failures are the callback's own business and never affect the chat.
+     */
+    private val onUserMessageSaved: suspend (conversationId: String) -> Unit = {},
 ) {
     private val time = MonotonicClock(clock)
     private val _state = MutableStateFlow(ChatSessionState())
@@ -188,7 +203,15 @@ class ChatSession(
         // Same id and timestamp: the API replaces the message and everything after it.
         val updatedUser = user.copy(content = content, modelChoice = choice)
         val updatedConversation = conversation.copy(updatedAt = time.next(), mode = mode)
-        _state.update { it.copy(conversation = updatedConversation, messages = messages.take(index) + updatedUser, error = null) }
+        _state.update {
+            it.copy(
+                conversation = updatedConversation,
+                messages = messages.take(index) + updatedUser,
+                error = null,
+                toolUses = it.toolUses - removed.toSet(),
+                recovery = it.recovery - removed.toSet(),
+            )
+        }
         generate(gatewayProvider(), updatedConversation, updatedUser, choice, mode, removed)
         return true
     }
@@ -239,6 +262,15 @@ class ChatSession(
                 if (deleteIds.isNotEmpty()) repository.deleteMessages(deleteIds)
                 repository.upsertConversation(conversation)
                 repository.upsertMessage(user)
+                if (!gateway.isDemo && !conversation.isDemo) {
+                    try {
+                        onUserMessageSaved(conversation.id)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Sync bookkeeping must never break sending.
+                    }
+                }
                 gateway.stream(request).collect { event -> handle(generation, event) }
                 // A well-behaved stream ends every answer; anything still streaming ended unexpectedly.
                 finish(generation, MessageStatus.FAILED, "The response ended unexpectedly.")
@@ -293,8 +325,33 @@ class ChatSession(
                     finishReason = event.finishReason,
                 )
             }
-            is ChatStreamEvent.MessageFailed -> updateAnswer(generation, event.messageId, persist = true) {
-                it.copy(status = MessageStatus.FAILED, errorMessage = event.error.message, errorRetryable = event.error.retryable)
+            is ChatStreamEvent.MessageFailed -> {
+                if (generation.answers.containsKey(event.messageId)) {
+                    applyToState(generation) { s ->
+                        s.copy(recovery = s.recovery + (event.messageId to AnswerRecovery(event.attempts, event.alternatives)))
+                    }
+                }
+                updateAnswer(generation, event.messageId, persist = true) {
+                    it.copy(status = MessageStatus.FAILED, errorMessage = event.error.message, errorRetryable = event.error.retryable)
+                }
+            }
+            is ChatStreamEvent.ToolCalled -> if (generation.answers.containsKey(event.messageId)) {
+                applyToState(generation) { s ->
+                    val calls = s.toolUses[event.messageId].orEmpty()
+                    if (calls.any { it.callId == event.callId }) {
+                        s
+                    } else {
+                        s.copy(toolUses = s.toolUses + (event.messageId to calls + ToolUse(event.callId, event.plugin, event.tool)))
+                    }
+                }
+            }
+            is ChatStreamEvent.ToolFinished -> if (generation.answers.containsKey(event.messageId)) {
+                applyToState(generation) { s ->
+                    val calls = s.toolUses[event.messageId].orEmpty()
+                    val done = ToolUse(event.callId, event.plugin, event.tool, event.status, event.durationMs)
+                    val updated = if (calls.any { it.callId == event.callId }) calls.map { if (it.callId == event.callId) done else it } else calls + done
+                    s.copy(toolUses = s.toolUses + (event.messageId to updated))
+                }
             }
             is ChatStreamEvent.TitleChanged -> {
                 val c = generation.conversation
@@ -325,6 +382,15 @@ class ChatSession(
 
     private suspend fun finish(generation: Generation, status: MessageStatus, error: String?) {
         val streaming = generation.answers.values.filter { it.status == MessageStatus.STREAMING }.map { it.id }
+        // A tool still "running" when its answer ends will never report: show it as stopped or failed.
+        val ended = if (status == MessageStatus.STOPPED) ToolCallStatus.CANCELLED else ToolCallStatus.ERROR
+        applyToState(generation) { s ->
+            if (streaming.none { s.toolUses[it].orEmpty().any(ToolUse::running) }) {
+                s
+            } else {
+                s.copy(toolUses = s.toolUses.mapValues { (id, calls) -> if (id in streaming) calls.map { if (it.running) it.copy(status = ended) else it } else calls })
+            }
+        }
         for (id in streaming) {
             updateAnswer(generation, id, persist = true) { it.copy(status = status, errorMessage = error ?: it.errorMessage) }
         }

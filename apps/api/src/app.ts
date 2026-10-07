@@ -13,17 +13,27 @@ import { chatRoutes } from "./routes/chat.js";
 import type { RouteContext } from "./routes/context.js";
 import { conversationRoutes } from "./routes/conversations.js";
 import { documentRoutes } from "./routes/documents.js";
+import { pluginRoutes } from "./routes/plugins.js";
+import { syncRoutes } from "./routes/sync.js";
 import { systemRoutes } from "./routes/system.js";
-import { RateLimiter } from "./security/rateLimiter.js";
+import { Metrics } from "./observability/metrics.js";
+import { MemoryRateLimitStore, RateLimitService, type RateLimitStore } from "./security/rateLimit.js";
 import { MemoryStore } from "./store/memoryStore.js";
 import type { Store } from "./store/store.js";
+import { ToolRuntime } from "./tools/runtime.js";
+import type { PluginRegistry } from "./tools/registry.js";
 
 export interface AppDependencies {
   config: AppConfig;
   store?: Store;
   providers?: ProviderRegistry;
+  /** Plugins this server knows about. Defaults to the built-in demo plugin only. */
+  plugins?: PluginRegistry;
   logStream?: LogStream;
   now?: () => Date;
+  /** Where rate-limit buckets live. Defaults to per-process memory; index.ts passes Redis when configured. */
+  rateLimitStore?: RateLimitStore;
+  metrics?: Metrics;
 }
 
 export interface DashApp {
@@ -77,28 +87,37 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   app.decorateRequest("authUser", null);
   app.decorateRequest("authTokenHash", null);
 
-  const limiters = {
-    api: new RateLimiter(config.rateLimits.apiPerMinute),
-    auth: new RateLimiter(config.rateLimits.authPerMinute),
-    chat: new RateLimiter(config.rateLimits.chatPerMinute),
-    upload: new RateLimiter(config.rateLimits.uploadPerMinute),
-  };
+  const metrics = deps.metrics ?? new Metrics();
+  const minute = 60_000;
+  const rateLimits = new RateLimitService(
+    deps.rateLimitStore ?? new MemoryRateLimitStore(),
+    {
+      api: { capacity: config.rateLimits.apiPerMinute, windowMs: minute },
+      auth: { capacity: config.rateLimits.authPerMinute, windowMs: minute },
+      login: { capacity: config.rateLimits.loginPerAccountPer15Min, windowMs: 15 * minute },
+      chat: { capacity: config.rateLimits.chatPerMinute, windowMs: minute },
+      sync: { capacity: config.rateLimits.syncPerMinute, windowMs: minute },
+      upload: { capacity: config.rateLimits.uploadPerMinute, windowMs: minute },
+    },
+    { onRejected: (name) => metrics.rateLimitRejections.inc({ limit: name }) },
+  );
+  const tooMany = (retryAfterMs: number) =>
+    new AppError("rate_limited", "Too many requests. Please wait a moment and try again.", {
+      retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000)),
+    });
 
   const context: RouteContext = {
     config,
     store,
     providers,
+    tools: ToolRuntime.fromConfig(config, store, deps.plugins),
     streams: new StreamRegistry(),
-    limiters,
+    rateLimits,
+    metrics,
     requireAuth: makeRequireAuth(store, now),
     rateLimit: (name, key) => async (request: FastifyRequest) => {
-      const decision = limiters[name].consume(key(request));
-      if (!decision.allowed) {
-        const seconds = Math.max(1, Math.ceil(decision.retryAfterMs / 1000));
-        throw new AppError("rate_limited", "Too many requests. Please wait a moment and try again.", {
-          retryAfterSeconds: seconds,
-        });
-      }
+      const decision = await rateLimits.consume(name, key(request));
+      if (!decision.allowed) throw tooMany(decision.retryAfterMs);
     },
     now,
     startedAt: Date.now(),
@@ -106,12 +125,21 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
 
   // Broad abuse protection for every route, keyed by client IP.
   app.addHook("onRequest", async (request) => {
-    if (request.url === "/health") return;
-    const decision = limiters.api.consume(`api:${request.ip}`);
-    if (!decision.allowed) {
-      throw new AppError("rate_limited", "Too many requests. Please wait a moment and try again.", {
-        retryAfterSeconds: Math.max(1, Math.ceil(decision.retryAfterMs / 1000)),
-      });
+    // Load-balancer probes are not rate limited (they come from one address, very often).
+    if (request.url === "/health" || request.url === "/ready") return;
+    const decision = await rateLimits.consume("api", `api:${request.ip}`);
+    if (!decision.allowed) throw tooMany(decision.retryAfterMs);
+  });
+
+  // Sync outcomes by operation and status class only (never bodies, ids or user data).
+  app.addHook("onResponse", async (request, reply) => {
+    const route = request.routeOptions.url;
+    const operation = route === "/v1/sync/conversations" ? "pull" : route === "/v1/sync/push" ? "push" : undefined;
+    if (!operation) return;
+    metrics.syncRequests.inc({ operation });
+    const status = reply.statusCode;
+    if (status >= 400) {
+      metrics.syncFailures.inc({ operation, code: status === 429 ? "rate_limited" : status === 401 ? "unauthorized" : status >= 500 ? "server_error" : "client_error" });
     }
   });
 
@@ -140,10 +168,13 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   conversationRoutes(app, context);
   chatRoutes(app, context);
   documentRoutes(app, context);
+  pluginRoutes(app, context);
+  syncRoutes(app, context);
 
   app.addHook("onClose", async () => {
     context.streams.cancelAll();
   });
+  // The caller that created the store (index.ts / tests) owns closing it.
 
   return { app, context };
 }

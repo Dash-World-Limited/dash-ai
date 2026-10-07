@@ -1,5 +1,7 @@
 import { LIMITS, type DocumentKind, type DocumentStatus } from "@dash-ai/contracts";
 import { AppError } from "../errors.js";
+import { checkDocxBudget, checkPdfBudget } from "./budget.js";
+import { extractIsolated } from "./isolate.js";
 
 const startsWith = (buf: Buffer, bytes: number[], offset = 0) =>
   buf.length >= offset + bytes.length && bytes.every((b, i) => buf[offset + i] === b);
@@ -29,11 +31,15 @@ export function sanitizeFileName(name: string): string {
   return cleaned.length > 0 ? cleaned : "document";
 }
 
+/** Why a document was stored as unsupported (internal: metrics and logs only, never shown or stored). */
+export type ExtractionReason = "too_large" | "encrypted" | "unsupported_feature" | "unreadable" | "no_text" | "timeout" | "memory" | "crashed" | "image";
+
 export interface Extraction {
   status: DocumentStatus;
   statusDetail: string;
   text: string;
   pageCount: number | null;
+  reason?: ExtractionReason;
 }
 
 const fmt = (n: number) => n.toLocaleString("en-US");
@@ -41,7 +47,7 @@ const fmt = (n: number) => n.toLocaleString("en-US");
 function ready(text: string, pageCount: number | null): Extraction {
   const normalized = text.replace(/\r\n?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
   if (normalized.length === 0) {
-    return { status: "unsupported", statusDetail: "No readable text was found in this file.", text: "", pageCount };
+    return { status: "unsupported", statusDetail: "No readable text was found in this file.", text: "", pageCount, reason: "no_text" };
   }
   const truncated = normalized.length > LIMITS.maxExtractedChars;
   const finalText = truncated ? normalized.slice(0, LIMITS.maxExtractedChars) : normalized;
@@ -55,11 +61,25 @@ function ready(text: string, pageCount: number | null): Extraction {
   };
 }
 
+const unsupported = (statusDetail: string, reason: ExtractionReason, pageCount: number | null = null): Extraction => ({
+  status: "unsupported",
+  statusDetail,
+  text: "",
+  pageCount,
+  reason,
+});
+
+export const TOO_LARGE_DETAIL =
+  "This file expands to too much data to read safely. Try a smaller file, or save it as plain text.";
+
 /**
  * Extracts plain text. TXT, PDF (text layer only) and DOCX are supported. Images and scanned PDFs
  * are accepted but marked "unsupported": their contents are not analysed and never faked.
+ * PDF and DOCX are parsed in a separate, resource-limited process (see isolate.ts): they are
+ * complex formats parsed by large third-party libraries, and a hostile file must not be able to
+ * exhaust this server's memory or CPU.
  */
-export async function extractText(kind: DocumentKind, buf: Buffer): Promise<Extraction> {
+export async function extractText(kind: DocumentKind, buf: Buffer, options: { timeoutMs: number }): Promise<Extraction> {
   switch (kind) {
     case "txt": {
       let text: string;
@@ -68,48 +88,56 @@ export async function extractText(kind: DocumentKind, buf: Buffer): Promise<Extr
       } catch {
         throw new AppError("unsupported_media_type", "Text files must be UTF-8 encoded.");
       }
-      return ready(text.replace(/^﻿/, ""), null);
+      return ready(text.replace(/^\uFEFF/, ""), null);
     }
-    case "pdf": {
-      try {
-        const { extractText: extractPdf } = await import("unpdf");
-        const { totalPages, text } = await extractPdf(new Uint8Array(buf), { mergePages: true });
-        const result = ready(text, totalPages);
-        if (result.status === "unsupported") {
-          result.statusDetail =
-            "No selectable text was found. Scanned PDFs need OCR, which Dash AI does not support yet.";
-        }
-        return result;
-      } catch {
-        return {
-          status: "unsupported",
-          statusDetail: "This PDF could not be read. It may be encrypted or damaged.",
-          text: "",
-          pageCount: null,
-        };
-      }
-    }
-    case "docx": {
-      try {
-        const mammoth = (await import("mammoth")).default;
-        const { value } = await mammoth.extractRawText({ buffer: buf });
-        return ready(value, null);
-      } catch {
-        return {
-          status: "unsupported",
-          statusDetail: "This DOCX file could not be read. It may be damaged or password protected.",
-          text: "",
-          pageCount: null,
-        };
-      }
-    }
+    case "pdf":
+    case "docx":
+      return extractIsolated(kind, buf, options.timeoutMs);
     case "image":
-      return {
-        status: "unsupported",
-        statusDetail:
-          "Image understanding is not available yet. The image passed validation, but Dash AI cannot read its contents.",
-        text: "",
-        pageCount: null,
-      };
+      return unsupported(
+        "Image understanding is not available yet. The image passed validation, but Dash AI cannot read its contents.",
+        "image",
+      );
+  }
+}
+
+/**
+ * The parsing itself. Runs inside the extraction process only (extractChild.ts): decompression
+ * budgets first, then the third-party parser.
+ */
+export async function extractInProcess(kind: "pdf" | "docx", buf: Buffer): Promise<Extraction> {
+  if (kind === "pdf") {
+    const budget = await checkPdfBudget(buf);
+    if (!budget.ok) {
+      return budget.reason === "too_large"
+        ? unsupported(TOO_LARGE_DETAIL, "too_large")
+        : budget.reason === "encrypted"
+          ? unsupported("This PDF is encrypted or password-protected. Save an unprotected copy and upload that.", "encrypted")
+          : unsupported("This PDF uses features Dash AI cannot read safely.", "unsupported_feature");
+    }
+    try {
+      const { extractText: extractPdf } = await import("unpdf");
+      const { totalPages, text } = await extractPdf(new Uint8Array(buf), { mergePages: true });
+      const result = ready(text, totalPages);
+      if (result.status === "unsupported") {
+        result.statusDetail = "No selectable text was found. Scanned PDFs need OCR, which Dash AI does not support yet.";
+      }
+      return result;
+    } catch {
+      return unsupported("This PDF could not be read. It may be encrypted or damaged.", "unreadable");
+    }
+  }
+  const budget = await checkDocxBudget(buf);
+  if (!budget.ok) {
+    return budget.reason === "too_large"
+      ? unsupported(TOO_LARGE_DETAIL, "too_large")
+      : unsupported("This DOCX file could not be read. It may be damaged or password protected.", "unreadable");
+  }
+  try {
+    const mammoth = (await import("mammoth")).default;
+    const { value } = await mammoth.extractRawText({ buffer: buf });
+    return ready(value, null);
+  } catch {
+    return unsupported("This DOCX file could not be read. It may be damaged or password protected.", "unreadable");
   }
 }

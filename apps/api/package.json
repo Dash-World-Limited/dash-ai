@@ -12,19 +12,29 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "migrate": "tsx --env-file-if-exists=.env src/migrate-cli.ts",
+    "migrate:built": "node --env-file-if-exists=.env dist/migrate-cli.js",
+    "test:pg": "DASH_TEST_STORE=postgres vitest run",
+    "smoke:live": "tsx --env-file-if-exists=.env src/smoke/main.ts",
+    "smoke:live:built": "node --env-file-if-exists=.env dist/smoke/main.js",
+    "data:encrypt": "tsx --env-file-if-exists=.env src/data-cli.ts",
+    "data:encrypt:built": "node --env-file-if-exists=.env dist/data-cli.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
     "@dash-ai/contracts": "workspace:*",
     "@fastify/multipart": "^10.1.2",
     "fastify": "^5.12.5",
+    "ioredis": "^6.0.0",
     "mammoth": "^1.13.0",
     "openai": "^7.23.0",
+    "pg": "^8.23.1",
     "unpdf": "^1.8.1",
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@types/pg": "^8.23.1",
     "jszip": "^3.10.2",
     "tsx": "^4.23.15"
   }

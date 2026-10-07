@@ -516,7 +516,8 @@ describe("documents", () => {
       payload: chatBody({ modelChoice: "claude", mode: "documents", message: { id: testId("msg"), content: "Summarise", attachmentIds: [doc.id] } }),
     });
     expect(spies.openai!.requests).toHaveLength(0);
-    const sent = spies.anthropic!.requests[0]!.messages.at(-1)!.content;
+    const last = spies.anthropic!.requests[0]!.messages.at(-1)!;
+    const sent = "content" in last ? last.content : "";
     expect(sent).toContain('<document name="terms.txt" type="txt">\nRefunds within 30 days.\n</document>');
     expect(sent.endsWith("Summarise")).toBe(true);
 

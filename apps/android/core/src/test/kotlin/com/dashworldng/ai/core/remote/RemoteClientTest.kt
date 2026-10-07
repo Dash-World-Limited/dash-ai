@@ -181,5 +181,27 @@ class RemoteClientTest {
         assertNotNull(AuthValidation.passwordError("short", creating = true))
         assertNull(AuthValidation.passwordError("short", creating = false))
         assertNotNull(AuthValidation.nameError(" "))
+        assertNotNull(AuthValidation.nameError("Ada\u0000Lovelace"))
+        assertNull(AuthValidation.nameError("Ada Lovelace"))
+    }
+
+    @Test
+    fun `plugins are listed and switched through the API with the session token`() = runBlocking {
+        server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody(Fixtures.text("plugins-response.json")))
+        val list = com.dashworldng.ai.core.tools.ToolsService { client }.plugins()
+        assertEquals(2, list.plugins.size)
+        val listed = server.takeRequest()
+        assertEquals("GET", listed.method)
+        assertEquals("/v1/plugins", listed.path)
+        assertEquals("Bearer dash_test_token_1234567890", listed.getHeader("Authorization"))
+
+        val plugin = Json.parseToJsonElement(Fixtures.text("plugins-response.json")).jsonObject.getValue("plugins").let { (it as kotlinx.serialization.json.JsonArray)[0] }
+        server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody(plugin.toString()))
+        com.dashworldng.ai.core.tools.ToolsService { client }.setEnabled("dash-demo", false)
+        val updated = server.takeRequest()
+        assertEquals("PUT", updated.method)
+        assertEquals("/v1/plugins/dash-demo", updated.path)
+        // Only the switch is sent; the server decides the default (read-only) scopes.
+        assertEquals("""{"enabled":false}""", updated.body.readUtf8())
     }
 }

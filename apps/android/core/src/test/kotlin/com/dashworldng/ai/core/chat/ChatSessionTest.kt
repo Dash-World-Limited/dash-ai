@@ -12,6 +12,8 @@ import com.dashworldng.ai.core.model.MessageRole
 import com.dashworldng.ai.core.model.MessageStatus
 import com.dashworldng.ai.core.model.ModelChoice
 import com.dashworldng.ai.core.model.ProviderId
+import com.dashworldng.ai.core.model.FinishReason
+import com.dashworldng.ai.core.model.ToolCallStatus
 import com.dashworldng.ai.core.nextId
 import com.dashworldng.ai.core.stream.ApiError
 import com.dashworldng.ai.core.stream.ApiException
@@ -220,6 +222,97 @@ class ChatSessionTest {
     }
 
     @Test
+    fun `provider failures keep the recovery options and never switch provider by themselves`() = runTest {
+        var failing = true
+        val gateway = ScriptedGateway { request ->
+            if (failing) {
+                emit(ChatStreamEvent.Started("s", request.conversationId, null, listOf(StreamTarget("x", ProviderId.OPENAI, "m", false)), "r"))
+                emit(ChatStreamEvent.MessageFailed("x", ApiError("provider_unavailable", "OpenAI is temporarily unavailable.", true), 3, listOf(ProviderId.ANTHROPIC)))
+                emit(ChatStreamEvent.Ended("s"))
+            } else {
+                answer(request, if (request.modelChoice == ModelChoice.CLAUDE) ProviderId.ANTHROPIC else ProviderId.OPENAI, "Back")
+            }
+        }
+        val session = session(gateway)
+        session.send("Hi", ModelChoice.OPENAI, AssistantMode.GENERAL)
+        advanceUntilIdle()
+        val recovery = assertNotNull(session.state.value.recovery["x"])
+        assertEquals(3, recovery.attempts)
+        assertEquals(listOf(ProviderId.ANTHROPIC), recovery.alternatives)
+        // Exactly one request: nothing was retried or rerouted without the user.
+        assertEquals(1, gateway.requests.size)
+
+        // The user explicitly chooses Claude: the same question is resent to Claude, and the stale option is gone.
+        failing = false
+        assertTrue(session.regenerate("x", ModelChoice.CLAUDE))
+        advanceUntilIdle()
+        assertEquals(ModelChoice.CLAUDE, gateway.requests.last().modelChoice)
+        assertEquals(ProviderId.ANTHROPIC, session.state.value.messages.last().provider)
+        assertTrue(session.state.value.recovery.isEmpty())
+    }
+
+    @Test
+    fun `tool activity is recorded per answer with names and outcomes only`() = runTest {
+        val gateway = ScriptedGateway { request ->
+            emit(ChatStreamEvent.Started("s", request.conversationId, null, listOf(StreamTarget("x", ProviderId.OPENAI, "m", false)), "r"))
+            emit(ChatStreamEvent.ToolCalled("x", "call_1", "dash-demo", "text_stats"))
+            emit(ChatStreamEvent.ToolCalled("x", "call_1", "dash-demo", "text_stats")) // duplicate delivery
+            emit(ChatStreamEvent.ToolCalled("someone-else", "call_9", "dash-demo", "current_time")) // not this answer
+            emit(ChatStreamEvent.ToolFinished("x", "call_1", "dash-demo", "text_stats", ToolCallStatus.OK, 3))
+            emit(ChatStreamEvent.ToolCalled("x", "call_2", "dash-demo", "current_time"))
+            emit(ChatStreamEvent.Delta("x", "Done"))
+            emit(ChatStreamEvent.MessageEnded("x", FinishReason.STOP, 1, 1))
+            emit(ChatStreamEvent.Ended("s"))
+        }
+        val session = session(gateway)
+        session.send("Count my words", ModelChoice.OPENAI, AssistantMode.GENERAL)
+        advanceUntilIdle()
+        val uses = session.state.value.toolUses
+        assertEquals(setOf("x"), uses.keys)
+        assertEquals(listOf("call_1", "call_2"), uses.getValue("x").map { it.callId })
+        assertEquals(ToolCallStatus.OK, uses.getValue("x")[0].status)
+        // call_2 never reported; the answer completed, so it is shown as running until a stop/failure closes it.
+        assertNull(uses.getValue("x")[1].status)
+        assertEquals("Done", session.state.value.messages.last().content)
+    }
+
+    @Test
+    fun `stopping closes tools that were still running`() = runTest {
+        val gateway = ScriptedGateway { request ->
+            emit(ChatStreamEvent.Started("s", request.conversationId, null, listOf(StreamTarget("x", ProviderId.OPENAI, "m", false)), "r"))
+            emit(ChatStreamEvent.ToolCalled("x", "call_1", "dash-demo", "current_time"))
+            awaitCancellation()
+        }
+        val session = session(gateway)
+        session.send("Time?", ModelChoice.OPENAI, AssistantMode.GENERAL)
+        advanceUntilIdle()
+        assertTrue(session.state.value.toolUses.getValue("x").single().running)
+        session.stop()
+        advanceUntilIdle()
+        assertEquals(ToolCallStatus.CANCELLED, session.state.value.toolUses.getValue("x").single().status)
+        assertEquals(MessageStatus.STOPPED, session.state.value.messages.last().status)
+    }
+
+    @Test
+    fun `a new chat starts without the previous chat's tool activity or recovery`() = runTest {
+        val gateway = ScriptedGateway { request ->
+            emit(ChatStreamEvent.Started("s", request.conversationId, null, listOf(StreamTarget("x", ProviderId.OPENAI, "m", false)), "r"))
+            emit(ChatStreamEvent.ToolCalled("x", "call_1", "dash-demo", "current_time"))
+            emit(ChatStreamEvent.MessageFailed("x", ApiError("provider_error", "Failed.", true), 1, listOf(ProviderId.ANTHROPIC)))
+            emit(ChatStreamEvent.Ended("s"))
+        }
+        val session = session(gateway)
+        session.send("Hi", ModelChoice.OPENAI, AssistantMode.GENERAL)
+        advanceUntilIdle()
+        assertTrue(session.state.value.toolUses.isNotEmpty())
+        assertTrue(session.state.value.recovery.isNotEmpty())
+        session.newChat()
+        assertTrue(session.state.value.toolUses.isEmpty())
+        assertTrue(session.state.value.recovery.isEmpty())
+        assertTrue(session.state.value.isEmpty)
+    }
+
+    @Test
     fun `streams that end without finishing an answer mark it failed`() = runTest {
         val gateway = ScriptedGateway { request ->
             emit(ChatStreamEvent.Started("s", request.conversationId, null, listOf(StreamTarget("x", ProviderId.OPENAI, "m", false)), "r"))
@@ -342,5 +435,31 @@ class ChatSessionTest {
         session.send("Hi", ModelChoice.SMART, AssistantMode.GENERAL)
         advanceUntilIdle()
         assertTrue(session.state.value.conversation!!.isDemo)
+    }
+
+    @Test
+    fun `live user messages are reported for sync even when the request fails and demo messages never are`() = runTest {
+        val reported = mutableListOf<String>()
+        val offline = ScriptedGateway { throw ApiException(ApiError.network()) }
+        val live = ChatSession(this, repository, { offline }, { time++ }, SequentialIds(), onUserMessageSaved = { reported += it })
+        assertTrue(live.send("written while offline", ModelChoice.OPENAI, AssistantMode.GENERAL))
+        advanceUntilIdle()
+        val id = live.state.value.conversation!!.id
+        assertEquals(listOf(id), reported)
+        assertEquals(listOf("written while offline"), repository.getMessages(id).map { it.content })
+
+        val demo = ChatSession(this, repository, { DemoChatGateway(chunkDelayMillis = 0) }, { time++ }, SequentialIds("d"), onUserMessageSaved = { reported += it })
+        demo.send("demo only", ModelChoice.SMART, AssistantMode.GENERAL)
+        advanceUntilIdle()
+        assertEquals(listOf(id), reported)
+    }
+
+    @Test
+    fun `a failing sync callback never breaks sending`() = runTest {
+        val session = ChatSession(this, repository, { ScriptedGateway() }, { time++ }, SequentialIds(), onUserMessageSaved = { error("sync storage is broken") })
+        session.send("hello", ModelChoice.OPENAI, AssistantMode.GENERAL)
+        advanceUntilIdle()
+        assertEquals(MessageStatus.COMPLETE, session.state.value.messages.last().status)
+        assertNull(session.state.value.error)
     }
 }

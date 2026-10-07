@@ -2,62 +2,43 @@ package com.dashworldng.ai.ui.chat
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ArrowDropDown
-import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.EditNote
-import androidx.compose.material.icons.rounded.Info
-import androidx.compose.material.icons.rounded.Menu
-import androidx.compose.material.icons.rounded.Science
-import androidx.compose.material.icons.rounded.Warning
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,7 +49,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dashworldng.ai.core.chat.ChatItem
@@ -76,33 +58,52 @@ import com.dashworldng.ai.core.documents.FileRules
 import com.dashworldng.ai.core.model.AssistantMode
 import com.dashworldng.ai.core.model.ChatMessage
 import com.dashworldng.ai.core.model.ModelChoice
+import com.dashworldng.ai.core.model.ProviderId
+import com.dashworldng.ai.core.presentation.ProviderOptions
+import com.dashworldng.ai.core.presentation.Recovery
+import com.dashworldng.ai.core.presentation.StatusTone
 import com.dashworldng.ai.data.DocumentReader
-import com.dashworldng.ai.di.AppServices
-import com.dashworldng.ai.ui.components.Banner
-import com.dashworldng.ai.ui.components.BannerTone
-import com.dashworldng.ai.ui.components.DemoBadge
-import com.dashworldng.ai.ui.components.DashWordmark
-import com.dashworldng.ai.ui.dashViewModel
-import com.dashworldng.ai.ui.theme.DashColors
+import com.dashworldng.ai.ui.components.ContentWidth
+import com.dashworldng.ai.ui.components.DashTextField
+import com.dashworldng.ai.ui.components.DashTopBar
+import com.dashworldng.ai.ui.components.Notice
+import com.dashworldng.ai.ui.components.QuietCard
+import com.dashworldng.ai.ui.components.TextAction
+import com.dashworldng.ai.ui.system.rememberReducedMotion
+import com.dashworldng.ai.ui.theme.DashTheme
+import com.dashworldng.ai.ui.theme.Spacing
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun ChatScreen(
-    services: AppServices,
-    onOpenDocuments: () -> Unit,
-    onOpenPrompts: () -> Unit,
-    onOpenSettings: () -> Unit,
-    onOpenAccount: () -> Unit,
-) {
-    val vm = dashViewModel { ChatViewModel(services) }
-    val state by vm.state.collectAsStateWithLifecycle()
-    val drawerState = rememberDrawerState(DrawerValue.Closed)
-    val scope = rememberCoroutineScope()
-    val snackbar = remember { SnackbarHostState() }
-    val context = LocalContext.current
-    var editing by remember { mutableStateOf<ChatMessage?>(null) }
+/** Every user action on the chat screen, so the layout can be rendered without a ViewModel. */
+class ChatEvents(
+    val onBack: () -> Unit,
+    val onText: (String) -> Unit,
+    val onSend: () -> Unit,
+    val onStop: () -> Unit,
+    val onAttach: () -> Unit,
+    val onRemoveAttachment: (String) -> Unit,
+    val onSelectChoice: (ModelChoice) -> Unit,
+    val onConfirmCompare: (Boolean) -> Unit,
+    val onSelectMode: (AssistantMode) -> Unit,
+    val onSuggestion: (String) -> Unit,
+    val onNewChat: () -> Unit,
+    val onRetryLast: () -> Unit,
+    val onDismissError: () -> Unit,
+    val onOpenSettings: () -> Unit,
+    val onOpenTools: () -> Unit,
+    val onNotice: (String?) -> Unit,
+    val onRegenerate: (String) -> Unit,
+    val onRetryOther: (String) -> Unit,
+    val onEditAndResend: (String, String) -> Unit,
+    val onRetryAnswer: (String) -> Unit,
+    val onAnswerWith: (String, ProviderId) -> Unit,
+    val onContinueLater: (String) -> Unit,
+)
 
+@Composable
+fun ChatScreen(vm: ChatViewModel, drawer: DrawerCallbacks, onBack: () -> Unit, onOpenSettings: () -> Unit, onOpenTools: () -> Unit) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             runCatching { DocumentReader.read(context, uri) }
@@ -110,76 +111,109 @@ fun ChatScreen(
                 .onFailure { vm.notice("That file could not be opened.") }
         }
     }
+    val events = remember(vm) {
+        ChatEvents(
+            onBack = onBack,
+            onText = vm::onComposerChange,
+            onSend = vm::send,
+            onStop = vm::stop,
+            onAttach = { picker.launch(FileRules.pickerMimeTypes) },
+            onRemoveAttachment = vm::removeAttachment,
+            onSelectChoice = vm::selectChoice,
+            onConfirmCompare = vm::confirmCompare,
+            onSelectMode = vm::selectMode,
+            onSuggestion = vm::useSuggestion,
+            onNewChat = vm::newChat,
+            onRetryLast = vm::retryLast,
+            onDismissError = vm::dismissError,
+            onOpenSettings = onOpenSettings,
+            onOpenTools = onOpenTools,
+            onNotice = vm::notice,
+            onRegenerate = vm::regenerate,
+            onRetryOther = vm::retryWithOtherProvider,
+            onEditAndResend = vm::editAndResend,
+            onRetryAnswer = vm::retryAnswer,
+            onAnswerWith = vm::answerWith,
+            onContinueLater = vm::continueLater,
+        )
+    }
+    ChatContent(state, events, drawer, reducedMotion = rememberReducedMotion())
+}
+
+@Composable
+fun ChatContent(state: ChatUiState, events: ChatEvents, drawer: DrawerCallbacks, reducedMotion: Boolean) {
+    val c = DashTheme.colors
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    val snackbar = remember { SnackbarHostState() }
+    var editing by remember { mutableStateOf<ChatMessage?>(null) }
+    var providerSheet by rememberSaveable { mutableStateOf(false) }
+    var modeSheet by rememberSaveable { mutableStateOf(false) }
+    var alternatives by remember { mutableStateOf<Pair<String, List<ProviderId>>?>(null) }
 
     LaunchedEffect(state.notice) {
         state.notice?.let {
             snackbar.showSnackbar(it)
-            vm.notice(null)
+            events.onNotice(null)
         }
     }
 
-    val actions = remember(vm) {
+    val actions = remember(events) {
         MessageActions(
-            onRegenerate = vm::regenerate,
-            onRetryOther = vm::retryWithOtherProvider,
+            onRegenerate = events.onRegenerate,
+            onRetryOther = events.onRetryOther,
             onEdit = { editing = it },
-            onNotice = { vm.notice(it) },
+            onNotice = { events.onNotice(it) },
+            onRetryAnswer = events.onRetryAnswer,
+            onChangeProvider = { id, alts -> alternatives = id to alts },
+            onContinueLater = events.onContinueLater,
         )
     }
+    val configured = if (state.demoMode) ProviderId.entries.toSet() else state.providers.configured
+    val extras = AnswerExtras(
+        tools = { id -> state.session.toolUses[id].orEmpty() },
+        recovery = { m ->
+            if (m.id in state.dismissedRecovery) null else Recovery.card(m, state.session.recovery[m.id], configured, state.online || state.demoMode)
+        },
+        pluginNames = state.pluginNames,
+        reducedMotion = reducedMotion,
+    )
 
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
-            HistoryDrawer(
-                state = state,
-                onSearch = vm::setSearch,
-                onOpen = { id ->
-                    vm.openConversation(id)
-                    scope.launch { drawerState.close() }
-                },
-                onNewChat = {
-                    vm.newChat()
-                    scope.launch { drawerState.close() }
-                },
-                onRename = vm::renameConversation,
-                onDelete = vm::deleteConversation,
-                onNavigate = { destination ->
-                    scope.launch { drawerState.close() }
-                    when (destination) {
-                        DrawerDestination.DOCUMENTS -> onOpenDocuments()
-                        DrawerDestination.PROMPTS -> onOpenPrompts()
-                        DrawerDestination.SETTINGS -> onOpenSettings()
-                        DrawerDestination.ACCOUNT -> onOpenAccount()
-                    }
-                },
+            AppDrawer(
+                conversations = state.conversations,
+                search = state.search,
+                openConversationId = state.session.conversation?.id,
+                callbacks = drawer,
+                close = { scope.launch { drawerState.close() } },
             )
         },
     ) {
         Scaffold(
-            containerColor = DashColors.Black,
+            containerColor = c.background,
             snackbarHost = { SnackbarHost(snackbar) },
             topBar = {
-                TopAppBar(
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = DashColors.Black),
-                    navigationIcon = {
-                        IconButton(onClick = { scope.launch { drawerState.open() } }, modifier = Modifier.testTag("open_history")) {
-                            Icon(Icons.Rounded.Menu, contentDescription = "Open conversation history")
-                        }
-                    },
-                    title = {
-                        Column {
-                            Text(
-                                state.session.conversation?.title ?: "Dash AI",
-                                style = MaterialTheme.typography.titleMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.testTag("chat_title"),
-                            )
-                            ModelSelector(state, onSelect = vm::selectChoice)
-                        }
+                DashTopBar(
+                    title = state.session.conversation?.title ?: "New chat",
+                    onBack = events.onBack,
+                    modifier = Modifier.testTag("chat_top_bar"),
+                    titleContent = {
+                        Text(
+                            state.session.conversation?.title ?: "New chat",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = c.ink,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            modifier = Modifier.semantics { heading() }.testTag("chat_title"),
+                        )
                     },
                     actions = {
-                        IconButton(onClick = vm::newChat, modifier = Modifier.testTag("new_chat")) {
+                        IconButton(onClick = { scope.launch { drawerState.open() } }, modifier = Modifier.testTag("open_history")) {
+                            Icon(Icons.Rounded.History, contentDescription = "Chat history")
+                        }
+                        IconButton(onClick = events.onNewChat, enabled = !state.isGenerating, modifier = Modifier.testTag("new_chat")) {
                             Icon(Icons.Rounded.EditNote, contentDescription = "New chat")
                         }
                     },
@@ -193,45 +227,82 @@ fun ChatScreen(
                     .consumeWindowInsets(padding)
                     .imePadding(),
             ) {
-                StatusBanners(state, onRetry = vm::retryLast, onDismissError = vm::dismissError, onOpenSettings = onOpenSettings)
-                ModeSelector(state.mode, onSelect = vm::selectMode)
+                StatusNotices(state, events)
                 Box(Modifier.weight(1f)) {
                     if (state.items.isEmpty()) {
-                        EmptyChat(state.mode, state.demoMode, onSuggestion = vm::useSuggestion)
+                        EmptyChat(state.mode, state.demoMode, onSuggestion = events.onSuggestion)
                     } else {
-                        MessageList(state, actions)
+                        MessageList(state, actions, extras)
                     }
                 }
-                Composer(
-                    state = state,
-                    onTextChange = vm::onComposerChange,
-                    onSend = vm::send,
-                    onStop = vm::stop,
-                    onAttach = { picker.launch(FileRules.pickerMimeTypes) },
-                    onRemoveAttachment = vm::removeAttachment,
-                )
+                ContentWidth {
+                    Composer(
+                        state = state,
+                        onTextChange = events.onText,
+                        onSend = events.onSend,
+                        onStop = events.onStop,
+                        onAttach = events.onAttach,
+                        onRemoveAttachment = events.onRemoveAttachment,
+                        onOpenProviders = { providerSheet = true },
+                        onOpenModes = { modeSheet = true },
+                        modifier = Modifier.padding(horizontal = Spacing.md).padding(bottom = Spacing.sm).navigationBarsPadding(),
+                    )
+                }
             }
         }
     }
 
+    if (providerSheet) {
+        ProviderSheet(
+            options = ProviderOptions.build(state.providers, state.choice, state.demoMode),
+            demoMode = state.demoMode,
+            onSelect = {
+                events.onSelectChoice(it.choice)
+                providerSheet = false
+            },
+            onDismiss = { providerSheet = false },
+        )
+    }
+    if (modeSheet) {
+        ModeSheet(
+            selected = state.mode,
+            onSelect = {
+                events.onSelectMode(it)
+                modeSheet = false
+            },
+            onOpenTools = {
+                modeSheet = false
+                events.onOpenTools()
+            },
+            onDismiss = { modeSheet = false },
+        )
+    }
+    alternatives?.let { (messageId, providers) ->
+        AlternativeProviderSheet(
+            alternatives = providers,
+            onSelect = {
+                events.onAnswerWith(messageId, it)
+                alternatives = null
+            },
+            onDismiss = { alternatives = null },
+        )
+    }
+
     if (state.confirmCompare) {
         AlertDialog(
-            onDismissRequest = { vm.confirmCompare(false) },
-            icon = { Icon(Icons.Rounded.Warning, contentDescription = null, tint = DashColors.Gold) },
+            onDismissRequest = { events.onConfirmCompare(false) },
+            containerColor = c.surface,
+            titleContentColor = c.ink,
+            textContentColor = c.inkSecondary,
             title = { Text("Compare uses both providers") },
             text = {
                 Text(
-                    "Each prompt will be sent to both OpenAI and Anthropic (Claude), and you'll see the two answers side by side. " +
-                        "This uses both providers and may cost more. Neither provider sees the other's answer.",
+                    "Each message is sent to both OpenAI and Anthropic's Claude, and you'll see the two answers together. " +
+                        "This makes two requests. Neither provider sees the other's answer.",
                 )
             },
-            confirmButton = {
-                TextButton(onClick = { vm.confirmCompare(true) }, modifier = Modifier.testTag("confirm_compare")) {
-                    Text("Use Compare", color = DashColors.Gold)
-                }
-            },
-            dismissButton = { TextButton(onClick = { vm.confirmCompare(false) }) { Text("Cancel") } },
-            containerColor = DashColors.SurfaceHigh,
+            confirmButton = { TextAction("Use Compare", { events.onConfirmCompare(true) }, modifier = Modifier.testTag("confirm_compare")) },
+            dismissButton = { TextButton(onClick = { events.onConfirmCompare(false) }) { Text("Cancel", color = c.inkSecondary) } },
         )
     }
 
@@ -240,7 +311,7 @@ fun ChatScreen(
             initial = message.content,
             onDismiss = { editing = null },
             onConfirm = { text ->
-                vm.editAndResend(message.id, text)
+                events.onEditAndResend(message.id, text)
                 editing = null
             },
         )
@@ -248,203 +319,134 @@ fun ChatScreen(
 }
 
 @Composable
-private fun ModelSelector(state: ChatUiState, onSelect: (ModelChoice) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        Row(
-            Modifier
-                .clickable { expanded = true }
-                .testTag("model_selector")
-                .padding(vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = DashColors.Gold, modifier = Modifier.size(14.dp))
-            Spacer(Modifier.width(4.dp))
-            Text(state.choice.label, style = MaterialTheme.typography.labelMedium, color = DashColors.Gold, modifier = Modifier.testTag("selected_model"))
-            Icon(Icons.Rounded.ArrowDropDown, contentDescription = "Choose model", tint = DashColors.Gold)
-            if (state.demoMode) DemoBadge()
-        }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            ModelChoice.entries.forEach { choice ->
-                val available = state.providers.isAvailable(choice)
-                DropdownMenuItem(
-                    modifier = Modifier.testTag("model_option_${choice.wire}"),
-                    enabled = available,
-                    leadingIcon = {
-                        if (choice == state.choice) Icon(Icons.Rounded.Check, contentDescription = "Selected", tint = DashColors.Gold)
-                        else Spacer(Modifier.size(24.dp))
-                    },
-                    text = {
-                        Column(Modifier.padding(vertical = 4.dp)) {
-                            Text(choice.label, style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                when {
-                                    !available -> "Not configured on this server"
-                                    choice == ModelChoice.COMPARE -> "Sends to both providers · may cost more"
-                                    else -> choice.description
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (choice == ModelChoice.COMPARE && available) DashColors.GoldLight else DashColors.Grey,
-                            )
-                        }
-                    },
-                    onClick = {
-                        expanded = false
-                        onSelect(choice)
-                    },
+private fun StatusNotices(state: ChatUiState, events: ChatEvents) {
+    ContentWidth {
+        Column(Modifier.padding(horizontal = Spacing.lg), verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+            if (state.demoMode) {
+                Notice(
+                    "Demo Mode: answers are simulated on this device. No AI provider is used.",
+                    title = null,
+                    actionLabel = "Settings",
+                    onAction = events.onOpenSettings,
+                    modifier = Modifier.testTag("demo_banner"),
+                )
+            } else if (!state.online) {
+                Notice(
+                    "You're offline. Your chats are still here; new answers need a connection.",
+                    tone = StatusTone.WARNING,
+                    modifier = Modifier.testTag("offline_banner"),
+                )
+            } else if (state.providers.error != null) {
+                Notice("Couldn't check the server: ${state.providers.error}", tone = StatusTone.WARNING, actionLabel = "Settings", onAction = events.onOpenSettings)
+            }
+            val error = state.session.error
+            if (error != null) {
+                Notice(
+                    error.message,
+                    tone = StatusTone.ERROR,
+                    actionLabel = if (error.retryable) "Retry" else null,
+                    onAction = if (error.retryable) events.onRetryLast else null,
+                    onDismiss = events.onDismissError,
+                    modifier = Modifier.testTag("error_banner"),
                 )
             }
         }
     }
 }
 
-@Composable
-private fun ModeSelector(selected: AssistantMode, onSelect: (AssistantMode) -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 12.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        AssistantMode.entries.forEach { mode ->
-            FilterChip(
-                selected = mode == selected,
-                onClick = { onSelect(mode) },
-                label = { Text(mode.label) },
-                modifier = Modifier.testTag("mode_${mode.wire}"),
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = DashColors.GoldContainer,
-                    selectedLabelColor = DashColors.GoldLight,
-                    labelColor = DashColors.Grey,
-                ),
-                border = FilterChipDefaults.filterChipBorder(
-                    enabled = true,
-                    selected = mode == selected,
-                    borderColor = DashColors.Outline,
-                    selectedBorderColor = DashColors.GoldDeep,
-                ),
-            )
-        }
-    }
-}
-
-@Composable
-private fun StatusBanners(state: ChatUiState, onRetry: () -> Unit, onDismissError: () -> Unit, onOpenSettings: () -> Unit) {
-    Column(Modifier.padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        if (state.demoMode) {
-            Banner(
-                "Demo Mode · answers are simulated on this device. No AI provider is used.",
-                icon = Icons.Rounded.Science,
-                tone = BannerTone.WARNING,
-                actionLabel = "Settings",
-                onAction = onOpenSettings,
-                modifier = Modifier.testTag("demo_banner"),
-            )
-        } else if (!state.online) {
-            Banner(
-                "You're offline. Live answers need a connection — your history is still available.",
-                icon = Icons.Rounded.CloudOff,
-                tone = BannerTone.ERROR,
-                modifier = Modifier.testTag("offline_banner"),
-            )
-        } else if (state.providers.error != null) {
-            Banner("Couldn't check the server: ${state.providers.error}", icon = Icons.Rounded.Info, actionLabel = "Settings", onAction = onOpenSettings)
-        }
-        val error = state.session.error
-        if (error != null) {
-            Banner(
-                error.message,
-                tone = BannerTone.ERROR,
-                icon = Icons.Rounded.Warning,
-                actionLabel = if (error.retryable) "Retry" else null,
-                onAction = if (error.retryable) onRetry else null,
-                onDismiss = onDismissError,
-                modifier = Modifier.testTag("error_banner"),
-            )
-        }
-    }
-}
-
+/** A restrained start: one question, the mode's focus, three suggestions. */
 @Composable
 private fun EmptyChat(mode: AssistantMode, demo: Boolean, onSuggestion: (String) -> Unit) {
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 24.dp)
-            .testTag("empty_chat"),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        DashWordmark(size = 26.dp)
-        Text("How can I help today?", style = MaterialTheme.typography.headlineSmall, color = DashColors.White)
-        Text("${mode.label} · ${mode.tagline}", style = MaterialTheme.typography.bodyMedium, color = DashColors.Grey)
-        mode.limitation?.let {
-            Banner(it, icon = Icons.Rounded.Info, modifier = Modifier.testTag("mode_limitation"))
-        }
-        if (demo) {
-            Text(
-                "You're in Demo Mode — try sending anything. Answers are clearly labelled simulations.",
-                style = MaterialTheme.typography.bodySmall,
-                color = DashColors.GreyDim,
-            )
-        }
-        Spacer(Modifier.height(4.dp))
-        mode.suggestions.forEach { suggestion ->
-            Surface(
-                onClick = { onSuggestion(suggestion) },
-                shape = RoundedCornerShape(14.dp),
-                color = DashColors.Surface,
-                border = BorderStroke(1.dp, DashColors.OutlineSoft),
-                modifier = Modifier.fillMaxWidth().testTag("suggestion"),
-            ) {
-                Text(suggestion, modifier = Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium, color = DashColors.White)
+    val c = DashTheme.colors
+    ContentWidth(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = Spacing.gutter, vertical = Spacing.xl)
+                .testTag("empty_chat"),
+            verticalArrangement = Arrangement.spacedBy(Spacing.md),
+        ) {
+            Spacer(Modifier.height(Spacing.xl))
+            Text("What do you want to work on?", style = MaterialTheme.typography.headlineMedium, color = c.ink, modifier = Modifier.semantics { heading() })
+            Text("${mode.label} · ${mode.tagline}", style = MaterialTheme.typography.bodyMedium, color = c.inkSecondary)
+            mode.limitation?.let { Notice(it, modifier = Modifier.testTag("mode_limitation")) }
+            if (demo) {
+                Text(
+                    "You're in Demo Mode. Try anything; every answer is labelled as a simulation.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.inkTertiary,
+                )
+            }
+            Spacer(Modifier.height(Spacing.sm))
+            mode.suggestions.take(3).forEach { suggestion ->
+                QuietCard(onClick = { onSuggestion(suggestion) }, modifier = Modifier.fillMaxWidth().testTag("suggestion")) {
+                    Text(suggestion, style = MaterialTheme.typography.bodyMedium, color = c.ink)
+                }
             }
         }
     }
 }
 
 @Composable
-private fun MessageList(state: ChatUiState, actions: MessageActions) {
+private fun MessageList(state: ChatUiState, actions: MessageActions, extras: AnswerExtras) {
+    val c = DashTheme.colors
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
     val reversed = remember(state.items) { state.items.asReversed() }
-    // Newest item sits at index 0 with reverseLayout, so streaming text stays anchored at the bottom.
+    // reverseLayout keeps the newest item at index 0, so streaming text stays anchored at the bottom
+    // unless the reader has scrolled up to read something earlier.
     LaunchedEffect(state.items.size) {
         if (listState.firstVisibleItemIndex <= 1) listState.scrollToItem(0)
     }
-    LazyColumn(
-        state = listState,
-        reverseLayout = true,
-        modifier = Modifier.fillMaxSize().testTag("message_list"),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        items(reversed, key = { it.key }) { item ->
-            when (item) {
-                is ChatItem.User -> UserMessage(item.message, state.isGenerating, actions)
-                is ChatItem.Assistant -> AssistantMessage(item.message, state.isGenerating, actions)
-                is ChatItem.Compare -> CompareRow(item.answers, state.isGenerating, actions)
+    val showJump by remember { derivedStateOf { listState.firstVisibleItemIndex > 1 } }
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            reverseLayout = true,
+            modifier = Modifier.fillMaxSize().testTag("message_list"),
+            contentPadding = PaddingValues(horizontal = Spacing.gutter, vertical = Spacing.lg),
+            verticalArrangement = Arrangement.spacedBy(Spacing.xl),
+        ) {
+            items(reversed, key = { it.key }, contentType = { it::class }) { item ->
+                // Each row receives the message object itself: rows whose message did not change are
+                // skipped while another answer streams.
+                ContentWidth {
+                    when (item) {
+                        is ChatItem.User -> UserMessage(item.message, state.isGenerating, actions)
+                        is ChatItem.Assistant -> AssistantMessage(item.message, state.isGenerating, actions, extras)
+                        is ChatItem.Compare -> CompareRow(item.answers, state.isGenerating, actions, extras)
+                    }
+                }
             }
+        }
+        if (showJump) {
+            SmallFloatingActionButton(
+                onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                containerColor = c.surface,
+                contentColor = c.ink,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = Spacing.md).testTag("jump_to_latest"),
+            ) { Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = "Jump to the latest message") }
         }
     }
 }
 
 @Composable
 private fun EditMessageDialog(initial: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+    val c = DashTheme.colors
     var text by rememberSaveable { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
+        containerColor = c.surface,
+        titleContentColor = c.ink,
         title = { Text("Edit and resend") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Answers after this message will be replaced.", style = MaterialTheme.typography.bodySmall, color = DashColors.Grey)
-                OutlinedTextField(value = text, onValueChange = { text = it }, modifier = Modifier.fillMaxWidth().testTag("edit_input"), maxLines = 8)
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                Text("Answers after this message will be replaced.", style = MaterialTheme.typography.bodySmall, color = c.inkSecondary)
+                DashTextField(value = text, onValueChange = { text = it }, label = "Message", singleLine = false, modifier = Modifier.testTag("edit_input"))
             }
         },
-        confirmButton = {
-            TextButton(onClick = { onConfirm(text) }, enabled = text.isNotBlank()) { Text("Resend", color = DashColors.Gold) }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        containerColor = DashColors.SurfaceHigh,
+        confirmButton = { TextAction("Resend", { onConfirm(text) }, enabled = text.isNotBlank()) },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = c.inkSecondary) } },
     )
 }

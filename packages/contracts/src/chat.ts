@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ApiError, AssistantMode, Id, LIMITS, MessageRole, ModelChoice, ProviderId } from "./common.js";
+import { ToolCallStatus } from "./tools.js";
 
 /**
  * A prior turn the client sends as context. Assistant turns must carry the provider that produced
@@ -69,8 +70,31 @@ export const StreamStartEvent = z.object({
 });
 export const MessageDeltaEvent = z.object({ messageId: Id, text: z.string() });
 export const MessageEndEvent = z.object({ messageId: Id, finishReason: FinishReason, usage: Usage });
-export const MessageErrorEvent = z.object({ messageId: Id, error: ApiError });
+/**
+ * How a failed answer can be recovered. The server retries retryable failures itself (before any
+ * output); `attempts` says how many requests were made. It never switches provider on its own:
+ * `alternatives` lists the other configured providers the user may choose explicitly.
+ */
+export const MessageRecovery = z.object({
+  attempts: z.number().int().min(1).max(10),
+  alternatives: z.array(ProviderId),
+});
+export type MessageRecovery = z.infer<typeof MessageRecovery>;
+
+export const MessageErrorEvent = z.object({ messageId: Id, error: ApiError, recovery: MessageRecovery.optional() });
 export const ConversationTitleEvent = z.object({ conversationId: Id, title: z.string() });
+/** A model asked to use a tool and the backend started running it. Informational: never carries arguments. */
+/** Call ids are bounded plain identifiers: the server replaces anything else from a provider. */
+const CallId = z.string().regex(/^[A-Za-z0-9_.:-]{1,64}$/);
+export const ToolCallEvent = z.object({ messageId: Id, callId: CallId, plugin: z.string(), tool: z.string() });
+export const ToolResultEvent = z.object({
+  messageId: Id,
+  callId: CallId,
+  plugin: z.string(),
+  tool: z.string(),
+  status: ToolCallStatus,
+  durationMs: z.number().int().nonnegative(),
+});
 export const StreamEndEvent = z.object({ streamId: Id });
 export const StreamErrorEvent = z.object({ error: ApiError });
 
@@ -81,6 +105,8 @@ export const STREAM_EVENTS = {
   "message.end": MessageEndEvent,
   "message.error": MessageErrorEvent,
   "conversation.title": ConversationTitleEvent,
+  "tool.call": ToolCallEvent,
+  "tool.result": ToolResultEvent,
   "stream.end": StreamEndEvent,
   "stream.error": StreamErrorEvent,
 } as const;

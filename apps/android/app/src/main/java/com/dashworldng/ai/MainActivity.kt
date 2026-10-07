@@ -8,7 +8,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.dashworldng.ai.ui.DashAiApp
-import com.dashworldng.ai.ui.theme.DashAiTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -17,14 +16,19 @@ class MainActivity : ComponentActivity() {
         val services = (application as DashAiApplication).services
         // Keep the system splash until saved settings are loaded, so the first screen is correct.
         splash.setKeepOnScreenCondition { !services.settings.settings.value.loaded }
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
-        )
+        applySystemBars(dark = true)
         setContent {
-            DashAiTheme {
-                DashAiApp(services)
-            }
+            DashAiApp(services, onDarkTheme = ::applySystemBars)
         }
+    }
+
+    /** Transparent bars drawn edge to edge; icons light on the dark theme, dark on the ivory theme. */
+    private fun applySystemBars(dark: Boolean) {
+        val style = if (dark) {
+            SystemBarStyle.dark(Color.TRANSPARENT)
+        } else {
+            SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+        }
+        enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
     }
 }
