@@ -127,6 +127,8 @@ recorded as `other`, so free text cannot leak into metrics. `GET /ready` reports
 - `DELETE /v1/me` deletes the account and all server data and cancels active streams; the app also
   offers "Delete local data" and deletes local data after account deletion.
 - Conversation and document deletion are available in the app and API.
+- Push device tokens are encrypted at rest, never logged or returned, excluded from the export and
+  deleted with the session or the account ([push-notifications.md](push-notifications.md)).
 
 ## Known limitations
 See [roadmap.md](roadmap.md#security-follow-ups) and the residual risks in

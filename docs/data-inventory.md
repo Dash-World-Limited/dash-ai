@@ -22,6 +22,8 @@ the ciphertext bound to its row so it cannot be moved to another row or user.
 | `automations.name_enc`, `prompt_enc` | **Yes** | Encrypted | Since migration 7, bound to the row (AAD). |
 | `automation_runs.content_enc` | **Yes** — generated results, possibly edited by the person | Encrypted | Since migration 7, bound to automation and run. |
 | `automations.schedule`, `time_zone`, `mode`, `status`, `next_run_at` | No — but the zone hints at location and the schedule at routine | Plaintext | Needed by the scheduler. |
+| `push_devices.token_enc` | **Yes** — a device push token | Encrypted | Since migration 8, bound to the row. Never logged, returned or exported; removed with the session. |
+| `push_devices.token_hash`, `platform`, `app_version`, timestamps; `push_deliveries`; `users.push_automates` | No | Plaintext | Delivery machinery; error codes are normalized, never provider text. |
 | `automation_runs.status`, `trigger`, `error_code`, `provider`, `model`, timestamps; `notifications` | No | Plaintext | Provider and model are internal; never sent to the apps. |
 
 ## Account and operational data
