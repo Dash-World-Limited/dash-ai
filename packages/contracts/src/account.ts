@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Id, IsoDateTime, ProviderId } from "./common.js";
 import { User } from "./auth.js";
+import { AutomationExport } from "./automations.js";
 import { ConversationDetailResponse } from "./conversations.js";
 import { DocumentResponse } from "./documents.js";
 import { PluginSetting, ToolActivity } from "./tools.js";
@@ -45,5 +46,6 @@ export const DataExportResponse = z.object({
   /** Older exports lack these; they default to empty. */
   plugins: z.array(PluginSetting).default([]),
   toolActivity: z.array(ToolActivity).default([]),
+  automations: z.array(AutomationExport).default([]),
 });
 export type DataExportResponse = z.infer<typeof DataExportResponse>;

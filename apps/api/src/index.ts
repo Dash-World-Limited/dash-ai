@@ -64,6 +64,10 @@ async function main(): Promise<void> {
     "provider configuration",
   );
 
+  // DASH Automates runs on every instance; the database coordinates them (see AutomationService).
+  context.automations.start();
+  app.log.info({ enabled: config.automations.enabled, concurrency: config.automations.concurrency }, "automations scheduler");
+
   const shutdown = async (signal: string) => {
     app.log.info({ signal }, "shutting down");
     clearInterval(purge);

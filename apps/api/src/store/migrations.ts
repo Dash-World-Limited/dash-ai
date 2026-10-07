@@ -183,4 +183,71 @@ CREATE INDEX tool_executions_user_idx ON tool_executions (user_id);
 CREATE INDEX tool_invocations_conversation_idx ON tool_invocations (conversation_id, id);
 `,
   },
+  {
+    id: 7,
+    name: "automations",
+    sql: `
+-- DASH Automates: scheduled tasks the server runs for a person, their results, and in-app notices.
+-- Names, prompts and results are user content: AES-256-GCM ciphertext (same keyring as messages).
+CREATE TABLE automations (
+  id           text PRIMARY KEY,
+  user_id      text NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  name_enc     bytea NOT NULL,
+  prompt_enc   bytea NOT NULL,
+  enc_key_id   text NOT NULL,
+  mode         text NOT NULL,
+  -- {"kind":"daily","time":"08:00"} etc., interpreted in time_zone (an IANA name).
+  schedule     jsonb NOT NULL,
+  time_zone    text NOT NULL,
+  status       text NOT NULL,
+  next_run_at  timestamptz,
+  created_at   timestamptz NOT NULL,
+  updated_at   timestamptz NOT NULL
+);
+CREATE INDEX automations_user_idx ON automations (user_id, created_at DESC);
+-- The scheduler's question: which active automations are due?
+CREATE INDEX automations_due_idx ON automations (next_run_at) WHERE status = 'active';
+
+-- Runs double as the work queue: "queued" rows are claimed with FOR UPDATE SKIP LOCKED by whichever
+-- instance gets there first; a "running" row's lease lets another instance recover it if its
+-- instance stops. Provider and model are internal diagnostics, never returned to clients.
+CREATE TABLE automation_runs (
+  id             text PRIMARY KEY,
+  automation_id  text NOT NULL REFERENCES automations (id) ON DELETE CASCADE,
+  user_id        text NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  trigger        text NOT NULL,
+  status         text NOT NULL,
+  content_enc    bytea,
+  content_key_id text,
+  error_code     text,
+  position       bigint GENERATED ALWAYS AS IDENTITY,
+  created_at     timestamptz NOT NULL,
+  started_at     timestamptz,
+  finished_at    timestamptz,
+  lease_until    timestamptz,
+  edited_at      timestamptz,
+  provider       text,
+  model          text,
+  demo           boolean NOT NULL DEFAULT false
+);
+CREATE INDEX automation_runs_automation_idx ON automation_runs (automation_id, position DESC);
+CREATE INDEX automation_runs_queued_idx ON automation_runs (position) WHERE status = 'queued';
+CREATE INDEX automation_runs_running_idx ON automation_runs (lease_until) WHERE status = 'running';
+-- At most one queued or running run per automation, enforced by the database.
+CREATE UNIQUE INDEX automation_runs_in_flight_key ON automation_runs (automation_id) WHERE status IN ('queued', 'running');
+
+CREATE TABLE notifications (
+  id            text PRIMARY KEY,
+  user_id       text NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  kind          text NOT NULL,
+  automation_id text NOT NULL REFERENCES automations (id) ON DELETE CASCADE,
+  run_id        text NOT NULL REFERENCES automation_runs (id) ON DELETE CASCADE,
+  position      bigint GENERATED ALWAYS AS IDENTITY,
+  created_at    timestamptz NOT NULL,
+  read_at       timestamptz
+);
+CREATE INDEX notifications_user_idx ON notifications (user_id, position DESC);
+CREATE INDEX notifications_unread_idx ON notifications (user_id) WHERE read_at IS NULL;
+`,
+  },
 ];

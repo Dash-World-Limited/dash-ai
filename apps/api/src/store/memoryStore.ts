@@ -1,5 +1,10 @@
 import {
   summarizeDocument,
+  type AutomationRecord,
+  type AutomationRunRecord,
+  type FinishRunInput,
+  type NotificationRecord,
+  type ScheduleRunInput,
   type ConversationChangePage,
   type ConversationRecord,
   type ConversationState,
@@ -40,6 +45,10 @@ export class MemoryStore implements Store {
   private readonly pluginSettings = new Map<string, Map<string, PluginSettingRecord>>();
   private toolInvocations: ToolInvocationRow[] = [];
   private readonly toolExecutions = new Map<string, { userId: string; status: string }>();
+  private readonly automations = new Map<string, AutomationRecord>();
+  /** Insertion order is creation order. */
+  private readonly runs = new Map<string, AutomationRunRecord>();
+  private readonly notifications = new Map<string, NotificationRecord>();
 
   private bump(conversation: StoredConversation): void {
     const next = (this.syncCounters.get(conversation.record.userId) ?? 0) + 1;
@@ -97,6 +106,7 @@ export class MemoryStore implements Store {
     this.pluginSettings.delete(userId);
     this.toolInvocations = this.toolInvocations.filter((t) => t.userId !== userId);
     for (const [key, e] of this.toolExecutions) if (e.userId === userId) this.toolExecutions.delete(key);
+    for (const [id, a] of this.automations) if (a.userId === userId) this.deleteAutomationRows(id);
   }
 
   /**
@@ -351,6 +361,161 @@ export class MemoryStore implements Store {
     return this.toolInvocations
       .filter((t) => t.userId === userId && t.conversationId === conversationId && live.has(t.messageId))
       .map((t) => ({ ...t }));
+  }
+
+  // ---- DASH Automates ----
+
+  private deleteAutomationRows(id: string): void {
+    this.automations.delete(id);
+    for (const [runId, r] of this.runs) if (r.automationId === id) this.runs.delete(runId);
+    for (const [nid, n] of this.notifications) if (n.automationId === id) this.notifications.delete(nid);
+  }
+
+  private inFlight(automationId: string): boolean {
+    for (const r of this.runs.values()) if (r.automationId === automationId && (r.status === "queued" || r.status === "running")) return true;
+    return false;
+  }
+
+  async countAutomations(userId: string): Promise<number> {
+    return [...this.automations.values()].filter((a) => a.userId === userId).length;
+  }
+
+  async createAutomation(automation: AutomationRecord): Promise<boolean> {
+    if (!this.owned(automation.userId) || this.automations.has(automation.id)) return false;
+    this.automations.set(automation.id, structuredClone(automation));
+    return true;
+  }
+
+  async getAutomation(userId: string, id: string): Promise<AutomationRecord | undefined> {
+    const a = this.automations.get(id);
+    return a && a.userId === userId ? structuredClone(a) : undefined;
+  }
+
+  async listAutomations(userId: string): Promise<AutomationRecord[]> {
+    return [...this.automations.values()]
+      .filter((a) => a.userId === userId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+      .map((a) => structuredClone(a));
+  }
+
+  async updateAutomation(automation: AutomationRecord): Promise<boolean> {
+    const existing = this.automations.get(automation.id);
+    if (!existing || existing.userId !== automation.userId) return false;
+    this.automations.set(automation.id, { ...structuredClone(automation), createdAt: existing.createdAt });
+    return true;
+  }
+
+  async deleteAutomation(userId: string, id: string): Promise<boolean> {
+    const a = this.automations.get(id);
+    if (!a || a.userId !== userId) return false;
+    this.deleteAutomationRows(id);
+    return true;
+  }
+
+  async listDueAutomations(now: string, limit: number): Promise<AutomationRecord[]> {
+    const t = Date.parse(now);
+    return [...this.automations.values()]
+      .filter((a) => a.status === "active" && a.nextRunAt !== null && Date.parse(a.nextRunAt) <= t)
+      .sort((a, b) => Date.parse(a.nextRunAt!) - Date.parse(b.nextRunAt!))
+      .slice(0, limit)
+      .map((a) => structuredClone(a));
+  }
+
+  async scheduleRun(input: ScheduleRunInput): Promise<"queued" | "skipped" | "lost"> {
+    const a = this.automations.get(input.automationId);
+    if (!a || a.status !== "active" || a.nextRunAt === null || Date.parse(a.nextRunAt) !== Date.parse(input.expectedNextRunAt)) return "lost";
+    a.nextRunAt = input.nextRunAt;
+    if (input.nextRunAt === null) a.status = "completed";
+    a.updatedAt = input.updatedAt;
+    if (this.inFlight(a.id)) return "skipped";
+    this.runs.set(input.run.id, structuredClone(input.run));
+    return "queued";
+  }
+
+  async enqueueRun(run: AutomationRunRecord): Promise<boolean> {
+    const a = this.automations.get(run.automationId);
+    if (!a || a.userId !== run.userId || this.inFlight(run.automationId)) return false;
+    this.runs.set(run.id, structuredClone(run));
+    return true;
+  }
+
+  async claimQueuedRun(now: string, leaseUntil: string): Promise<AutomationRunRecord | undefined> {
+    for (const r of this.runs.values()) {
+      if (r.status !== "queued") continue;
+      r.status = "running";
+      r.startedAt = now;
+      r.leaseUntil = leaseUntil;
+      return structuredClone(r);
+    }
+    return undefined;
+  }
+
+  async finishRun(input: FinishRunInput): Promise<boolean> {
+    const r = this.runs.get(input.runId);
+    if (!r || r.status !== "running") return false;
+    Object.assign(r, {
+      status: input.status, content: input.content, errorCode: input.errorCode, finishedAt: input.finishedAt,
+      leaseUntil: null, provider: input.provider, model: input.model, demo: input.demo,
+    });
+    this.notifications.set(input.notification.id, structuredClone(input.notification));
+    const finished = [...this.runs.values()].filter((x) => x.automationId === r.automationId && (x.status === "ready" || x.status === "failed")).reverse();
+    for (const old of finished.slice(input.keep)) {
+      this.runs.delete(old.id);
+      for (const [nid, n] of this.notifications) if (n.runId === old.id) this.notifications.delete(nid);
+    }
+    return true;
+  }
+
+  async listStaleRuns(now: string, limit: number): Promise<AutomationRunRecord[]> {
+    const t = Date.parse(now);
+    return [...this.runs.values()]
+      .filter((r) => r.status === "running" && r.leaseUntil !== null && Date.parse(r.leaseUntil) < t)
+      .slice(0, limit)
+      .map((r) => structuredClone(r));
+  }
+
+  async getRun(userId: string, automationId: string, runId: string): Promise<AutomationRunRecord | undefined> {
+    const r = this.runs.get(runId);
+    return r && r.userId === userId && r.automationId === automationId ? structuredClone(r) : undefined;
+  }
+
+  async listRuns(userId: string, automationId: string, limit: number): Promise<AutomationRunRecord[]> {
+    return [...this.runs.values()]
+      .filter((r) => r.userId === userId && r.automationId === automationId)
+      .reverse()
+      .slice(0, limit)
+      .map((r) => structuredClone(r));
+  }
+
+  async updateRunContent(userId: string, automationId: string, runId: string, content: string, editedAt: string): Promise<boolean> {
+    const r = this.runs.get(runId);
+    if (!r || r.userId !== userId || r.automationId !== automationId || r.status !== "ready") return false;
+    r.content = content;
+    r.editedAt = editedAt;
+    return true;
+  }
+
+  async listNotifications(userId: string, limit: number): Promise<NotificationRecord[]> {
+    return [...this.notifications.values()]
+      .filter((n) => n.userId === userId)
+      .reverse()
+      .slice(0, limit)
+      .map((n) => structuredClone(n));
+  }
+
+  async countUnreadNotifications(userId: string): Promise<number> {
+    return [...this.notifications.values()].filter((n) => n.userId === userId && n.readAt === null).length;
+  }
+
+  async markNotificationsRead(userId: string, ids: string[] | null, readAt: string): Promise<number> {
+    let changed = 0;
+    const wanted = ids ? new Set(ids) : null;
+    for (const n of this.notifications.values()) {
+      if (n.userId !== userId || n.readAt !== null || (wanted && !wanted.has(n.id))) continue;
+      n.readAt = readAt;
+      changed += 1;
+    }
+    return changed;
   }
 
   async close(): Promise<void> {}
