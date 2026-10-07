@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { LIMITS } from "@dash-ai/contracts";
 import { ApiError } from "../api/client";
 import { authFailure, emailError, passwordError, type AuthFailureKind } from "../logic/presentation";
+import { BRAND, SPLASH } from "../brand/brand";
 import { useApp } from "../state/app";
 import { navigate } from "../state/router";
 import { useStore } from "../state/store";
@@ -9,24 +10,28 @@ import { Icon, type IconName } from "../ui/icons";
 import { BrandMark, Notice, Wordmark } from "../ui/kit";
 
 /** The brand moment on first paint: short, and skipped entirely with reduced motion. */
+/**
+ * The brand splash ("Intelligence. Possibility. Arrival."): always dark and cinematic, whatever the
+ * theme. The scene layers come from tools/brand/splash_scene.py (shared with Android); the mark,
+ * wordmark, tagline and footer are drawn here. No buttons, no feature cards.
+ */
 export function Splash({ onDone }: { onDone: () => void }) {
   useEffect(() => {
     const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    const t = setTimeout(onDone, reduced ? 0 : 750);
+    const t = setTimeout(onDone, reduced ? 400 : 1600);
     return () => clearTimeout(t);
   }, [onDone]);
   return (
-    <div className="splash" data-testid="splash" aria-hidden="true">
-      <div style={{ display: "grid", justifyItems: "center", gap: 14 }}>
-        <BrandMark size={56} />
-        <span className="wordmark" style={{ fontSize: 20 }}>
-          <b>DASH</b> <span>AI</span>
-        </span>
-        <span className="serif" style={{ opacity: 0.72, fontSize: 17 }}>
-          Beyond the Digital.
-        </span>
+    <div className="splash" data-testid="splash" role="img" aria-label="DASH AI. Beyond the Digital. A Dash World product.">
+      <img className="splash-planet" src={SPLASH.planet} alt="" draggable={false} />
+      <img className="splash-terrain" src={SPLASH.terrain} alt="" draggable={false} />
+      <img className="splash-figure" src={SPLASH.figure} alt="" draggable={false} />
+      <div className="splash-center">
+        <img className="splash-mark" src={BRAND.markUrl} alt="" draggable={false} />
+        <span className="splash-wordmark">DASH AI</span>
+        <span className="splash-tagline">Beyond the Digital.</span>
       </div>
-      <span style={{ position: "absolute", bottom: 32, fontSize: 12, opacity: 0.55 }}>A Dash World product</span>
+      <span className="splash-footer">A DASH WORLD PRODUCT</span>
     </div>
   );
 }

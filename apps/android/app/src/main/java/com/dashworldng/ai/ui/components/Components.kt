@@ -52,6 +52,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
@@ -87,9 +88,20 @@ import com.dashworldng.ai.ui.theme.Spacing
  * icons) and scaled to fit [size]. Replace the mark in DashBrand, not here.
  */
 @Composable
-fun BrandMark(size: Dp, modifier: Modifier = Modifier) {
+fun BrandMark(size: Dp, modifier: Modifier = Modifier, luminous: Boolean = false) {
     val c = DashTheme.colors
-    val gold = Brush.linearGradient(listOf(c.accent, c.accentInk))
+    // Luminous: lit champagne for the dark brand canvas (splash). Otherwise the theme's accent, which
+    // keeps contrast on light surfaces.
+    val gold = if (luminous) {
+        Brush.linearGradient(
+            listOf(Color(0xFFFBF6EA), Color(0xFFF4ECD9), Color(0xFFDCC07F), Color(0xFFC9A75B), Color(0xFF7A5C1C)),
+            // In the mark's own 108-unit coordinates: light from the upper left, deepening below.
+            start = Offset(38f, 24f),
+            end = Offset(70f, 84f),
+        )
+    } else {
+        Brush.linearGradient(listOf(c.accent, c.accentInk))
+    }
     val mark = remember { PathParser().parsePathString(DashBrand.MARK_PATH).toPath().apply { fillType = PathFillType.EvenOdd } }
     Canvas(modifier.size(size).semantics { contentDescription = DashBrand.NAME }) {
         val (left, top, right, bottom) = DashBrand.MARK_BOUNDS
