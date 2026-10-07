@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PluginInfo } from "@dash-ai/contracts";
-import { canSwitch, greeting, groupHistory, initials, providerOptions, recoveryCard, toolConnection, toolUseLabel, authFailure, ALL_AVAILABLE } from "./presentation";
+import { greeting, groupHistory, initials, recipientLabel, recoveryCard, sourceLabel, toolConnection, toolUseLabel, authFailure } from "./presentation";
 
 describe("greeting", () => {
   it("uses the time of day and the account's own first name, never an invented one", () => {
@@ -30,28 +30,24 @@ describe("history grouping", () => {
   });
 });
 
-describe("providers", () => {
-  it("lists only real choices, explains unavailable ones and never switches mid-answer", () => {
-    const onlyOpenAi = { configured: new Set(["openai"] as const), models: { openai: "gpt-x" } };
-    const options = providerOptions(onlyOpenAi, "smart", false);
-    expect(options.map((o) => o.choice)).toEqual(["smart", "openai", "claude", "compare"]);
-    expect(options.map((o) => o.available)).toEqual([true, true, false, false]);
-    expect(options[2]!.unavailableReason).toBe("Not configured on this server.");
-    expect(options[1]!.model).toBe("gpt-x");
-    expect(canSwitch("claude", ALL_AVAILABLE, false, true)).toBe(false);
-    expect(canSwitch("claude", onlyOpenAi, false, false)).toBe(false);
+describe("DASH AI presentation", () => {
+  it("labels answers and the composer as DASH AI, never as a provider", () => {
+    expect(sourceLabel({ demo: false })).toBe("DASH AI");
+    expect(sourceLabel({ demo: true })).toBe("Demo · DASH AI (simulated)");
+    expect(recipientLabel("business", false)).toBe("DASH AI · Business");
+    expect(recipientLabel("general", true)).toContain("Demo Mode");
   });
 
-  it("recovery offers retry, an explicit change of provider from the server's list, and continue later", () => {
-    const card = recoveryCard({ provider: "openai", compareGroupId: null, errorMessage: "OpenAI is busy.", retryable: true, recovery: { attempts: 3, alternatives: ["anthropic"] } }, ALL_AVAILABLE.configured, true);
-    expect(card.title).toBe("Provider temporarily unavailable");
-    expect(card.actions).toEqual(["retry", "change", "later"]);
-    expect(card.alternatives).toEqual(["anthropic"]);
+  it("recovery offers retry and continue later only, with neutral wording", () => {
+    const card = recoveryCard({ errorMessage: "DASH AI couldn't complete that response. Please try again.", retryable: true, recovery: { attempts: 3 } }, true);
+    expect(card.title).toBe("DASH AI couldn't complete that response");
+    expect(card.actions).toEqual(["retry", "later"]);
     expect(card.attemptsNote).toBe("DASH AI tried 3 times before stopping.");
-    const offline = recoveryCard({ provider: "openai", compareGroupId: null, errorMessage: null, retryable: true }, ALL_AVAILABLE.configured, false);
-    expect(offline.actions).toEqual(["later"]);
-    const compare = recoveryCard({ provider: "openai", compareGroupId: "g", errorMessage: null, retryable: true, recovery: { attempts: 1, alternatives: ["anthropic"] } }, ALL_AVAILABLE.configured, true);
-    expect(compare.alternatives).toEqual([]);
+    expect(recoveryCard({ errorMessage: null, retryable: true }, false).actions).toEqual(["later"]);
+    expect(recoveryCard({ errorMessage: null, retryable: false }, true).actions).toEqual(["later"]);
+    for (const c of [card, recoveryCard({ errorMessage: null, retryable: false }, true)]) {
+      expect(JSON.stringify(c)).not.toMatch(/openai|anthropic|claude|chatgpt|gpt|gemini|provider/i);
+    }
   });
 });
 

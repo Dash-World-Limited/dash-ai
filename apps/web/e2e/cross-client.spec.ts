@@ -54,7 +54,8 @@ test("a chat started on the web reaches Android complete: messages, labels, titl
   expect(change!.deleted).toBe(false);
   expect(change!.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
   expect(change!.messages[0]!.content).toContain("Count these words");
-  expect(change!.messages[1]).toMatchObject({ status: "complete", origin: "openai" });
+  // DASH AI's answer: which AI infrastructure produced it is internal and never synced to clients.
+  expect(change!.messages[1]).toMatchObject({ status: "complete", origin: null, model: null });
   expect(change!.toolActivity).toEqual([expect.objectContaining({ messageId: change!.messages[1]!.id, plugin: "dash-demo", tool: "text_stats", status: "ok" })]);
 
   // Renamed on the web: Android sees the new title with a newer revision, marked as the person's own.

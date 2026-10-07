@@ -1,4 +1,4 @@
-import type { AssistantMode, ModelChoice } from "@dash-ai/contracts";
+import type { AssistantMode } from "@dash-ai/contracts";
 import type { DemoFailure } from "../chat/backends";
 import { Store } from "./store";
 
@@ -20,7 +20,6 @@ export interface Settings {
   account: Account | null;
   /** True once the person chose Demo Mode or signed in, so the start screen is skipped. */
   started: boolean;
-  defaultChoice: ModelChoice;
   defaultMode: AssistantMode;
   demoFailure: DemoFailure;
 }
@@ -31,7 +30,6 @@ export const DEFAULT_SETTINGS: Settings = {
   demoMode: true,
   account: null,
   started: false,
-  defaultChoice: "smart",
   defaultMode: "general",
   demoFailure: "none",
 };
@@ -40,8 +38,12 @@ const KEY = "dash.settings";
 
 export function loadSettings(storage: Storage): Settings {
   try {
-    const parsed = JSON.parse(storage.getItem(KEY) ?? "{}") as Partial<Settings>;
-    return { ...DEFAULT_SETTINGS, ...parsed };
+    const parsed = JSON.parse(storage.getItem(KEY) ?? "{}") as Partial<Settings> & { defaultChoice?: unknown };
+    // Older versions stored a default provider choice; DASH AI now routes every request itself.
+    const { defaultChoice: _dropped, ...kept } = parsed;
+    const settings = { ...DEFAULT_SETTINGS, ...kept };
+    if ((settings.demoFailure as string) === "provider") settings.demoFailure = "service";
+    return settings;
   } catch {
     return DEFAULT_SETTINGS;
   }

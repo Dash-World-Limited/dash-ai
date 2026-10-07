@@ -77,46 +77,73 @@ test("Demo Mode: simulated, labelled answers that stay in the browser", async ({
   await shot(page, "05-history");
 });
 
-test("provider sheet: real choices only, remembered, Compare confirmed", async ({ page }) => {
+/**
+ * Words a consumer must never see: DASH AI is the product; its AI infrastructure is internal. The
+ * privacy disclosure ("third-party artificial-intelligence service providers") is allowed by design.
+ */
+const PROVIDER_WORDS = /\b(openai|chatgpt|gpt[-\s]?\d|anthropic|claude|gemini|google ai|dash smart)\b|\b(ai|change|another|other|default) providers?\b|\bcompare (mode|answers|providers)\b/i;
+
+/** Visible text plus accessible names, titles and alt text on the current page. */
+async function consumerText(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const parts = [document.body.innerText, document.title];
+    for (const el of Array.from(document.querySelectorAll("[aria-label],[title],[alt],[placeholder]"))) {
+      for (const attr of ["aria-label", "title", "alt", "placeholder"]) {
+        const v = el.getAttribute(attr);
+        if (v) parts.push(v);
+      }
+    }
+    return parts.join("\n");
+  });
+}
+
+async function expectNoProviderWords(page: Page, where: string) {
+  const text = await consumerText(page);
+  expect(text.match(PROVIDER_WORDS)?.[0] ?? null, `provider wording on ${where}`).toBeNull();
+}
+
+test("DASH AI only: no provider choice, label or Compare anywhere a person can see", async ({ page }) => {
   await enterDemo(page);
+  await expectNoProviderWords(page, "home");
   await page.getByTestId("quick-write").click();
   await expect(page.getByTestId("empty-chat")).toContainText("Writing");
-  await page.getByTestId("provider-chip").click();
-  await expect(page.getByTestId("provider-sheet")).toBeVisible();
-  await shot(page, "06-provider-sheet");
-  await page.getByTestId("provider-claude").click();
-  await expect(page.getByTestId("provider-chip")).toContainText("Claude");
-  await page.getByTestId("provider-chip").click();
-  await page.getByTestId("provider-compare").click();
-  await expect(page.getByTestId("compare-confirm")).toContainText("two requests");
-  await page.getByTestId("confirm-compare").click();
-  await expect(page.getByTestId("provider-chip")).toContainText("Compare");
-  await page.getByTestId("composer-input").fill("Compare these");
+  await expect(page.getByTestId("provider-chip")).toHaveCount(0);
+  await expect(page.getByTestId("recipient")).toContainText("Demo Mode");
+  await page.getByTestId("composer-input").fill("Plan a calm week");
   await page.getByTestId("send").click();
-  await expect(page.getByTestId("compare-row")).toBeVisible();
-  await expect(page.getByTestId("compare-row")).toContainText("simulated OpenAI style", { timeout: 20_000 });
-  await expect(page.getByTestId("compare-row")).toContainText("simulated Claude style", { timeout: 20_000 });
-  // Remembered for new chats after a reload.
-  await page.reload();
-  await page.goto("/chat");
-  await expect(page.getByTestId("provider-chip")).toContainText("Compare");
+  await expect(page.getByTestId("assistant-message")).toContainText("Demo response · simulated by DASH AI", { timeout: 20_000 });
+  await expect(page.getByTestId("send")).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId("compare-row")).toHaveCount(0);
+  await expectNoProviderWords(page, "chat");
+  await page.getByTestId("mode-chip").click();
+  await expect(page.getByTestId("mode-sheet")).toBeVisible();
+  await shot(page, "06-mode-sheet");
+  await expectNoProviderWords(page, "mode sheet");
+  await page.keyboard.press("Escape");
+  for (const route of ["/settings", "/account", "/tools", "/documents", "/prompts"]) {
+    await page.goto(route);
+    await expect(page.locator("#main")).toBeVisible();
+    await expectNoProviderWords(page, route);
+  }
+  await page.goto("/settings");
+  await expect(page.getByTestId("settings")).toBeVisible();
+  for (const gone of ["default-smart", "default-openai", "default-claude"]) await expect(page.getByTestId(gone)).toHaveCount(0);
 });
 
-test("provider failure: retry, change provider, continue later; never switches by itself", async ({ page }) => {
+test("DASH AI failure: neutral recovery with Retry and Continue later; no other provider offered", async ({ page }) => {
   await enterDemo(page);
   await openMenuIfNeeded(page);
   await page.getByTestId("nav-settings").click();
-  await page.getByTestId("demo-failure-provider").click();
+  await page.getByTestId("demo-failure-service").click();
   await page.goto("/chat");
   await page.getByTestId("composer-input").fill("Hello");
   await page.getByTestId("send").click();
   const card = page.getByTestId("recovery-card");
-  await expect(card).toContainText("Provider temporarily unavailable", { timeout: 20_000 });
-  await expect(page.getByTestId("provider-chip")).toContainText("Dash Smart");
+  await expect(card).toContainText("DASH AI couldn't complete that response", { timeout: 20_000 });
+  await expect(page.getByTestId("recovery-retry")).toBeVisible();
+  await expect(page.getByTestId("recovery-change")).toHaveCount(0);
+  await expectNoProviderWords(page, "recovery");
   await shot(page, "07-recovery");
-  await page.getByTestId("recovery-change").click();
-  await expect(page.getByTestId("alternative-sheet")).toBeVisible();
-  await page.keyboard.press("Escape");
   await page.getByTestId("recovery-later").click();
   await expect(card).toHaveCount(0);
 });
@@ -129,7 +156,8 @@ test("live: account, greeting by name, streamed answer from the API, history and
   await page.getByTestId("home-send").click();
   await expect(page.getByTestId("assistant-message")).not.toBeEmpty();
   await expect(page.getByTestId("send")).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId("assistant-message").getByTestId("source-label")).toContainText("OpenAI");
+  await expect(page.getByTestId("assistant-message").getByTestId("source-label")).toContainText("DASH AI");
+  await expectNoProviderWords(page, "live chat");
   await shot(page, "09-chat-live");
   // Survives a reload: the conversation is on the server.
   await page.reload();

@@ -102,15 +102,15 @@ test("keyboard: skip link, sheets that keep focus and close on Escape, Enter sen
   await expect(page.locator("#main")).toBeFocused();
 
   await page.goto("/chat");
-  await page.getByTestId("provider-chip").focus();
+  await page.getByTestId("mode-chip").focus();
   await page.keyboard.press("Enter");
-  const sheet = page.getByTestId("provider-sheet");
+  const sheet = page.getByTestId("mode-sheet");
   await expect(sheet).toBeVisible();
   for (let i = 0; i < 12; i++) await page.keyboard.press("Tab");
   expect(await sheet.evaluate((el) => el.contains(document.activeElement))).toBe(true);
   await page.keyboard.press("Escape");
   await expect(sheet).toHaveCount(0);
-  await expect(page.getByTestId("provider-chip")).toBeFocused();
+  await expect(page.getByTestId("mode-chip")).toBeFocused();
 
   await page.getByTestId("composer-input").focus();
   await page.keyboard.type("Plan my week");

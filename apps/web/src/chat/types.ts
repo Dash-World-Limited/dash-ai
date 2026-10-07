@@ -4,8 +4,6 @@ import type {
   Conversation,
   ConversationMessage,
   MessageToolActivity,
-  ModelChoice,
-  ProviderId,
   StreamEvent,
 } from "@dash-ai/contracts";
 import type { ToolUse } from "../logic/presentation";
@@ -24,17 +22,13 @@ export interface ChatMsg {
   role: "user" | "assistant";
   content: string;
   status: MsgStatus;
-  origin: ProviderId | null;
-  model: string | null;
   demo: boolean;
-  compareGroupId: string | null;
   replyToId: string | null;
   createdAt: string;
-  choice: ModelChoice | null;
   attachments: Attachment[];
   errorMessage: string | null;
   retryable: boolean;
-  recovery?: { attempts: number; alternatives: ProviderId[] };
+  recovery?: { attempts: number };
   tools: ToolUse[];
   finishReason: "stop" | "length" | "refusal" | "cancelled" | null;
 }
@@ -53,7 +47,7 @@ export interface ChatBackend {
   save?(conversation: Conversation, messages: ChatMsg[]): void;
 }
 
-export type { AssistantMode, ModelChoice };
+export type { AssistantMode };
 
 /** A file in the composer: uploading, ready, or refused with a reason. */
 export interface PendingAttachment {

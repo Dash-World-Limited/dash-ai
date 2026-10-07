@@ -22,7 +22,7 @@ export function Badge({ text, tone }: { text: string; tone: Tone }) {
 
 export function DemoBadge() {
   return (
-    <span className="demo-badge" title="Demo Mode: simulated, not a real provider">
+    <span className="demo-badge" title="Demo Mode: simulated by DASH AI, not a real answer">
       DEMO
     </span>
   );

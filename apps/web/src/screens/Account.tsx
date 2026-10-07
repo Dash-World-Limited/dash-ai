@@ -1,7 +1,7 @@
 import type { UsageSummaryResponse } from "@dash-ai/contracts";
 import { useEffect, useState, type ReactNode } from "react";
 import { ApiError } from "../api/client";
-import { initials, PROVIDER_NAME } from "../logic/presentation";
+import { initials } from "../logic/presentation";
 import { useApp } from "../state/app";
 import { navigate } from "../state/router";
 import { useStore } from "../state/store";
@@ -53,12 +53,12 @@ export function DataProtection() {
         <div className="stack small muted" style={{ padding: "0 16px 16px", gap: 8 }}>
           <p style={{ margin: 0 }}>In transit: the web app talks to the DASH AI server over HTTPS in production.</p>
           <p style={{ margin: 0 }}>
-            On the server: chats, documents and tool activity are encrypted at rest (AES-256-GCM). The server decrypts them to answer you and sends your messages to the AI provider you choose, so this is not end-to-end encryption.
+            On the server: chats, documents and tool activity are encrypted at rest (AES-256-GCM). The server decrypts them to answer you, so this is not end-to-end encryption. DASH AI may use third-party artificial-intelligence service providers to process requests.
           </p>
           <p style={{ margin: 0 }}>
             In this browser: your session is kept for this tab only, or until you sign out if you chose "Keep me signed in". Demo Mode chats and documents stay in this browser's storage.
           </p>
-          <p style={{ margin: 0 }}>AI providers' keys never reach your browser.</p>
+          <p style={{ margin: 0 }}>DASH AI's service keys never reach your browser.</p>
         </div>
       )}
     </>
@@ -115,7 +115,7 @@ export function AccountScreen() {
           {!signedIn && (
             <>
               <Notice title="You're using Demo Mode">
-                Demo answers are simulated in this browser. Sign in or create an account to use OpenAI and Claude through your DASH AI server. Demo chats are kept separate from your account.
+                Demo answers are simulated in this browser. Sign in or create an account to get real answers from DASH AI. Demo chats are kept separate from your account.
               </Notice>
               <button className="btn btn-primary btn-block" onClick={() => navigate("/sign-in")} data-testid="account-sign-in">Sign in or create an account</button>
             </>
@@ -132,11 +132,9 @@ export function AccountScreen() {
                   {!usage || usage.totals.length === 0 ? (
                     <span className="muted">No usage recorded yet.</span>
                   ) : (
-                    usage.totals.map((t) => (
-                      <div key={t.provider}>
-                        {PROVIDER_NAME[t.provider]} · {t.requests} answers · {(t.inputTokens + t.outputTokens).toLocaleString()} tokens
-                      </div>
-                    ))
+                    <div data-testid="usage-total">
+                      DASH AI · {usage.totals.reduce((n, t) => n + t.requests, 0)} answers · {usage.totals.reduce((n, t) => n + t.inputTokens + t.outputTokens, 0).toLocaleString()} tokens
+                    </div>
                   )}
                 </div>
               </Group>

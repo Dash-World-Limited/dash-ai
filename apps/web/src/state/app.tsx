@@ -1,10 +1,10 @@
-import { promptCategory, type AssistantMode, type Conversation, type ModelChoice, type PromptItem, type ProviderId } from "@dash-ai/contracts";
+import { promptCategory, type AssistantMode, type Conversation, type PromptItem } from "@dash-ai/contracts";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { ApiError, DashApi, browserTokenStore, type TokenStore } from "../api/client";
 import { clearDemoData, DemoBackend, LiveBackend } from "../chat/backends";
 import { ChatEngine, type ChatState } from "../chat/engine";
 import type { ChatBackend, PendingAttachment } from "../chat/types";
-import { ALL_AVAILABLE, type ProviderAvailability } from "../logic/presentation";
+import { ASSUMED_AVAILABLE, type AssistantAvailability } from "../logic/presentation";
 import { DocumentsModel, usableInChat, type DocItem } from "./documents";
 import { PromptsModel } from "./prompts";
 import { createSettingsStore, type Account, type Settings } from "./settings";
@@ -17,14 +17,14 @@ export class AppModel {
   readonly api: DashApi;
   readonly engine: ChatEngine;
   readonly conversations = new Store<{ items: Conversation[]; loading: boolean; error: string | null }>({ items: [], loading: false, error: null });
-  readonly providers = new Store<ProviderAvailability>(ALL_AVAILABLE);
+  /** Whether DASH AI can answer right now. Which AI infrastructure serves it is never shown. */
+  readonly assistant = new Store<AssistantAvailability>(ASSUMED_AVAILABLE);
   readonly online = new Store<boolean>(typeof navigator === "undefined" ? true : navigator.onLine);
   readonly toast = new Store<string | null>(null);
   /** The open conversation, as a store (mirrors the chat engine). */
   readonly engineStore: Store<ChatState>;
-  readonly composer = new Store<{ text: string; choice: ModelChoice; mode: AssistantMode; attachments: PendingAttachment[] }>({
+  readonly composer = new Store<{ text: string; mode: AssistantMode; attachments: PendingAttachment[] }>({
     text: "",
-    choice: "smart",
     mode: "general",
     attachments: [],
   });
@@ -51,7 +51,7 @@ export class AppModel {
       wasGenerating = state.generating;
     });
     const s = this.settings.value;
-    this.composer.set((c) => ({ ...c, choice: s.defaultChoice, mode: s.defaultMode }));
+    this.composer.set((c) => ({ ...c, mode: s.defaultMode }));
     // Signed in according to settings but the token is gone (closed tab without "keep me signed in").
     if (!s.demoMode && s.account && !tokens.get()) this.settings.set((p) => ({ ...p, account: null, demoMode: true, started: false }));
   }
@@ -79,17 +79,14 @@ export class AppModel {
     }
   }
 
-  async refreshProviders(): Promise<void> {
-    if (!this.live) return this.providers.set(ALL_AVAILABLE);
+  async refreshAssistant(): Promise<void> {
+    if (!this.live) return this.assistant.set({ available: true, demo: true });
     try {
-      const r = await this.api.providers();
-      const configured = new Set<ProviderId>(r.providers.filter((p) => p.configured).map((p) => p.id));
-      const models: Partial<Record<ProviderId, string>> = {};
-      for (const p of r.providers) if (p.model) models[p.id] = p.model;
-      this.providers.set({ configured, models });
+      const r = await this.api.assistant();
+      this.assistant.set({ available: r.available, demo: r.demo });
     } catch (e) {
-      // Keep every choice selectable; sending will explain any problem.
-      this.providers.set({ ...ALL_AVAILABLE, error: e instanceof ApiError ? e.message : "Couldn't check the server." });
+      // Keep sending possible; sending will explain any problem.
+      this.assistant.set({ ...ASSUMED_AVAILABLE, error: e instanceof ApiError ? e.message : "Couldn't check the server." });
     }
   }
 
@@ -101,7 +98,7 @@ export class AppModel {
     this.documents.reset();
     this.prompts.reload();
     void this.refreshConversations();
-    void this.refreshProviders();
+    void this.refreshAssistant();
   }
 
   signedIn(token: string, user: Account, remember: boolean): void {
@@ -218,7 +215,7 @@ export class AppModel {
     if (was || !this.live) return;
     if (this.engine.value.error?.code === "network") this.engine.dismissError();
     void this.refreshConversations();
-    void this.refreshProviders();
+    void this.refreshAssistant();
   }
 
   /** "Use prompt": a new chat in the prompt's mode with its text ready to edit and send. */
@@ -244,7 +241,7 @@ export function AppProvider({ model, children }: { model: AppModel; children: Re
     window.addEventListener("online", on);
     window.addEventListener("offline", off);
     void model.refreshConversations();
-    void model.refreshProviders();
+    void model.refreshAssistant();
     return () => {
       window.removeEventListener("online", on);
       window.removeEventListener("offline", off);

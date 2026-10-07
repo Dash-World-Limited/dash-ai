@@ -25,7 +25,7 @@ export function Home() {
     app.engine.newChat();
     const c = app.composer.value;
     app.composer.set((x) => ({ ...x, text: "", attachments: [], mode: "general" }));
-    if (app.engine.send(text.trim(), c.choice, "general")) navigate("/chat");
+    if (app.engine.send(text.trim(), "general")) navigate("/chat");
     setText("");
   };
 

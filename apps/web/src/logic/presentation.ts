@@ -2,10 +2,9 @@
  * The web app's UI decisions, kept free of React so they are unit-tested. They mirror the Android
  * core (`apps/android/core/.../presentation`), so both apps behave the same.
  */
-import type { AssistantMode, ConversationMessage, ModelChoice, PluginInfo, ProviderId } from "@dash-ai/contracts";
-import { SMART_ROUTING } from "@dash-ai/contracts";
+import type { AssistantMode, ConversationMessage, PluginInfo } from "@dash-ai/contracts";
 
-// ---- Modes and providers ----------------------------------------------------------------------
+// ---- Modes ----------------------------------------------------------------------
 
 export interface ModeInfo {
   label: string;
@@ -71,85 +70,23 @@ export const MODES: Record<AssistantMode, ModeInfo> = {
 };
 
 export const MODE_ORDER: AssistantMode[] = ["general", "business", "writing", "documents", "research"];
-export const CHOICE_ORDER: ModelChoice[] = ["smart", "openai", "claude", "compare"];
-
-export const PROVIDER_NAME: Record<ProviderId, string> = { openai: "OpenAI", anthropic: "Claude" };
-export const CHOICE_LABEL: Record<ModelChoice, string> = { smart: "Dash Smart", openai: "OpenAI", claude: "Claude", compare: "Compare" };
-
-export function choiceForProvider(p: ProviderId): ModelChoice {
-  return p === "openai" ? "openai" : "claude";
-}
-
-export interface ProviderAvailability {
-  configured: ReadonlySet<ProviderId>;
-  models: Partial<Record<ProviderId, string>>;
+/**
+ * What the app knows about DASH AI's availability. There is no provider choice: DASH AI decides how
+ * to handle each request, and the AI infrastructure behind it is never shown.
+ */
+export interface AssistantAvailability {
+  available: boolean;
+  demo: boolean;
   error?: string;
 }
 
-export const ALL_AVAILABLE: ProviderAvailability = { configured: new Set<ProviderId>(["openai", "anthropic"]), models: {} };
+/** Until the server has answered, assume DASH AI can reply; sending explains any problem. */
+export const ASSUMED_AVAILABLE: AssistantAvailability = { available: true, demo: false };
 
-export function isAvailable(a: ProviderAvailability, choice: ModelChoice): boolean {
-  switch (choice) {
-    case "smart":
-      return a.configured.size > 0;
-    case "openai":
-      return a.configured.has("openai");
-    case "claude":
-      return a.configured.has("anthropic");
-    case "compare":
-      return a.configured.has("openai") && a.configured.has("anthropic");
-  }
-}
-
-const DESCRIPTION: Record<ModelChoice, string> = {
-  smart: "Automatic. DASH AI chooses OpenAI or Claude for the mode you are in.",
-  openai: "Every message in this chat goes to OpenAI.",
-  claude: "Every message in this chat goes to Anthropic's Claude.",
-  compare: "Asks OpenAI and Claude and shows both answers. Uses two requests.",
-};
-
-export interface ProviderOption {
-  choice: ModelChoice;
-  title: string;
-  description: string;
-  selected: boolean;
-  available: boolean;
-  unavailableReason: string | null;
-  model: string | null;
-}
-
-export function providerOptions(a: ProviderAvailability, selected: ModelChoice, demo: boolean): ProviderOption[] {
-  return CHOICE_ORDER.map((choice) => {
-    const available = demo || isAvailable(a, choice);
-    const model = choice === "openai" ? a.models.openai : choice === "claude" ? a.models.anthropic : undefined;
-    return {
-      choice,
-      title: CHOICE_LABEL[choice],
-      description: demo ? `${DESCRIPTION[choice]} Simulated in Demo Mode.` : DESCRIPTION[choice],
-      selected: choice === selected,
-      available,
-      unavailableReason: available
-        ? null
-        : choice === "compare"
-          ? "Needs both OpenAI and Claude on this server."
-          : choice === "smart"
-            ? "No provider is configured on this server."
-            : "Not configured on this server.",
-      model: demo ? null : (model ?? null),
-    };
-  });
-}
-
-/** Switching never interrupts an answer that is streaming and never picks a provider for the user. */
-export function canSwitch(choice: ModelChoice, a: ProviderAvailability, demo: boolean, generating: boolean): boolean {
-  return !generating && (demo || isAvailable(a, choice));
-}
-
-export function recipientLabel(choice: ModelChoice, mode: AssistantMode, demo: boolean): string {
+/** The line under the composer: who receives the message. */
+export function recipientLabel(mode: AssistantMode, demo: boolean): string {
   if (demo) return "Demo Mode · simulated answers · nothing leaves this device";
-  if (choice === "compare") return "Sends to OpenAI + Claude · uses both providers";
-  if (choice === "smart") return `Dash Smart · usually ${PROVIDER_NAME[SMART_ROUTING[mode][0]!]} for ${MODES[mode].label}`;
-  return choice === "openai" ? "Sends to OpenAI" : "Sends to Claude (Anthropic)";
+  return `DASH AI · ${MODES[mode].label}`;
 }
 
 // ---- Greeting and Home ------------------------------------------------------------------------
@@ -218,42 +155,37 @@ export function groupHistory<T extends { updatedAt: string }>(items: T[], now: n
 
 // ---- Failure recovery -------------------------------------------------------------------------
 
-export type RecoveryAction = "retry" | "change" | "later";
+export type RecoveryAction = "retry" | "later";
 
 export interface RecoveryCard {
   title: string;
   message: string;
   attemptsNote: string | null;
   actions: RecoveryAction[];
-  alternatives: ProviderId[];
 }
 
 export interface FailedAnswer {
-  provider: ProviderId | null;
-  compareGroupId: string | null;
   errorMessage: string | null;
   retryable: boolean;
-  recovery?: { attempts: number; alternatives: ProviderId[] };
+  recovery?: { attempts: number };
 }
 
-/** The server's recovery metadata decides which providers are offered. The app never switches by itself. */
-export function recoveryCard(answer: FailedAnswer, configured: ReadonlySet<ProviderId>, online: boolean): RecoveryCard {
-  const other: ProviderId | null = answer.provider ? (answer.provider === "openai" ? "anthropic" : "openai") : null;
-  const offered: ProviderId[] = answer.compareGroupId !== null ? [] : answer.recovery ? answer.recovery.alternatives : other ? [other] : [];
-  const alternatives = offered.filter((p) => configured.has(p) && p !== answer.provider);
+/**
+ * What a person sees when an answer failed. DASH AI has already tried every safe route itself, so
+ * the choices are Retry (when it can help and there is a connection) and Continue later.
+ */
+export function recoveryCard(answer: FailedAnswer, online: boolean): RecoveryCard {
   const actions: RecoveryAction[] = [];
   if (answer.retryable && online) actions.push("retry");
-  if (alternatives.length > 0 && online) actions.push("change");
   actions.push("later");
   const attempts = answer.recovery?.attempts ?? 1;
   return {
-    title: answer.retryable ? "Provider temporarily unavailable" : "This answer couldn't be completed",
+    title: answer.retryable ? "DASH AI couldn't complete that response" : "This answer couldn't be completed",
     message: online
-      ? (answer.errorMessage ?? "The provider did not finish this answer. Your conversation is saved.")
+      ? (answer.errorMessage ?? "Please try again. Your conversation is saved.")
       : "You're offline. Your conversation is saved; try again when you're connected.",
     attemptsNote: attempts > 1 ? `DASH AI tried ${attempts} times before stopping.` : null,
     actions,
-    alternatives: [...new Set(alternatives)],
   };
 }
 
@@ -381,9 +313,7 @@ export function toolSummary(uses: ToolUse[]): string {
   return uses.length === 1 ? toolUseLabel(uses[0]!, {}).title : `Used ${uses.length} tools`;
 }
 
-/** The label shown above an answer: who produced it. Demo answers always say so. */
-export function sourceLabel(m: Pick<ConversationMessage, "origin" | "model" | "demo">): string {
-  if (m.demo) return `Demo · ${m.origin ? PROVIDER_NAME[m.origin] : "DASH AI"}-style (simulated)`;
-  if (m.origin) return [PROVIDER_NAME[m.origin], m.model].filter(Boolean).join(" · ");
-  return "DASH AI";
+/** The label shown above an answer. Always DASH AI; demonstrations say so. */
+export function sourceLabel(m: Pick<ConversationMessage, "demo">): string {
+  return m.demo ? "Demo · DASH AI (simulated)" : "DASH AI";
 }

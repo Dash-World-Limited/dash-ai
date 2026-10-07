@@ -33,7 +33,7 @@ export function Splash({ onDone }: { onDone: () => void }) {
 
 const CUES: { icon: IconName; title: string; text: string }[] = [
   { icon: "bolt", title: "Get answers faster", text: "Ask in your own words and get clear, structured answers." },
-  { icon: "layers", title: "Go deeper with context", text: "Add your documents and choose the AI provider for each chat." },
+  { icon: "layers", title: "Go deeper with context", text: "Add your documents and pick a focused mode for each chat." },
   { icon: "sparkle", title: "Turn ideas into action", text: "Draft, plan and analyse in focused modes built for real work." },
 ];
 
@@ -51,7 +51,7 @@ export function Welcome() {
           What are we building today?
         </h1>
         <p className="muted" style={{ fontSize: 17, margin: 0 }}>
-          DASH AI helps you think, create, analyse and act, with the AI providers you choose.
+          DASH AI helps you think, create, analyse and act.
         </p>
         <div className="stack" style={{ gap: 24, margin: "40px 0" }}>
           {CUES.map((c) => (

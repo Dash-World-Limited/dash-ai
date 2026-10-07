@@ -8,7 +8,7 @@ import type {
   MeResponse,
   PluginInfo,
   PluginsResponse,
-  ProvidersResponse,
+  AssistantStatusResponse,
   UsageSummaryResponse,
 } from "@dash-ai/contracts";
 
@@ -67,7 +67,7 @@ async function toError(response: Response): Promise<ApiError> {
 }
 
 /**
- * The only network client in the web app. It talks to the DASH AI API on this origin; provider
+ * The only network client in the web app. It talks to the DASH AI API on this origin; AI service
  * keys never reach the browser. `onUnauthorized` lets the app sign out when the session expires.
  */
 export class DashApi {
@@ -143,8 +143,8 @@ export class DashApi {
   deleteAccount = () => this.request<void>("DELETE", "/v1/me");
   usage = () => this.request<UsageSummaryResponse>("GET", "/v1/usage");
 
-  // ---- Providers ----
-  providers = () => this.request<ProvidersResponse>("GET", "/v1/providers");
+  // ---- DASH AI availability (the AI infrastructure behind it is never exposed) ----
+  assistant = () => this.request<AssistantStatusResponse>("GET", "/v1/assistant");
 
   // ---- Conversations ----
   conversations = () => this.request<ConversationListResponse>("GET", "/v1/conversations");
