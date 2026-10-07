@@ -1,6 +1,5 @@
-import type { ProviderId } from "@dash-ai/contracts";
 import { memo, useState } from "react";
-import { PROVIDER_NAME, recoveryCard, sourceLabel, toolSummary, toolUseLabel, type RecoveryCard } from "../logic/presentation";
+import { recoveryCard, sourceLabel, toolSummary, toolUseLabel, type RecoveryCard } from "../logic/presentation";
 import { Icon } from "../ui/icons";
 import { DemoBadge } from "../ui/kit";
 import { Markdown } from "./Markdown";
@@ -10,10 +9,8 @@ export interface MessageActions {
   copy: (text: string) => void;
   share: ((text: string) => void) | null;
   regenerate: (id: string) => void;
-  tryOther: (id: string, provider: ProviderId) => void;
   edit: (m: ChatMsg) => void;
   retry: (id: string) => void;
-  changeProvider: (id: string, alternatives: ProviderId[]) => void;
   later: (id: string) => void;
 }
 
@@ -85,16 +82,10 @@ function Recovery({ m, card, generating, actions }: { m: ChatMsg; card: Recovery
       <h3>{card.title}</h3>
       <p>{card.message}</p>
       {card.attemptsNote && <p className="small faint">{card.attemptsNote}</p>}
-      <p className="small faint">DASH AI never switches provider on its own.</p>
       <div className="row" style={{ flexWrap: "wrap", gap: 8, marginTop: 4 }}>
         {card.actions.includes("retry") && (
           <button className="btn btn-primary" onClick={() => actions.retry(m.id)} disabled={generating} data-testid="recovery-retry">
             <Icon name="refresh" size={18} /> Retry
-          </button>
-        )}
-        {card.actions.includes("change") && (
-          <button className="btn btn-secondary" onClick={() => actions.changeProvider(m.id, card.alternatives)} disabled={generating} data-testid="recovery-change">
-            <Icon name="swap" size={18} /> Change provider
           </button>
         )}
         <button className="btn btn-text" onClick={() => actions.later(m.id)} data-testid="recovery-later">
@@ -107,7 +98,6 @@ function Recovery({ m, card, generating, actions }: { m: ChatMsg; card: Recovery
 
 export interface AnswerContext {
   generating: boolean;
-  configured: ReadonlySet<ProviderId>;
   online: boolean;
   dismissed: ReadonlySet<string>;
   pluginNames: Record<string, string>;
@@ -115,10 +105,9 @@ export interface AnswerContext {
 }
 
 export const AssistantMessage = memo(function AssistantMessage({ m, ctx, actions }: { m: ChatMsg; ctx: AnswerContext; actions: MessageActions }) {
-  const card = m.status === "failed" && !ctx.dismissed.has(m.id) ? recoveryCard({ provider: m.origin, compareGroupId: m.compareGroupId, errorMessage: m.errorMessage, retryable: m.retryable, recovery: m.recovery }, ctx.configured, ctx.online) : null;
+  const card = m.status === "failed" && !ctx.dismissed.has(m.id) ? recoveryCard({ errorMessage: m.errorMessage, retryable: m.retryable, recovery: m.recovery }, ctx.online) : null;
   const status =
-    m.status === "stopped" ? "Stopped" : m.status === "failed" ? (m.errorMessage ?? "This answer was not completed.") : m.finishReason === "length" ? "The answer reached the length limit and may be cut off." : m.finishReason === "refusal" ? "The provider declined part of this request." : null;
-  const other: ProviderId | null = m.origin ? (m.origin === "openai" ? "anthropic" : "openai") : null;
+    m.status === "stopped" ? "Stopped" : m.status === "failed" ? (m.errorMessage ?? "This answer was not completed.") : m.finishReason === "length" ? "The answer reached the length limit and may be cut off." : m.finishReason === "refusal" ? "DASH AI declined part of this request." : null;
   return (
     <article className="assistant-msg" data-testid="assistant-message" aria-busy={m.status === "streaming"}>
       <div className="source" data-testid="source-label">
@@ -145,28 +134,8 @@ export const AssistantMessage = memo(function AssistantMessage({ m, ctx, actions
           <button className="icon-btn" onClick={() => actions.regenerate(m.id)} disabled={ctx.generating} aria-label="Regenerate response">
             <Icon name="refresh" size={18} />
           </button>
-          {other && !m.compareGroupId && !ctx.compact && ctx.configured.has(other) && (
-            <button className="btn btn-text small" onClick={() => actions.tryOther(m.id, other)} disabled={ctx.generating}>
-              Try {PROVIDER_NAME[other]}
-            </button>
-          )}
         </div>
       )}
     </article>
   );
 });
-
-export function CompareRow({ answers, ctx, actions }: { answers: ChatMsg[]; ctx: AnswerContext; actions: MessageActions }) {
-  return (
-    <section className="stack" data-testid="compare-row" aria-label="Compare: same question, two providers">
-      <div className="small faint">Compare · same question, two providers</div>
-      <div className="compare wide">
-        {answers.map((a) => (
-          <div className="card card-pad" key={a.id}>
-            <AssistantMessage m={a} ctx={{ ...ctx, compact: true }} actions={actions} />
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}

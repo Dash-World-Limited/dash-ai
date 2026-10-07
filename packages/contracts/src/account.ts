@@ -8,8 +8,9 @@ import { PluginSetting, ToolActivity } from "./tools.js";
 export const UsageRecord = z.object({
   conversationId: Id,
   messageId: Id,
-  provider: ProviderId,
-  model: z.string(),
+  /** Diagnostics only: omitted by production servers. */
+  provider: ProviderId.optional(),
+  model: z.string().optional(),
   demo: z.boolean(),
   inputTokens: z.number().int().nonnegative().nullable(),
   outputTokens: z.number().int().nonnegative().nullable(),
@@ -17,8 +18,9 @@ export const UsageRecord = z.object({
 });
 export type UsageRecord = z.infer<typeof UsageRecord>;
 
+/** One row per provider in diagnostics mode; a single DASH AI total (no provider) in production. */
 export const UsageTotals = z.object({
-  provider: ProviderId,
+  provider: ProviderId.optional(),
   requests: z.number().int().nonnegative(),
   inputTokens: z.number().int().nonnegative(),
   outputTokens: z.number().int().nonnegative(),

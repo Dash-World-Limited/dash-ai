@@ -35,12 +35,21 @@ export const toConversation = (c: ConversationRecord): Conversation => ({
   updatedAt: c.updatedAt,
 });
 
-export const toMessage = (m: MessageRecord): ConversationMessage => ({
+/**
+ * How much infrastructure detail a response may carry. `hidden` (production): no provider or model
+ * names reach consumers; the store, logs and metrics keep them. See chat/publicSurface.ts.
+ */
+export interface View {
+  hidden: boolean;
+}
+export const viewFor = (config: { providerDetails: "hidden" | "exposed" }): View => ({ hidden: config.providerDetails !== "exposed" });
+
+export const toMessage = (m: MessageRecord, view: View): ConversationMessage => ({
   id: m.id,
   role: m.role,
   content: m.content,
-  origin: m.origin,
-  model: m.model,
+  origin: view.hidden ? null : m.origin,
+  model: view.hidden ? null : m.model,
   demo: m.demo,
   status: m.status,
   compareGroupId: m.compareGroupId,
@@ -60,22 +69,21 @@ export const toDocument = (d: DocumentSummary): DocumentResponse => ({
   createdAt: d.createdAt,
 });
 
-export const toUsage = (u: UsageRow): UsageRecord => ({
+export const toUsage = (u: UsageRow, view: View): UsageRecord => ({
   conversationId: u.conversationId,
   messageId: u.messageId,
-  provider: u.provider,
-  model: u.model,
+  ...(view.hidden ? {} : { provider: u.provider, model: u.model }),
   demo: u.demo,
   inputTokens: u.inputTokens,
   outputTokens: u.outputTokens,
   createdAt: u.createdAt,
 });
 
-export const toToolActivity = (t: ToolInvocationRow): ToolActivity => ({
+export const toToolActivity = (t: ToolInvocationRow, view: View): ToolActivity => ({
   conversationId: t.conversationId,
   messageId: t.messageId,
   callId: t.callId,
-  provider: t.provider,
+  ...(view.hidden ? {} : { provider: t.provider }),
   plugin: t.plugin,
   tool: t.tool,
   status: t.status,
@@ -103,10 +111,10 @@ export const toPluginSetting = (s: PluginSettingRecord): PluginSetting => ({
   updatedAt: s.updatedAt,
 });
 
-export const toSyncChange = (c: ConversationChange): SyncChange => ({
+export const toSyncChange = (c: ConversationChange, view: View): SyncChange => ({
   seq: c.seq,
   deleted: c.deleted,
   conversation: { ...toConversation(c.conversation), titleIsCustom: c.conversation.titleIsCustom, titleRev: c.titleRev },
-  messages: c.messages.map(toMessage),
+  messages: c.messages.map((m) => toMessage(m, view)),
   toolActivity: c.tools.map(toMessageToolActivity),
 });

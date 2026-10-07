@@ -14,10 +14,8 @@ data class ExportMessage(
     val role: String,
     val content: String,
     val status: String,
-    val provider: String?,
-    val model: String?,
+    /** True for Demo Mode answers. Which AI infrastructure produced an answer is internal and not exported. */
     val demo: Boolean,
-    val compareGroupId: String?,
     val attachments: List<String>,
     val createdAt: String,
 )
@@ -88,10 +86,7 @@ object DataExport {
                         role = m.role.name.lowercase(),
                         content = m.content,
                         status = m.status.name.lowercase(),
-                        provider = m.provider?.wire,
-                        model = m.model,
                         demo = m.isDemo,
-                        compareGroupId = m.compareGroupId,
                         attachments = m.attachments.map { it.name },
                         createdAt = iso(m.createdAt),
                     )

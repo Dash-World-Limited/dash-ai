@@ -18,6 +18,9 @@ export function testConfig(overrides: Record<string, string> = {}): AppConfig {
     NODE_ENV: "test",
     LOG_LEVEL: "silent",
     PROVIDER_MODE: "fake",
+    // Engineering mode: these tests check which provider ran. Provider-neutral behaviour (the
+    // production default, "hidden") is covered by provider-neutrality.test.ts.
+    PROVIDER_DETAILS: "exposed",
     FAKE_STREAM_DELAY_MS: "0",
     ...overrides,
   });

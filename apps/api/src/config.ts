@@ -18,6 +18,9 @@ const EnvSchema = z.object({
    * fake — use the fake demonstration adapters for both providers (no network, no cost).
    */
   PROVIDER_MODE: z.preprocess(emptyToUndefined, z.enum(["live", "fake"]).default("live")),
+  // hidden (default): consumer responses never name the AI provider or model; explicit provider
+  // routes are treated as DASH AI routing. exposed: engineering/diagnostic mode for tests and smoke runs.
+  PROVIDER_DETAILS: z.preprocess(emptyToUndefined, z.enum(["hidden", "exposed"]).default("hidden")),
   OPENAI_API_KEY: optionalString,
   OPENAI_MODEL: optionalString,
   /** Request and replay encrypted reasoning items in tool rounds (reasoning models). Verify live before enabling. */
@@ -73,6 +76,12 @@ const EnvSchema = z.object({
   TOOL_MAX_RESULT_CHARS: int(20_000, 100, 200_000),
   /** Bearer token for GET /metrics. Unset = the metrics endpoint does not exist. Secret. */
   METRICS_TOKEN: z.preprocess(emptyToUndefined, z.string().trim().min(24).optional()),
+  /**
+   * Bearer token for the operator view of the internal provider configuration (GET /v1/providers).
+   * A separate credential from METRICS_TOKEN: a metrics scraper never gets operator access. Unset = no
+   * operator access when provider details are hidden. Secret.
+   */
+  OPERATOR_TOKEN: z.preprocess(emptyToUndefined, z.string().trim().min(32).optional()),
   /** Production refuses to start on the in-memory store unless this is "true". */
   ALLOW_MEMORY_STORE: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("false")),
 });
@@ -93,6 +102,8 @@ export interface AppConfig {
   port: number;
   logLevel: Env["LOG_LEVEL"];
   providerMode: Env["PROVIDER_MODE"];
+  /** Whether consumer responses may carry provider identity (never in production). */
+  providerDetails: Env["PROVIDER_DETAILS"];
   openai: ProviderConfig & { encryptedReasoning: boolean };
   anthropic: ProviderConfig;
   providerTimeoutMs: number;
@@ -112,6 +123,8 @@ export interface AppConfig {
     redisUrl: string | undefined;
   };
   metricsToken: string | undefined;
+  /** Operator credential for GET /v1/providers; never the same value as metricsToken. */
+  operatorToken: string | undefined;
   maxConcurrentStreamsPerUser: number;
   sessionTtlDays: number;
   trustProxy: boolean;
@@ -140,12 +153,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (e.RATE_LIMIT_BACKEND === "redis" && !e.REDIS_URL) {
     throw new ConfigError("Invalid configuration: REDIS_URL is required when RATE_LIMIT_BACKEND=redis.");
   }
+  if (e.OPERATOR_TOKEN && e.OPERATOR_TOKEN === e.METRICS_TOKEN) {
+    throw new ConfigError("Invalid configuration: OPERATOR_TOKEN must be a different secret from METRICS_TOKEN.");
+  }
   return {
     nodeEnv: e.NODE_ENV,
     host: e.HOST,
     port: e.PORT,
     logLevel: e.LOG_LEVEL,
     providerMode: e.PROVIDER_MODE,
+    providerDetails: e.PROVIDER_DETAILS,
     openai: { apiKey: e.OPENAI_API_KEY, model: e.OPENAI_MODEL, encryptedReasoning: e.OPENAI_ENCRYPTED_REASONING === "true" },
     anthropic: { apiKey: e.ANTHROPIC_API_KEY, model: e.ANTHROPIC_MODEL },
     providerTimeoutMs: e.PROVIDER_TIMEOUT_MS,
@@ -165,6 +182,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       redisUrl: e.REDIS_URL,
     },
     metricsToken: e.METRICS_TOKEN,
+    operatorToken: e.OPERATOR_TOKEN,
     maxConcurrentStreamsPerUser: e.MAX_CONCURRENT_STREAMS_PER_USER,
     sessionTtlDays: e.SESSION_TTL_DAYS,
     trustProxy: e.TRUST_PROXY === "true",
@@ -212,6 +230,9 @@ export function configWarnings(config: AppConfig): string[] {
   }
   if (config.rateLimits.redisUrl?.startsWith("redis://") && config.rateLimits.backend === "redis") {
     warnings.push("REDIS_URL uses redis:// in production: traffic to Redis is not encrypted in transit. Use rediss:// unless Redis is on a private network.");
+  }
+  if (config.providerDetails === "exposed") {
+    warnings.push("PROVIDER_DETAILS=exposed in production: consumer responses name the AI provider and model. Use hidden.");
   }
   if (config.providerMode === "fake") {
     warnings.push("PROVIDER_MODE=fake in production: every answer is a labelled demonstration, not a real model.");

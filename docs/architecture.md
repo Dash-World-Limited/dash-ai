@@ -28,7 +28,7 @@
 
 ### `packages/contracts`
 The single source of truth for the wire format: zod schemas for every request and response,
-`LIMITS`, the Dash Smart routing table (`SMART_ROUTING`, `resolveProviders`), upload rules
+`LIMITS`, the internal routing table and helpers (`SMART_ROUTING`, `smartRoute`, `providerHint`), upload rules
 (`FILE_RULES`, `checkFile`) and SSE helpers. `fixtures/` holds canonical JSON bodies and SSE
 transcripts. The TypeScript tests validate the fixtures against the schemas; the Kotlin tests
 decode the same fixtures strictly into the Android DTOs, check the routing table, upload rules,
@@ -42,9 +42,12 @@ limits and title algorithm, and compare the JSON the app sends with `chat-stream
   `POST /v1/sync/push` ([sync.md](sync.md)), `GET /v1/plugins`, `PUT /v1/plugins/:id`, `GET /v1/tools/activity`
   ([plugins.md](plugins.md)).
 - **Orchestrator** (`src/chat/orchestrator.ts`): validates everything that can fail *before*
-  the stream starts (so those failures are JSON errors with proper status codes), then runs one
-  target (single provider) or two targets (Compare) concurrently. Each target has its own abort
-  controller, overall timeout and idle timeout; cancelling the stream aborts both.
+  the stream starts (so those failures are JSON errors with proper status codes), then runs the
+  answer on DASH AI's route: the first configured provider for the mode, with bounded retries and an
+  internal failover to the next provider only if nothing reached the person yet (ADR 0012). Each answer
+  has its own abort controller, overall timeout and idle timeout. With `PROVIDER_DETAILS=hidden` (the
+  default) nothing it sends names a provider or model ([provider-neutrality.md](provider-neutrality.md));
+  the engineering view (`exposed`) still supports explicit routes and Compare for tests.
 - **Adapters** (`src/providers`): official `openai` and `@anthropic-ai/sdk` clients behind a common
   `ProviderAdapter` streaming interface. Fake adapters produce clearly labelled demonstration
   answers and support test triggers for errors, hangs and slow streams.
@@ -62,8 +65,8 @@ limits and title algorithm, and compare the JSON the app sends with `chat-stream
   [provider-verification.md](provider-verification.md).
 
 ### `apps/android/core` (pure Kotlin, separate Gradle build)
-Everything that does not need Android: `ChatSession` (send, stream, stop, regenerate, retry with the
-other provider, edit & resend, Compare, crash-safe restore), `ContextBuilder`, `SmartRouting`,
+Everything that does not need Android: `ChatSession` (send, stream, stop, regenerate, edit & resend,
+crash-safe restore; no provider choice), `ContextBuilder`, `SmartRouting`,
 `SseParser` + `StreamEventDecoder`, `DashApiClient` (Retrofit + OkHttp), `RemoteChatGateway`,
 `RemoteDocumentGateway` (streamed multipart with progress), `DemoChatGateway`, `DemoDocumentGateway`,
 `Markdown` parser, `PromptLibrary`, `FileRules`, `TitleGenerator` and `DataExport`.
@@ -93,10 +96,10 @@ app, `InMemoryServices` in UI tests).
 
 | Event | Payload |
 | --- | --- |
-| `stream.start` | `streamId, conversationId, modelChoice, compareGroupId, targets[{messageId, provider, model, demo}], routingReason` |
+| `stream.start` | `streamId, conversationId, modelChoice, compareGroupId (null), targets[{messageId, demo}], routingReason` (neutral). `provider`/`model` are optional and only sent with `PROVIDER_DETAILS=exposed` |
 | `message.delta` | `messageId, text` |
 | `message.end` | `messageId, finishReason (stop/length/refusal/cancelled), usage{inputTokens, outputTokens}` |
-| `message.error` | `messageId, error{code, message, retryable}` |
+| `message.error` | `messageId, error{code, message, retryable}, recovery{attempts, alternatives ([])}` — the message is DASH AI's, never a provider's |
 | `conversation.title` | `conversationId, title` |
 | `tool.call` | `messageId, callId, plugin, tool` — a tool call started (never carries arguments). Android ignores it. |
 | `tool.result` | `messageId, callId, plugin, tool, status (ok/invalid_arguments/denied/unknown_tool/timeout/error/cancelled), durationMs` (never carries results) |
@@ -109,7 +112,7 @@ A `: ping` comment is sent every 15 seconds so idle connections are not dropped.
 
 The server (PostgreSQL) holds the durable record of each account's conversations; the device (Room)
 is the local cache the UI reads, so the app works offline and in Demo Mode. Live chat requests still
-carry the relevant history (filtered by provider rules; the API re-applies the filter). After sign-in
+carry the relevant history as plain text (DASH AI's own earlier answers, never demo or failed ones). After sign-in
 the device pushes its pending work (conversations written offline, renames, deletions) and pulls server
 conversations into Room with deterministic rules ([sync.md](sync.md), [ADR 0009](decisions/0009-conversation-sync.md),
 [ADR 0010](decisions/0010-two-way-sync.md)).

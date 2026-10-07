@@ -9,7 +9,6 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.dashworldng.ai.core.demo.DemoFailure
 import com.dashworldng.ai.core.model.AssistantMode
-import com.dashworldng.ai.core.model.ModelChoice
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -54,9 +53,8 @@ class DataStoreSettingsRepository(
             onboardingComplete = p[Keys.onboarding] ?: false,
             demoMode = p[Keys.demo] ?: true,
             serverUrl = p[Keys.server] ?: defaultServerUrl,
-            defaultModelChoice = p[Keys.model]?.let { ModelChoice.fromWire(it) } ?: ModelChoice.SMART,
             defaultMode = p[Keys.mode]?.let { AssistantMode.fromWire(it) } ?: AssistantMode.GENERAL,
-            demoFailure = p[Keys.demoFailure]?.let { v -> DemoFailure.entries.firstOrNull { it.name == v } } ?: DemoFailure.NONE,
+            demoFailure = DemoFailure.fromStored(p[Keys.demoFailure]),
             theme = ThemePreference.fromWire(p[Keys.theme]),
             account = userId?.let {
                 AccountInfo(it, p[Keys.email], p[Keys.name] ?: "Dash AI user", p[Keys.accountDemo] ?: true)
@@ -68,7 +66,8 @@ class DataStoreSettingsRepository(
         p[Keys.onboarding] = s.onboardingComplete
         p[Keys.demo] = s.demoMode
         p[Keys.server] = s.serverUrl
-        p[Keys.model] = s.defaultModelChoice.wire
+        // Older versions stored a default provider choice here; DASH AI now routes every request itself.
+        p.remove(Keys.model)
         p[Keys.mode] = s.defaultMode.wire
         p[Keys.demoFailure] = s.demoFailure.name
         p[Keys.theme] = s.theme.wire

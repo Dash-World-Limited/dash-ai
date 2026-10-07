@@ -12,11 +12,8 @@ import com.dashworldng.ai.core.model.AssistantMode
 import com.dashworldng.ai.core.model.Conversation
 import com.dashworldng.ai.core.model.DocumentItem
 import com.dashworldng.ai.core.model.DocumentStatus
-import com.dashworldng.ai.core.model.ModelChoice
-import com.dashworldng.ai.core.model.ProviderId
+import com.dashworldng.ai.core.presentation.AssistantAvailability
 import com.dashworldng.ai.core.presentation.Documents
-import com.dashworldng.ai.core.presentation.ProviderAvailability
-import com.dashworldng.ai.core.presentation.ProviderOptions
 import com.dashworldng.ai.core.presentation.SyncStatuses
 import com.dashworldng.ai.core.routing.SmartRouting
 import com.dashworldng.ai.core.stream.ApiException
@@ -58,15 +55,14 @@ data class ChatUiState(
     val session: ChatSessionState = ChatSessionState(),
     val items: List<ChatItem> = emptyList(),
     val composer: String = "",
-    val choice: ModelChoice = ModelChoice.SMART,
     val mode: AssistantMode = AssistantMode.GENERAL,
     val attachments: List<PendingAttachment> = emptyList(),
     val demoMode: Boolean = true,
     val online: Boolean = true,
-    val providers: ProviderAvailability = ProviderAvailability(),
+    /** Whether DASH AI can answer right now. Which AI service is behind it is never shown. */
+    val assistant: AssistantAvailability = AssistantAvailability(),
     val conversations: List<Conversation> = emptyList(),
     val search: String = "",
-    val confirmCompare: Boolean = false,
     val notice: String? = null,
     val account: AccountInfo? = null,
     /** Failed answers whose recovery card the user put aside ("Continue later"). */
@@ -82,7 +78,7 @@ data class ChatUiState(
             (composer.isNotBlank() || usableAttachments.isNotEmpty()) &&
             attachments.none { it.uploading } &&
             (demoMode || online)
-    val recipientLabel: String get() = SmartRouting.recipientLabel(choice, mode, demoMode)
+    val recipientLabel: String get() = SmartRouting.recipientLabel(mode, demoMode)
 
     companion object {
         /** Live mode can only use documents whose text the server extracted. */
@@ -92,11 +88,9 @@ data class ChatUiState(
 
 private data class LocalState(
     val composer: String = "",
-    val choice: ModelChoice,
     val mode: AssistantMode,
     val attachments: List<PendingAttachment> = emptyList(),
-    val providers: ProviderAvailability = ProviderAvailability(),
-    val confirmCompare: Boolean = false,
+    val assistant: AssistantAvailability = AssistantAvailability(),
     val notice: String? = null,
     val dismissedRecovery: Set<String> = emptySet(),
     val pluginNames: Map<String, String> = emptyMap(),
@@ -117,7 +111,7 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
     )
 
     private val initialSettings = services.settings.settings.value
-    private val local = MutableStateFlow(LocalState(choice = initialSettings.defaultModelChoice, mode = initialSettings.defaultMode))
+    private val local = MutableStateFlow(LocalState(mode = initialSettings.defaultMode))
     private val search = MutableStateFlow("")
     private val uploads = mutableMapOf<String, Job>()
 
@@ -134,28 +128,26 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
             session = s,
             items = ChatItems.build(s.messages),
             composer = l.composer,
-            choice = l.choice,
             mode = l.mode,
             attachments = l.attachments,
             demoMode = settings.demoMode,
             online = online,
-            providers = if (settings.demoMode) ProviderAvailability() else l.providers,
+            assistant = if (settings.demoMode) AssistantAvailability(demo = true) else l.assistant,
             conversations = list,
             search = query,
-            confirmCompare = l.confirmCompare,
             notice = l.notice,
             account = settings.account,
             dismissedRecovery = l.dismissedRecovery,
             pluginNames = l.pluginNames,
         )
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatUiState(choice = local.value.choice, mode = local.value.mode))
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatUiState(mode = local.value.mode))
 
     init {
         // A pull must never overwrite a response that is still streaming.
         services.syncGuard = { !session.state.value.isGenerating }
         viewModelScope.launch {
             services.settings.settings.map { it.demoMode to it.serverUrl }.distinctUntilChanged().collect { (demo, _) ->
-                if (!demo) refreshProviders()
+                if (!demo) refreshAssistant()
             }
         }
         // After sign-in (and whenever the app starts signed in) pull the account's conversations into Room.
@@ -192,17 +184,17 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
         }
     }
 
-    fun refreshProviders() {
+    fun refreshAssistant() {
         val auth = services.authService() ?: return
-        local.update { it.copy(providers = it.providers.copy(loading = true, error = null)) }
+        local.update { it.copy(assistant = it.assistant.copy(loading = true, error = null)) }
         viewModelScope.launch {
             val result = try {
-                ProviderAvailability.from(auth.providers())
+                AssistantAvailability.from(auth.assistant())
             } catch (e: ApiException) {
-                // Keep every choice selectable; sending will report the problem clearly.
-                ProviderAvailability(error = e.error.message)
+                // Keep sending possible; sending will report the problem clearly.
+                AssistantAvailability(error = e.error.message)
             }
-            local.update { it.copy(providers = result) }
+            local.update { it.copy(assistant = result) }
         }
         loadPluginNames()
     }
@@ -231,41 +223,10 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
         local.update { it.copy(mode = mode) }
     }
 
-    /**
-     * Picks the provider for the next messages. Refused while an answer streams (switching never
-     * interrupts one) or when the server has not configured it. The choice is remembered.
-     */
-    fun selectChoice(choice: ModelChoice) {
-        val s = state.value
-        if (!ProviderOptions.canSwitch(choice, s.providers, s.demoMode, s.isGenerating)) return
-        if (choice == ModelChoice.COMPARE && local.value.choice != ModelChoice.COMPARE) {
-            local.update { it.copy(confirmCompare = true) }
-        } else {
-            applyChoice(choice)
-        }
-    }
-
-    fun confirmCompare(accepted: Boolean) {
-        local.update { it.copy(confirmCompare = false) }
-        if (accepted) applyChoice(ModelChoice.COMPARE)
-    }
-
-    private fun applyChoice(choice: ModelChoice) {
-        local.update { it.copy(choice = choice) }
-        viewModelScope.launch { services.settings.update { it.copy(defaultModelChoice = choice) } }
-    }
-
-    /** Recovery: ask the same provider again. */
+    /** Recovery: ask DASH AI again. */
     fun retryAnswer(messageId: String) {
         local.update { it.copy(dismissedRecovery = it.dismissedRecovery - messageId) }
         session.regenerate(messageId)
-    }
-
-    /** Recovery: the user explicitly picks another provider for this answer and the next ones. */
-    fun answerWith(messageId: String, provider: ProviderId) {
-        val choice = ModelChoice.forProvider(provider)
-        if (!state.value.demoMode && !state.value.providers.isAvailable(choice)) return
-        if (session.regenerate(messageId, choice)) applyChoice(choice)
     }
 
     /** Recovery: keep the failed answer as it is; the conversation is saved and can be resumed. */
@@ -296,7 +257,7 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
         if (!current.canSend) return
         val text = current.composer.trim().ifEmpty { "Summarise the attached document." }
         val attachments = current.usableAttachments.map { it.toAttachment() }
-        if (session.send(text, current.choice, current.mode, attachments)) {
+        if (session.send(text, current.mode, attachments)) {
             local.update { it.copy(composer = "", attachments = emptyList()) }
         }
     }
@@ -307,17 +268,13 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
         session.regenerate(messageId)
     }
 
-    fun retryWithOtherProvider(messageId: String) {
-        session.retryWithOtherProvider(messageId)
-    }
-
     fun editAndResend(messageId: String, text: String) {
         val l = local.value
-        session.editAndResend(messageId, text, l.choice, l.mode)
+        session.editAndResend(messageId, text, l.mode)
     }
 
     fun retryLast() {
-        session.retryLast(local.value.choice)
+        session.retryLast()
     }
 
     fun dismissError() = session.dismissError()

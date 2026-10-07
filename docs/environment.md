@@ -45,6 +45,7 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `TOOL_MAX_ROUNDS` | `4` | Maximum model → tool → model rounds per answer; the last round keeps the same tools but switches tool use off (tool choice "none"). |
 | `TOOL_MAX_RESULT_CHARS` | `20000` | Tool output beyond this is truncated before it reaches the model. |
 | `METRICS_TOKEN` | — | **Secret.** At least 24 characters. Enables `GET /metrics` (Prometheus text) for requests bearing this token; unset, the endpoint does not exist. |
+| `OPERATOR_TOKEN` | — | **Secret.** At least 32 characters and a different value from `METRICS_TOKEN` (the server refuses to start if they match). Opens the operator view `GET /v1/providers` while provider details are hidden; unset, there is no operator access. |
 
 `.env.example` lists exactly these variables (a test keeps the two in sync and checks that every
 credential slot in it is empty).
@@ -61,9 +62,15 @@ per instance) and an unencrypted `redis://` `REDIS_URL`. A staging template with
 deployment: without it the development defaults apply (no database TLS by default, migrations at
 start-up, in-memory store allowed).
 
-`GET /v1/providers` reports which providers are configured (`live`, `fake` or `unconfigured`) and
-their model ids, so the app can disable unavailable choices. Explicit choices (OpenAI, Claude,
-Compare) never silently fall back to another provider; Dash Smart falls back and says so.
+`PROVIDER_DETAILS` (`hidden`, the default and the production value, or `exposed`): with `hidden`, nothing
+a consumer receives names an AI provider or model, and every request is routed by DASH AI
+([provider-neutrality.md](provider-neutrality.md)). `exposed` is the engineering view for tests and the
+live smoke run; production logs a warning if it is set.
+
+`GET /v1/assistant` tells the apps whether DASH AI can answer (`available`, `demo`, research note).
+`GET /v1/providers` (configured providers, `live`/`fake`/`unconfigured`, model ids) is operator-only: it
+needs `Authorization: Bearer $OPERATOR_TOKEN` and answers 404 otherwise, including to signed-in users
+and to the metrics token. The metrics token only opens `/metrics`; the operator token does not open it.
 
 ## Opt-in live smoke test
 

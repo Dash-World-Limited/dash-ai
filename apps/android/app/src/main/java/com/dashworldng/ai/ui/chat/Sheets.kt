@@ -30,9 +30,6 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.dashworldng.ai.core.model.AssistantMode
-import com.dashworldng.ai.core.model.ProviderId
-import com.dashworldng.ai.core.presentation.ProviderOption
-import com.dashworldng.ai.ui.components.DemoBadge
 import com.dashworldng.ai.ui.theme.DashTheme
 import com.dashworldng.ai.ui.theme.Radii
 import com.dashworldng.ai.ui.theme.Spacing
@@ -107,34 +104,6 @@ private fun ChoiceRow(
     }
 }
 
-/**
- * Provider selection: only the choices the app really supports. Dash Smart is DASH AI's automatic
- * routing (implemented on the server); unavailable providers are explained, not hidden.
- */
-@Composable
-fun ProviderSheet(
-    options: List<ProviderOption>,
-    demoMode: Boolean,
-    onSelect: (ProviderOption) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    DashSheet(onDismiss, "provider_sheet") {
-        SheetTitle("Choose a provider", "Applies to your next messages in this chat. Your choice is remembered.")
-        options.forEach { option ->
-            ChoiceRow(
-                title = option.title,
-                description = option.description,
-                selected = option.selected,
-                enabled = option.available,
-                onClick = { onSelect(option) },
-                note = option.unavailableReason ?: option.model?.let { "Model: $it" },
-                badge = if (demoMode) ({ DemoBadge() }) else null,
-                modifier = Modifier.testTag("model_option_${option.choice.wire}"),
-            )
-        }
-    }
-}
-
 @Composable
 fun ModeSheet(selected: AssistantMode, onSelect: (AssistantMode) -> Unit, onOpenTools: () -> Unit, onDismiss: () -> Unit) {
     val c = DashTheme.colors
@@ -167,24 +136,6 @@ fun ModeSheet(selected: AssistantMode, onSelect: (AssistantMode) -> Unit, onOpen
                 Text("Choose which tools DASH AI may use.", style = MaterialTheme.typography.bodySmall, color = c.inkSecondary)
             }
             Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, contentDescription = null, tint = c.inkTertiary)
-        }
-    }
-}
-
-/** "Change provider" after a failure: the user picks; nothing switches automatically. */
-@Composable
-fun AlternativeProviderSheet(alternatives: List<ProviderId>, onSelect: (ProviderId) -> Unit, onDismiss: () -> Unit) {
-    DashSheet(onDismiss, "alternative_sheet") {
-        SheetTitle("Answer with another provider", "The same question is sent again to the provider you choose.")
-        alternatives.forEach { provider ->
-            ChoiceRow(
-                title = provider.displayName,
-                description = "Every message in this chat goes to ${if (provider == ProviderId.ANTHROPIC) "Anthropic's Claude" else "OpenAI"} from now on.",
-                selected = false,
-                enabled = true,
-                onClick = { onSelect(provider) },
-                modifier = Modifier.testTag("alternative_${provider.wire}"),
-            )
         }
     }
 }

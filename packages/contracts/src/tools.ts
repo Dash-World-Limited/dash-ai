@@ -78,7 +78,8 @@ export const ToolActivity = z.object({
   conversationId: Id,
   messageId: Id,
   callId: z.string().regex(/^[A-Za-z0-9_.:-]{1,64}$/),
-  provider: ProviderId,
+  /** Diagnostics only: omitted by production servers. */
+  provider: ProviderId.optional(),
   plugin: z.string(),
   tool: z.string(),
   status: ToolCallStatus,

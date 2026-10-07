@@ -3,22 +3,20 @@ import { ApiError, AssistantMode, Id, LIMITS, MessageRole, ModelChoice, Provider
 import { ToolCallStatus } from "./tools.js";
 
 /**
- * A prior turn the client sends as context. Assistant turns must carry the provider that produced
- * them; the API drops assistant turns from a different provider before calling a provider, so one
- * provider's answers are never silently forwarded to another. Demo answers are never sent.
+ * A prior turn the client sends as context. Assistant turns are DASH AI's own earlier answers: the
+ * server sends them as plain text to whichever provider handles the request (never thinking blocks
+ * or tool calls). `origin` is optional and ignored; older clients may still send it. Demo answers are
+ * never sent.
  */
 export const HistoryMessage = z
   .object({
     role: MessageRole,
     content: z.string().min(1).max(LIMITS.maxMessageChars),
-    origin: ProviderId.nullable(),
+    origin: ProviderId.nullable().optional(),
   })
   .superRefine((m, ctx) => {
-    if (m.role === "user" && m.origin !== null) {
+    if (m.role === "user" && m.origin) {
       ctx.addIssue({ code: "custom", message: "User messages must have a null origin", path: ["origin"] });
-    }
-    if (m.role === "assistant" && m.origin === null) {
-      ctx.addIssue({ code: "custom", message: "Assistant messages must name their provider", path: ["origin"] });
     }
   });
 export type HistoryMessage = z.infer<typeof HistoryMessage>;
@@ -36,7 +34,8 @@ export type OutgoingMessage = z.infer<typeof OutgoingMessage>;
 export const ChatStreamRequest = z.object({
   conversationId: Id,
   mode: AssistantMode,
-  modelChoice: ModelChoice,
+  /** Optional: DASH AI routes the request ("smart") when omitted. */
+  modelChoice: ModelChoice.default("smart"),
   message: OutgoingMessage,
   history: z.array(HistoryMessage).max(LIMITS.maxHistoryMessages).default([]),
 });
@@ -44,8 +43,9 @@ export type ChatStreamRequest = z.infer<typeof ChatStreamRequest>;
 
 export const StreamTarget = z.object({
   messageId: Id,
-  provider: ProviderId,
-  model: z.string(),
+  /** Diagnostics only: omitted by production servers (PROVIDER_DETAILS=hidden). Never shown to users. */
+  provider: ProviderId.optional(),
+  model: z.string().optional(),
   /** True when a fake adapter produced this answer. Clients must label it as a demonstration. */
   demo: z.boolean(),
 });
@@ -71,13 +71,13 @@ export const StreamStartEvent = z.object({
 export const MessageDeltaEvent = z.object({ messageId: Id, text: z.string() });
 export const MessageEndEvent = z.object({ messageId: Id, finishReason: FinishReason, usage: Usage });
 /**
- * How a failed answer can be recovered. The server retries retryable failures itself (before any
- * output); `attempts` says how many requests were made. It never switches provider on its own:
- * `alternatives` lists the other configured providers the user may choose explicitly.
+ * How a failed answer can be recovered. The server retries and, where safe, routes to another
+ * internal provider itself; `attempts` says how many requests were made. The user's options are
+ * Retry and Continue later. `alternatives` is diagnostics only and empty in production.
  */
 export const MessageRecovery = z.object({
   attempts: z.number().int().min(1).max(10),
-  alternatives: z.array(ProviderId),
+  alternatives: z.array(ProviderId).default([]),
 });
 export type MessageRecovery = z.infer<typeof MessageRecovery>;
 

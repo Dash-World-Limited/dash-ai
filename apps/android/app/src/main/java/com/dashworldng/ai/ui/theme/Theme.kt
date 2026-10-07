@@ -27,8 +27,8 @@ import com.dashworldng.ai.data.settings.ThemePreference
  * nothing in a screen hard-codes a colour.
  *
  * Light (default): warm ivory surfaces, deep charcoal text. Dark: deep charcoal surfaces, ivory text.
- * Champagne gold is an accent only: primary actions, the selected provider, active states,
- * progress and brand moments. Contrast is checked against WCAG AA (see docs/ui-design-system.md).
+ * Champagne gold is used sparingly for important DASH AI brand moments, primary actions where
+ * appropriate, selected interface states, progress, focus and subtle highlights. Contrast is checked against WCAG AA (see docs/ui-design-system.md).
  */
 @Immutable
 data class DashColorTokens(

@@ -8,9 +8,9 @@ keys never reach the browser.
 
 | Area | Web app |
 | --- | --- |
-| Start | Brand splash, one onboarding screen ("What are we building today?"), email/password sign-in or account creation (the only methods the API supports), Demo Mode |
+| Start | The cinematic brand splash ([branding.md](branding.md)), one onboarding screen ("What are we building today?"), email/password sign-in or account creation (the only methods the API supports), Demo Mode |
 | Home | Greeting with the account's own first name, Ask field, quick actions (Write, Analyse a file, Brainstorm, Code, Research, More tools), recent chats |
-| Chat | Streaming answers, stop, copy, share (where the browser supports it), regenerate, try the other provider, edit and resend, Compare, Markdown (headings, lists, tables, code with copy), attachments, mode sheet, provider sheet (remembered), tool activity (names and outcomes only, shown again when a chat is reopened), recovery card (Retry / Change provider / Continue later; never automatic), offline and error notices |
+| Chat | Streaming answers, stop, copy, share (where the browser supports it), regenerate, edit and resend, Markdown (headings, lists, tables, code with copy), attachments, mode sheet, answers labelled "DASH AI" (no provider selector or Compare), tool activity (names and outcomes only, shown again when a chat is reopened), recovery card ("DASH AI couldn't complete that response": Retry / Continue later), offline and error notices |
 | History | Sidebar grouped Today / Yesterday / Previous 7 days / Older, search, rename, delete. On phones the sidebar slides in |
 | Documents | Library with search and type filters, upload with progress, status (Ready / Unsupported / Demo), detail page, "Ask about this document" and suggestions that only fill the composer |
 | Prompt library | The same 29 starter prompts, categories, search, favourites and "My prompts" as Android (shared from `packages/contracts`, checked against `fixtures/prompt-library.json` by both test suites). "Use prompt" opens a new chat in the prompt's mode with the text ready to edit. Custom prompts and favourites stay in this browser for this account and are removed on sign-out, like Android |
@@ -80,7 +80,7 @@ SSE needs proxy buffering off for `/v1/chat/stream` (Caddy streams by default; f
 
 - **Offline:** an offline banner; sending is disabled (Demo Mode keeps working). An answer that was
   streaming when the connection dropped ends at once as failed, keeps what arrived and offers Retry
-  (never an automatic retry or provider switch). Back online, the chat list and providers refresh.
+  (never an automatic retry or provider switch). Back online, the chat list and DASH AI availability refresh.
 - **Session expiry** (signed out elsewhere, revoked or expired): any request that gets 401 signs this
   browser out, removes the token and explains why.
 - **Stop:** keeps the partial answer, marks unfinished tools stopped and cancels the stream on the server.

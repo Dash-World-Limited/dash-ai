@@ -1,5 +1,6 @@
 package com.dashworldng.ai.core.presentation
 
+import com.dashworldng.ai.core.assertNoProviderName
 import com.dashworldng.ai.core.model.AnswerRecovery
 import com.dashworldng.ai.core.model.AssistantMode
 import com.dashworldng.ai.core.model.ChatMessage
@@ -9,7 +10,6 @@ import com.dashworldng.ai.core.model.DocumentKind
 import com.dashworldng.ai.core.model.DocumentStatus
 import com.dashworldng.ai.core.model.MessageRole
 import com.dashworldng.ai.core.model.MessageStatus
-import com.dashworldng.ai.core.model.ModelChoice
 import com.dashworldng.ai.core.model.ProviderId
 import com.dashworldng.ai.core.model.ToolCallStatus
 import com.dashworldng.ai.core.model.ToolUse
@@ -93,65 +93,43 @@ class PresentationTest {
         assertEquals(listOf(HistorySection.OLDER), HistoryGrouping.group(listOf(list.last()), now.toInstant(ZoneOffset.UTC).toEpochMilli(), zone).map { it.section })
     }
 
-    // ---- Providers -------------------------------------------------------------------------------
+    // ---- DASH AI availability and recovery -----------------------------------------------------
 
     @Test
-    fun `the provider sheet lists only real choices and explains unavailable ones`() {
-        val onlyOpenAi = ProviderAvailability(configured = setOf(ProviderId.OPENAI), models = mapOf(ProviderId.OPENAI to "gpt-x"))
-        val options = ProviderOptions.build(onlyOpenAi, ModelChoice.SMART, demoMode = false)
-        assertEquals(ModelChoice.entries.toList(), options.map { it.choice })
-        assertEquals(listOf(true, true, false, false), options.map { it.available })
-        assertEquals("Not configured on this server.", options[2].unavailableReason)
-        assertEquals("Needs both OpenAI and Claude on this server.", options[3].unavailableReason)
-        assertEquals("gpt-x", options[1].model)
-        assertTrue(options[0].selected)
-        assertTrue(options[0].description.startsWith("Automatic"))
-
-        val demo = ProviderOptions.build(ProviderAvailability(configured = emptySet()), ModelChoice.CLAUDE, demoMode = true)
-        assertTrue(demo.all { it.available && it.model == null && it.description.endsWith("Simulated in Demo Mode.") })
+    fun `availability comes from the neutral assistant status`() {
+        val status = AssistantAvailability.from(com.dashworldng.ai.core.remote.AssistantStatusDto(available = false, demo = true, research = com.dashworldng.ai.core.remote.ResearchDto(false, "n")))
+        assertFalse(status.available)
+        assertTrue(status.demo)
     }
 
-    @Test
-    fun `switching provider is refused while an answer streams or when the provider is not configured`() {
-        val both = ProviderAvailability()
-        assertTrue(ProviderOptions.canSwitch(ModelChoice.CLAUDE, both, demoMode = false, generating = false))
-        assertFalse(ProviderOptions.canSwitch(ModelChoice.CLAUDE, both, demoMode = false, generating = true))
-        assertFalse(ProviderOptions.canSwitch(ModelChoice.CLAUDE, ProviderAvailability(configured = setOf(ProviderId.OPENAI)), demoMode = false, generating = false))
-    }
-
-    private fun failed(retryable: Boolean, provider: ProviderId = ProviderId.OPENAI, compare: String? = null) = ChatMessage(
+    private fun failed(retryable: Boolean, provider: ProviderId? = null, compare: String? = null) = ChatMessage(
         id = "a", conversationId = "c", role = MessageRole.ASSISTANT, content = "", createdAt = 1,
-        status = MessageStatus.FAILED, provider = provider, errorMessage = "OpenAI is temporarily unavailable.",
+        status = MessageStatus.FAILED, provider = provider, errorMessage = "DASH AI couldn't complete that response. Please try again.",
         errorRetryable = retryable, compareGroupId = compare,
     )
 
     @Test
-    fun `provider failure offers retry, an explicit change of provider and continue later`() {
-        val card = assertNotNull(Recovery.card(failed(true), AnswerRecovery(3, listOf(ProviderId.ANTHROPIC)), ProviderId.entries.toSet(), online = true))
-        assertEquals("Provider temporarily unavailable", card.title)
-        assertEquals("OpenAI is temporarily unavailable.", card.message)
+    fun `a failed answer offers Retry and Continue later, in DASH AI's words`() {
+        val card = assertNotNull(Recovery.card(failed(true), AnswerRecovery(3), online = true))
+        assertEquals("DASH AI couldn't complete that response", card.title)
+        assertEquals("DASH AI couldn't complete that response. Please try again.", card.message)
         assertEquals("DASH AI tried 3 times before stopping.", card.attemptsNote)
-        assertEquals(listOf(RecoveryAction.RETRY, RecoveryAction.CHANGE_PROVIDER, RecoveryAction.CONTINUE_LATER), card.actions)
-        assertEquals(listOf(ProviderId.ANTHROPIC), card.alternatives)
+        assertEquals(listOf(RecoveryAction.RETRY, RecoveryAction.CONTINUE_LATER), card.actions)
+        listOf(card.title, card.message, card.attemptsNote).forEach { assertNoProviderName(it, "recovery card") }
     }
 
     @Test
-    fun `recovery only offers providers the server named and has configured`() {
-        val noAlternatives = assertNotNull(Recovery.card(failed(true), AnswerRecovery(1, emptyList()), ProviderId.entries.toSet(), online = true))
-        assertEquals(listOf(RecoveryAction.RETRY, RecoveryAction.CONTINUE_LATER), noAlternatives.actions)
-        val notConfigured = assertNotNull(Recovery.card(failed(true), AnswerRecovery(1, listOf(ProviderId.ANTHROPIC)), setOf(ProviderId.OPENAI), online = true))
-        assertTrue(notConfigured.alternatives.isEmpty())
-        // Reopened from history (no metadata): the other configured provider, never the same one.
-        val reopened = assertNotNull(Recovery.card(failed(false), null, ProviderId.entries.toSet(), online = true))
+    fun `recovery never offers another provider, even for answers an engineering server attributed`() {
+        val attributed = assertNotNull(Recovery.card(failed(true, ProviderId.OPENAI, compare = "g"), AnswerRecovery(1), online = true))
+        assertEquals(listOf(RecoveryAction.RETRY, RecoveryAction.CONTINUE_LATER), attributed.actions)
+        // Reopened from history (no metadata), not retryable.
+        val reopened = assertNotNull(Recovery.card(failed(false), null, online = true))
         assertEquals("This answer couldn't be completed", reopened.title)
-        assertEquals(listOf(ProviderId.ANTHROPIC), reopened.alternatives)
-        assertEquals(listOf(RecoveryAction.CHANGE_PROVIDER, RecoveryAction.CONTINUE_LATER), reopened.actions)
-        // Compare answers are retried together, never switched.
-        assertTrue(assertNotNull(Recovery.card(failed(true, compare = "g"), AnswerRecovery(1, listOf(ProviderId.ANTHROPIC)), ProviderId.entries.toSet(), true)).alternatives.isEmpty())
+        assertEquals(listOf(RecoveryAction.CONTINUE_LATER), reopened.actions)
         // Offline: nothing that sends a request.
-        assertEquals(listOf(RecoveryAction.CONTINUE_LATER), assertNotNull(Recovery.card(failed(true), AnswerRecovery(1, listOf(ProviderId.ANTHROPIC)), ProviderId.entries.toSet(), online = false)).actions)
+        assertEquals(listOf(RecoveryAction.CONTINUE_LATER), assertNotNull(Recovery.card(failed(true), AnswerRecovery(1), online = false)).actions)
         // Only failed answers get a card.
-        assertNull(Recovery.card(failed(true).copy(status = MessageStatus.COMPLETE), null, ProviderId.entries.toSet(), true))
+        assertNull(Recovery.card(failed(true).copy(status = MessageStatus.COMPLETE), null, true))
     }
 
     // ---- Sync ------------------------------------------------------------------------------------

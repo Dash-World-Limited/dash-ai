@@ -33,8 +33,4 @@ data class ToolUse(
 }
 
 /** Why an answer failed and what the user may do about it (`message.error` → `recovery`). */
-data class AnswerRecovery(
-    val attempts: Int,
-    /** Providers the user may explicitly choose instead. The app never switches by itself. */
-    val alternatives: List<ProviderId>,
-)
+data class AnswerRecovery(val attempts: Int)

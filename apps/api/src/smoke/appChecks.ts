@@ -18,7 +18,8 @@ const only = <N extends StreamEvent["event"]>(events: StreamEvent[], name: N) =>
 export async function runAppChecks(config: AppConfig, providers: ProviderRegistry): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
   const store = new MemoryStore();
-  const { app } = await buildApp({ config: { ...config, logLevel: "silent" }, providers, store });
+  // Engineering mode: the smoke run must verify which provider answered. Consumers never see this.
+  const { app } = await buildApp({ config: { ...config, logLevel: "silent", providerDetails: "exposed" }, providers, store });
   await app.ready();
   try {
     const registered = await app.inject({
@@ -46,7 +47,7 @@ export async function runAppChecks(config: AppConfig, providers: ProviderRegistr
       check(targets.map((t) => t.provider).sort().join() === [...expected].sort().join(), "the answer came from unexpected providers");
       for (const t of targets) {
         check(!t.demo, "a live provider answer was labelled as a demonstration");
-        check(t.model === providers.get(t.provider)!.model, "the reported model label does not match the configured model");
+        check(t.provider !== undefined && t.model === providers.get(t.provider)!.model, "the reported model label does not match the configured model");
         const end = only(events, "message.end").find((e) => e.data.messageId === t.messageId);
         check(end && end.data.finishReason === "stop", `${t.provider} did not finish cleanly`);
         const text = only(events, "message.delta").filter((d) => d.data.messageId === t.messageId).map((d) => d.data.text).join("");

@@ -1,7 +1,9 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  providerHint,
+  smartRoute,
   AssistantMode,
   PROMPT_CATEGORIES,
   PROMPT_LIMITS,
@@ -39,8 +41,8 @@ import {
   type ProviderId,
 } from "../src/index.js";
 
-const fixture = (name: string) =>
-  readFileSync(fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url)), "utf8");
+const FIXTURES = fileURLToPath(new URL("../fixtures/", import.meta.url));
+const fixture = (name: string) => readFileSync(`${FIXTURES}${name}`, "utf8");
 const json = (name: string): unknown => JSON.parse(fixture(name));
 
 describe("JSON fixtures match the schemas", () => {
@@ -103,6 +105,27 @@ describe("JSON fixtures match the schemas", () => {
     expect(validatePrompt("Title", "Body")).toBeNull();
   });
 
+  it("DASH AI routing: every configured provider, best first; a named provider is only a preference", () => {
+    const both = new Set(["openai", "anthropic"] as const);
+    expect(smartRoute("general", both)).toEqual(["openai", "anthropic"]);
+    expect(smartRoute("writing", both)).toEqual(["anthropic", "openai"]);
+    expect(smartRoute("general", both, "anthropic")).toEqual(["anthropic", "openai"]);
+    expect(smartRoute("general", new Set(["openai"] as const), "anthropic")).toEqual(["openai"]);
+    expect(smartRoute("general", new Set())).toEqual([]);
+    expect(providerHint("Give me a Claude-style analysis")).toBe("anthropic");
+    expect(providerHint("use ChatGPT for this")).toBe("openai");
+    expect(providerHint("answer like gpt-4o would")).toBe("openai");
+    expect(providerHint("Approach this like Gemini would")).toBeNull();
+    expect(providerHint("compare Claude and ChatGPT")).toBeNull();
+    expect(providerHint("plan my week")).toBeNull();
+  });
+
+  it("history and stream targets no longer require provider identity", () => {
+    expect(HistoryMessage.safeParse({ role: "assistant", content: "earlier answer" }).success).toBe(true);
+    expect(HistoryMessage.safeParse({ role: "user", content: "q", origin: "openai" }).success).toBe(false);
+    expect(ChatStreamRequest.parse({ conversationId: "conv-00000001", mode: "general", message: { id: "msg-00000001", content: "hi" } }).modelChoice).toBe("smart");
+  });
+
   it("smart-routing.json mirrors SMART_ROUTING", () => {
     expect(json("smart-routing.json")).toEqual(SMART_ROUTING);
   });
@@ -117,27 +140,36 @@ describe("JSON fixtures match the schemas", () => {
 });
 
 describe("SSE transcripts", () => {
-  it("decodes the compare transcript and skips comments", () => {
-    const events = decodeStream(fixture("chat-stream-compare.sse"));
+  it("decodes the production transcript (DASH AI only, no provider) and skips comments", () => {
+    const events = decodeStream(fixture("chat-stream.sse"));
     expect(events.map((e) => e.event)).toEqual([
       "stream.start",
       "message.delta",
       "message.delta",
-      "message.delta",
       "message.end",
-      "message.error",
       "conversation.title",
       "stream.end",
     ]);
     const start = events[0];
-    expect(start?.event === "stream.start" && start.data.targets.map((t) => t.provider)).toEqual([
-      "openai",
-      "anthropic",
-    ]);
-    const failure = events[5];
-    expect(failure?.event === "message.error" && failure.data.recovery).toEqual({ attempts: 3, alternatives: ["openai"] });
-    const third = events[3];
-    expect(third?.event === "message.delta" && third.data.text).toBe(' — ünïcödé ✓ "quoted"');
+    expect(start?.event === "stream.start" && start.data.targets).toEqual([{ messageId: "a1111111-1111-4111-8111-111111111111", demo: true }]);
+    const second = events[2];
+    expect(second?.event === "message.delta" && second.data.text).toBe(' — ünïcödé ✓ "quoted"');
+  });
+
+  it("decodes a neutral failure with recovery details and no alternative provider", () => {
+    const events = decodeStream(fixture("chat-stream-recovery.sse"));
+    expect(events.map((e) => e.event)).toEqual(["stream.start", "message.delta", "message.error", "stream.end"]);
+    const failure = events[2];
+    expect(failure?.event === "message.error" && failure.data.recovery).toEqual({ attempts: 3, alternatives: [] });
+    expect(failure?.event === "message.error" && failure.data.error.message).toBe("DASH AI took too long to respond. Please try again.");
+  });
+
+  it("consumer fixtures never name the AI infrastructure (operator and routing fixtures excepted)", () => {
+    const internal = new Set(["providers-response.json", "smart-routing.json", "prompt-library.json"]);
+    for (const name of readdirSync(FIXTURES)) {
+      if (internal.has(name)) continue;
+      expect(fixture(name), name).not.toMatch(/openai|anthropic|claude|chatgpt|gpt-\d|gemini|"provider"|"compare"/i);
+    }
   });
 
   it("decodes the tool-calling transcript", () => {
@@ -292,8 +324,8 @@ describe("file checks", () => {
 });
 
 describe("history rules", () => {
-  it("requires assistant turns to name their provider", () => {
-    expect(HistoryMessage.safeParse({ role: "assistant", content: "x", origin: null }).success).toBe(false);
+  it("assistant turns are DASH AI's own; older clients may still send an origin", () => {
+    expect(HistoryMessage.safeParse({ role: "assistant", content: "x", origin: null }).success).toBe(true);
     expect(HistoryMessage.safeParse({ role: "assistant", content: "x", origin: "anthropic" }).success).toBe(true);
     expect(HistoryMessage.safeParse({ role: "user", content: "x", origin: "openai" }).success).toBe(false);
   });
@@ -303,11 +335,7 @@ describe("history rules", () => {
     expect(
       ChatStreamRequest.safeParse({ ...base, message: { id: "9a8b7c6d-5e4f", content: "   ", attachmentIds: [] } }).success,
     ).toBe(false);
-    const history = Array.from({ length: LIMITS.maxHistoryMessages + 1 }, () => ({
-      role: "user",
-      content: "hi",
-      origin: null,
-    }));
+    const history = Array.from({ length: LIMITS.maxHistoryMessages + 1 }, () => ({ role: "user", content: "hi" }));
     expect(ChatStreamRequest.safeParse({ ...base, history }).success).toBe(false);
   });
 });

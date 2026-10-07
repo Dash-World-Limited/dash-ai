@@ -1,6 +1,6 @@
-import type { AssistantMode, ModelChoice } from "@dash-ai/contracts";
+import type { AssistantMode } from "@dash-ai/contracts";
 import { useState } from "react";
-import { CHOICE_LABEL, MODE_ORDER, MODES } from "../logic/presentation";
+import { MODE_ORDER, MODES } from "../logic/presentation";
 import { useApp } from "../state/app";
 import type { DemoFailure } from "../chat/backends";
 import type { ThemePreference } from "../state/settings";
@@ -39,13 +39,6 @@ export function SettingsScreen() {
               ))}
             </div>
           </Group>
-          <Group title="Provider for new chats">
-            <div role="radiogroup" aria-label="Provider for new chats">
-              {(["smart", "openai", "claude"] as ModelChoice[]).map((c) => (
-                <Radio key={c} label={CHOICE_LABEL[c]} value={c} current={s.defaultChoice} onPick={(v) => (set({ defaultChoice: v }), app.composer.set((x) => ({ ...x, choice: v })))} testId={`default-${c}`} />
-              ))}
-            </div>
-          </Group>
           <Group title="Mode for new chats">
             <div role="radiogroup" aria-label="Mode for new chats">
               {MODE_ORDER.map((m) => (
@@ -78,7 +71,7 @@ export function SettingsScreen() {
             <Row
               icon="sparkle"
               title="Demo Mode"
-              sub={s.demoMode ? "On. Answers are simulated in this browser; no AI provider is used." : "Off. Answers come from the providers on your DASH AI server."}
+              sub={s.demoMode ? "On. DASH AI's answers are simulated in this browser; nothing is sent anywhere." : "Off. Answers come from DASH AI."}
               right={
                 <Switch
                   checked={s.demoMode}
@@ -94,8 +87,8 @@ export function SettingsScreen() {
             {s.demoMode && (
               <div role="radiogroup" aria-label="Simulate errors">
                 <div className="small faint" style={{ padding: "12px 16px 0" }}>Simulate errors (to see how failures look)</div>
-                {(["none", "connection", "provider"] as DemoFailure[]).map((f) => (
-                  <Radio key={f} label={f === "none" ? "No errors" : f === "connection" ? "Connection error" : "Provider error"} value={f} current={s.demoFailure} onPick={(v) => set({ demoFailure: v })} testId={`demo-failure-${f}`} />
+                {(["none", "connection", "service"] as DemoFailure[]).map((f) => (
+                  <Radio key={f} label={f === "none" ? "No errors" : f === "connection" ? "Connection error" : "DASH AI couldn't answer"} value={f} current={s.demoFailure} onPick={(v) => set({ demoFailure: v })} testId={`demo-failure-${f}`} />
                 ))}
               </div>
             )}

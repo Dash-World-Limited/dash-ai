@@ -251,16 +251,21 @@ describe("cancellation and explicit recovery", () => {
     expect(messages.map((m) => [m.role, m.origin, m.status])).toEqual([["user", null, "complete"], ["assistant", "anthropic", "complete"]]);
   });
 
-  it("Dash Smart never silently fails over to the provider the user did not get", async () => {
+  it("DASH AI routes to another provider internally when the first fails before producing anything", async () => {
     const openai = failFirst("openai", answer("openai"), [503, 503, 503]);
     const anthropic = answer("anthropic");
     const s = await setup({ openai, anthropic });
-    // General mode routes to OpenAI.
-    const { events } = await s.chat({ modelChoice: "smart", mode: "general" });
+    // General mode routes to OpenAI first; it fails every retry, so DASH AI uses Claude for the same answer.
+    const { events, body } = await s.chat({ modelChoice: "smart", mode: "general" });
     const start = byEvent(events, "stream.start")[0]!;
-    expect(start.data.targets.map((t) => t.provider)).toEqual(["openai"]);
-    expect(byEvent(events, "message.error")).toHaveLength(1);
-    expect(anthropic.requests).toHaveLength(0);
+    expect(start.data.targets).toHaveLength(1);
+    expect(byEvent(events, "message.error")).toHaveLength(0);
+    expect(byEvent(events, "message.end").map((e) => e.data.messageId)).toEqual([start.data.targets[0]!.messageId]);
+    expect(text(events)).toBe("Recovered answer from anthropic.");
+    expect(anthropic.requests).toHaveLength(1);
+    // Internally the truth is kept: which provider answered.
+    const messages = await s.stored(body.conversationId as string);
+    expect(messages.at(-1)).toMatchObject({ origin: "anthropic", status: "complete" });
   });
 
   it("Compare keeps the healthy answer when the other provider fails after retries", async () => {

@@ -39,9 +39,14 @@ val rClass = tasks.register("rClass") {
             .map { it.name.substringBefore('.') }.toSortedSet()
         val strings = res.listFiles { f -> f.name.startsWith("values") }.orEmpty().mapNotNull { File(it, "strings.xml").takeIf(File::exists) }
             .flatMap { Regex("<string name=\"([a-z_0-9]+)\"").findAll(it.readText()).map { m -> m.groupValues[1] }.toList() }.toSortedSet()
+        // Drawables get distinct ids and a name table, so the desktop painterResource stub can load
+        // the real vector XML (see src/main/kotlin/stubs/Resources.kt).
+        val ids = drawables.withIndex().associate { (i, name) -> name to i + 1 }
         File(outDir.get().asFile, "com/dashworldng/ai/R.kt").apply { parentFile.mkdirs() }.writeText(
-            "package com.dashworldng.ai\nobject R {\n  object drawable {\n" + drawables.joinToString("") { "    const val $it = 0\n" } +
-                "  }\n  object string {\n" + strings.joinToString("") { "    const val $it = 0\n" } + "  }\n}\n",
+            "package com.dashworldng.ai\nobject R {\n  object drawable {\n" + ids.entries.joinToString("") { "    const val ${it.key} = ${it.value}\n" } +
+                "  }\n  object string {\n" + strings.joinToString("") { "    const val $it = 0\n" } + "  }\n}\n" +
+                "object DesktopResources {\n  val drawableDir = \"" + File(res, "drawable").absolutePath.replace("\\", "/") + "\"\n" +
+                "  val drawables = mapOf(" + ids.entries.joinToString(", ") { "${it.value} to \"${it.key}\"" } + ")\n}\n",
         )
     }
 }

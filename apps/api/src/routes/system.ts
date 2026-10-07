@@ -1,4 +1,5 @@
-import { SMART_ROUTING, type HealthResponse, type ProvidersResponse } from "@dash-ai/contracts";
+import { SMART_ROUTING, type AssistantStatusResponse, type HealthResponse, type ProvidersResponse } from "@dash-ai/contracts";
+import { hideProviders } from "../chat/publicSurface.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { AppError } from "../errors.js";
@@ -29,31 +30,50 @@ export function systemRoutes(app: FastifyInstance, ctx: RouteContext): void {
     };
   });
 
+  /** True when the request's bearer token is exactly `token` (configured). Constant-time comparison. */
+  const bearerMatches = (request: FastifyRequest, token: string | undefined): boolean => {
+    if (!token) return false;
+    const given = request.headers.authorization?.startsWith("Bearer ") ? request.headers.authorization.slice(7).trim() : "";
+    const a = createHash("sha256").update(given).digest();
+    const b = createHash("sha256").update(token).digest();
+    return timingSafeEqual(a, b);
+  };
+
   /**
    * Prometheus metrics, only when METRICS_TOKEN is configured, and only with that bearer token.
    * Without a token configured the route answers 404 like any unknown path.
    */
   app.get("/metrics", async (request: FastifyRequest, reply: FastifyReply) => {
-    const token = ctx.config.metricsToken;
-    if (!token) throw new AppError("not_found", "Not found.");
-    const given = request.headers.authorization?.startsWith("Bearer ") ? request.headers.authorization.slice(7).trim() : "";
-    const a = createHash("sha256").update(given).digest();
-    const b = createHash("sha256").update(token).digest();
-    if (!timingSafeEqual(a, b)) throw new AppError("unauthorized", "Not authorized.");
+    if (!ctx.config.metricsToken) throw new AppError("not_found", "Not found.");
+    if (!bearerMatches(request, ctx.config.metricsToken)) throw new AppError("unauthorized", "Not authorized.");
     reply.type("text/plain; version=0.0.4");
     return ctx.metrics.render();
   });
 
-  app.get("/v1/providers", async (): Promise<ProvidersResponse> => {
+  const research = {
+    liveSearchAvailable: false,
+    note: "No live web search is connected. Research answers use DASH AI's built-in knowledge only.",
+  };
+
+  /** What consumer apps may know: can DASH AI answer, and are answers demonstrations. No provider identity. */
+  app.get("/v1/assistant", async (): Promise<AssistantStatusResponse> => {
+    const statuses = ctx.providers.status().filter((p) => p.configured);
+    return { available: statuses.length > 0, demo: statuses.length > 0 && statuses.every((p) => p.mode === "fake"), research };
+  });
+
+  /**
+   * OPERATOR VIEW of the internal provider configuration. With provider details hidden (production)
+   * it needs the operator token (OPERATOR_TOKEN, never METRICS_TOKEN or a user session) and is
+   * otherwise indistinguishable from an unknown path.
+   */
+  app.get("/v1/providers", async (request: FastifyRequest): Promise<ProvidersResponse> => {
+    if (hideProviders(ctx.config) && !bearerMatches(request, ctx.config.operatorToken)) throw new AppError("not_found", "Not found.");
     const configured = ctx.providers.configured();
     return {
       providers: ctx.providers.status(),
       compareAvailable: configured.has("openai") && configured.has("anthropic"),
       smartRouting: { ...SMART_ROUTING } as ProvidersResponse["smartRouting"],
-      research: {
-        liveSearchAvailable: false,
-        note: "No live web search provider is configured. Research answers use the model's built-in knowledge only.",
-      },
+      research,
     };
   });
 }

@@ -42,7 +42,6 @@ fun ChatRequest.toDto(): ChatStreamRequestDto = ChatStreamRequestDto(
         HistoryMessageDto(
             role = if (item.role == MessageRole.USER) "user" else "assistant",
             content = item.content,
-            origin = item.origin?.wire,
         )
     },
 )

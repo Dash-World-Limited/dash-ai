@@ -58,9 +58,6 @@ import com.dashworldng.ai.core.chat.ChatItem
 import com.dashworldng.ai.core.documents.FileRules
 import com.dashworldng.ai.core.model.AssistantMode
 import com.dashworldng.ai.core.model.ChatMessage
-import com.dashworldng.ai.core.model.ModelChoice
-import com.dashworldng.ai.core.model.ProviderId
-import com.dashworldng.ai.core.presentation.ProviderOptions
 import com.dashworldng.ai.core.presentation.Recovery
 import com.dashworldng.ai.core.presentation.StatusTone
 import com.dashworldng.ai.data.DocumentReader
@@ -83,8 +80,6 @@ class ChatEvents(
     val onStop: () -> Unit,
     val onAttach: () -> Unit,
     val onRemoveAttachment: (String) -> Unit,
-    val onSelectChoice: (ModelChoice) -> Unit,
-    val onConfirmCompare: (Boolean) -> Unit,
     val onSelectMode: (AssistantMode) -> Unit,
     val onSuggestion: (String) -> Unit,
     val onNewChat: () -> Unit,
@@ -94,10 +89,8 @@ class ChatEvents(
     val onOpenTools: () -> Unit,
     val onNotice: (String?) -> Unit,
     val onRegenerate: (String) -> Unit,
-    val onRetryOther: (String) -> Unit,
     val onEditAndResend: (String, String) -> Unit,
     val onRetryAnswer: (String) -> Unit,
-    val onAnswerWith: (String, ProviderId) -> Unit,
     val onContinueLater: (String) -> Unit,
 )
 
@@ -120,8 +113,6 @@ fun ChatScreen(vm: ChatViewModel, drawer: DrawerCallbacks, onBack: () -> Unit, o
             onStop = vm::stop,
             onAttach = { picker.launch(FileRules.pickerMimeTypes) },
             onRemoveAttachment = vm::removeAttachment,
-            onSelectChoice = vm::selectChoice,
-            onConfirmCompare = vm::confirmCompare,
             onSelectMode = vm::selectMode,
             onSuggestion = vm::useSuggestion,
             onNewChat = vm::newChat,
@@ -131,10 +122,8 @@ fun ChatScreen(vm: ChatViewModel, drawer: DrawerCallbacks, onBack: () -> Unit, o
             onOpenTools = onOpenTools,
             onNotice = vm::notice,
             onRegenerate = vm::regenerate,
-            onRetryOther = vm::retryWithOtherProvider,
             onEditAndResend = vm::editAndResend,
             onRetryAnswer = vm::retryAnswer,
-            onAnswerWith = vm::answerWith,
             onContinueLater = vm::continueLater,
         )
     }
@@ -150,9 +139,7 @@ fun ChatContent(state: ChatUiState, events: ChatEvents, drawer: DrawerCallbacks,
     // System Back closes the open history drawer first, before leaving the screen.
     BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
     var editing by remember { mutableStateOf<ChatMessage?>(null) }
-    var providerSheet by rememberSaveable { mutableStateOf(false) }
     var modeSheet by rememberSaveable { mutableStateOf(false) }
-    var alternatives by remember { mutableStateOf<Pair<String, List<ProviderId>>?>(null) }
 
     LaunchedEffect(state.notice) {
         state.notice?.let {
@@ -164,19 +151,16 @@ fun ChatContent(state: ChatUiState, events: ChatEvents, drawer: DrawerCallbacks,
     val actions = remember(events) {
         MessageActions(
             onRegenerate = events.onRegenerate,
-            onRetryOther = events.onRetryOther,
             onEdit = { editing = it },
             onNotice = { events.onNotice(it) },
             onRetryAnswer = events.onRetryAnswer,
-            onChangeProvider = { id, alts -> alternatives = id to alts },
             onContinueLater = events.onContinueLater,
         )
     }
-    val configured = if (state.demoMode) ProviderId.entries.toSet() else state.providers.configured
     val extras = AnswerExtras(
         tools = { id -> state.session.toolUses[id].orEmpty() },
         recovery = { m ->
-            if (m.id in state.dismissedRecovery) null else Recovery.card(m, state.session.recovery[m.id], configured, state.online || state.demoMode)
+            if (m.id in state.dismissedRecovery) null else Recovery.card(m, state.session.recovery[m.id], state.online || state.demoMode)
         },
         pluginNames = state.pluginNames,
         reducedMotion = reducedMotion,
@@ -246,7 +230,6 @@ fun ChatContent(state: ChatUiState, events: ChatEvents, drawer: DrawerCallbacks,
                         onStop = events.onStop,
                         onAttach = events.onAttach,
                         onRemoveAttachment = events.onRemoveAttachment,
-                        onOpenProviders = { providerSheet = true },
                         onOpenModes = { modeSheet = true },
                         modifier = Modifier.padding(horizontal = Spacing.md).padding(bottom = Spacing.sm).navigationBarsPadding(),
                     )
@@ -255,17 +238,6 @@ fun ChatContent(state: ChatUiState, events: ChatEvents, drawer: DrawerCallbacks,
         }
     }
 
-    if (providerSheet) {
-        ProviderSheet(
-            options = ProviderOptions.build(state.providers, state.choice, state.demoMode),
-            demoMode = state.demoMode,
-            onSelect = {
-                events.onSelectChoice(it.choice)
-                providerSheet = false
-            },
-            onDismiss = { providerSheet = false },
-        )
-    }
     if (modeSheet) {
         ModeSheet(
             selected = state.mode,
@@ -280,35 +252,6 @@ fun ChatContent(state: ChatUiState, events: ChatEvents, drawer: DrawerCallbacks,
             onDismiss = { modeSheet = false },
         )
     }
-    alternatives?.let { (messageId, providers) ->
-        AlternativeProviderSheet(
-            alternatives = providers,
-            onSelect = {
-                events.onAnswerWith(messageId, it)
-                alternatives = null
-            },
-            onDismiss = { alternatives = null },
-        )
-    }
-
-    if (state.confirmCompare) {
-        AlertDialog(
-            onDismissRequest = { events.onConfirmCompare(false) },
-            containerColor = c.surface,
-            titleContentColor = c.ink,
-            textContentColor = c.inkSecondary,
-            title = { Text("Compare uses both providers") },
-            text = {
-                Text(
-                    "Each message is sent to both OpenAI and Anthropic's Claude, and you'll see the two answers together. " +
-                        "This makes two requests. Neither provider sees the other's answer.",
-                )
-            },
-            confirmButton = { TextAction("Use Compare", { events.onConfirmCompare(true) }, modifier = Modifier.testTag("confirm_compare")) },
-            dismissButton = { TextButton(onClick = { events.onConfirmCompare(false) }) { Text("Cancel", color = c.inkSecondary) } },
-        )
-    }
-
     editing?.let { message ->
         EditMessageDialog(
             initial = message.content,
@@ -327,7 +270,7 @@ private fun StatusNotices(state: ChatUiState, events: ChatEvents) {
         Column(Modifier.padding(horizontal = Spacing.lg), verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
             if (state.demoMode) {
                 Notice(
-                    "Demo Mode: answers are simulated on this device. No AI provider is used.",
+                    "Demo Mode: DASH AI's answers are simulated on this device. Nothing is sent anywhere.",
                     title = null,
                     actionLabel = "Settings",
                     onAction = events.onOpenSettings,
@@ -339,8 +282,14 @@ private fun StatusNotices(state: ChatUiState, events: ChatEvents) {
                     tone = StatusTone.WARNING,
                     modifier = Modifier.testTag("offline_banner"),
                 )
-            } else if (state.providers.error != null) {
-                Notice("Couldn't check the server: ${state.providers.error}", tone = StatusTone.WARNING, actionLabel = "Settings", onAction = events.onOpenSettings)
+            } else if (state.assistant.error != null) {
+                Notice("Couldn't check the server: ${state.assistant.error}", tone = StatusTone.WARNING, actionLabel = "Settings", onAction = events.onOpenSettings)
+            } else if (!state.assistant.available) {
+                Notice(
+                    "DASH AI is temporarily unavailable. Please try again later.",
+                    tone = StatusTone.WARNING,
+                    modifier = Modifier.testTag("unavailable_banner"),
+                )
             }
             val error = state.session.error
             if (error != null) {
@@ -418,7 +367,6 @@ private fun MessageList(state: ChatUiState, actions: MessageActions, extras: Ans
                     when (item) {
                         is ChatItem.User -> UserMessage(item.message, state.isGenerating, actions)
                         is ChatItem.Assistant -> AssistantMessage(item.message, state.isGenerating, actions, extras)
-                        is ChatItem.Compare -> CompareRow(item.answers, state.isGenerating, actions, extras)
                     }
                 }
             }

@@ -10,7 +10,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-/** Holds the Dash AI session token. AI-provider keys never exist on the device. */
+/** Holds the Dash AI session token. AI service keys never exist on the device. */
 interface TokenStore {
     fun get(): String?
     fun set(token: String?)

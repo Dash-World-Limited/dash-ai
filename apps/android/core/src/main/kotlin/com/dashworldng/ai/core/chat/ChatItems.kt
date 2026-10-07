@@ -9,7 +9,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
-/** What the message list renders: single messages, or both Compare answers side by side. */
+/** What the message list renders: each question and DASH AI's answer, in order. */
 sealed interface ChatItem {
     val key: String
 
@@ -20,26 +20,12 @@ sealed interface ChatItem {
     data class Assistant(val message: ChatMessage) : ChatItem {
         override val key: String get() = message.id
     }
-
-    data class Compare(val groupId: String, val answers: List<ChatMessage>) : ChatItem {
-        override val key: String get() = "compare-$groupId"
-    }
 }
 
 object ChatItems {
-    fun build(messages: List<ChatMessage>): List<ChatItem> {
-        val items = mutableListOf<ChatItem>()
-        val seenGroups = mutableSetOf<String>()
-        for (m in messages) {
-            val group = m.compareGroupId
-            when {
-                m.isUser -> items += ChatItem.User(m)
-                group == null -> items += ChatItem.Assistant(m)
-                seenGroups.add(group) -> items += ChatItem.Compare(group, messages.filter { it.isAssistant && it.compareGroupId == group })
-            }
-        }
-        return items
-    }
+    /** Answers kept from older Compare chats appear one after another, as DASH AI's. */
+    fun build(messages: List<ChatMessage>): List<ChatItem> =
+        messages.map { m -> if (m.isUser) ChatItem.User(m) else ChatItem.Assistant(m) }
 }
 
 @Serializable

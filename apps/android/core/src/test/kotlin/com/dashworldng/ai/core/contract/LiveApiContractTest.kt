@@ -2,6 +2,7 @@ package com.dashworldng.ai.core.contract
 
 import com.dashworldng.ai.core.account.InMemoryLocalOwnerStore
 import com.dashworldng.ai.core.account.LocalAccountGuard
+import com.dashworldng.ai.core.assertNoProviderName
 import com.dashworldng.ai.core.auth.AuthService
 import com.dashworldng.ai.core.chat.ChatSession
 import com.dashworldng.ai.core.chat.ChatRequest
@@ -36,6 +37,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -59,10 +61,10 @@ class LiveApiContractTest {
         }
     }
 
-    private fun request(choice: ModelChoice, content: String, attachments: List<com.dashworldng.ai.core.model.AttachmentRef> = emptyList()) = ChatRequest(
+    private fun request(content: String, attachments: List<com.dashworldng.ai.core.model.AttachmentRef> = emptyList()) = ChatRequest(
         conversationId = UUID.randomUUID().toString(),
         mode = AssistantMode.BUSINESS,
-        modelChoice = choice,
+        modelChoice = ModelChoice.SMART,
         messageId = UUID.randomUUID().toString(),
         content = content,
         attachments = attachments,
@@ -70,23 +72,28 @@ class LiveApiContractTest {
     )
 
     @Test
-    fun `providers endpoint reports fake adapters`() = runBlocking {
-        val providers = AuthService { client }.providers()
-        assertEquals(listOf("fake", "fake"), providers.providers.map { it.mode })
-        assertTrue(providers.compareAvailable)
+    fun `the assistant endpoint says DASH AI is available and names no provider`() = runBlocking {
+        val status = AuthService { client }.assistant()
+        assertTrue(status.available)
+        assertTrue(status.demo) // the CI server runs fake adapters
+        assertNoProviderName(status.research.note, "research note")
     }
 
     @Test
-    fun `compare streams two demo-labelled answers end to end`() = runBlocking {
-        val events = RemoteChatGateway(client).stream(request(ModelChoice.COMPARE, "Plan a kiosk launch")).toList()
+    fun `an answer streams end to end as DASH AI's, with no provider or model`() = runBlocking {
+        val events = RemoteChatGateway(client).stream(request("Plan a kiosk launch")).toList()
         val start = assertIs<ChatStreamEvent.Started>(events.first())
-        assertEquals(ProviderId.entries, start.targets.map { it.provider })
-        assertTrue(start.targets.all { it.demo })
-        assertEquals(2, events.count { it is ChatStreamEvent.MessageEnded })
+        val target = start.targets.single()
+        assertNull(target.provider)
+        assertNull(target.model)
+        assertTrue(target.demo)
+        assertNoProviderName(start.routingReason, "routing reason")
+        assertEquals(1, events.count { it is ChatStreamEvent.MessageEnded })
         assertTrue(events.any { it is ChatStreamEvent.TitleChanged })
         assertIs<ChatStreamEvent.Ended>(events.last())
         val text = events.filterIsInstance<ChatStreamEvent.Delta>().joinToString("") { it.text }
-        assertTrue(text.contains("Demonstration answer"))
+        assertTrue(text.contains("Demonstration answer from DASH AI"))
+        assertNoProviderName(text, "answer text")
     }
 
     @Test
@@ -94,7 +101,7 @@ class LiveApiContractTest {
         val bytes = "Opening hours are 7am to 7pm.".toByteArray()
         val doc = RemoteDocumentGateway(client).upload(UploadSource("hours.txt", "text/plain", bytes.size.toLong()) { bytes.inputStream() }) {}
         assertEquals(DocumentStatus.READY, doc.status)
-        val events = RemoteChatGateway(client).stream(request(ModelChoice.CLAUDE, "When do we open?", listOf(doc.toAttachment()))).toList()
+        val events = RemoteChatGateway(client).stream(request("When do we open?", listOf(doc.toAttachment()))).toList()
         assertEquals(1, events.count { it is ChatStreamEvent.MessageEnded })
         assertTrue(events.filterIsInstance<ChatStreamEvent.Delta>().joinToString("") { it.text }.contains("included extracted document text"))
     }
@@ -102,7 +109,7 @@ class LiveApiContractTest {
     @Test
     fun `stopping closes the stream and the server cancels`() = runBlocking {
         val gateway = RemoteChatGateway(client)
-        val first = gateway.stream(request(ModelChoice.OPENAI, "Go slowly [[fake:slow]]")).first()
+        val first = gateway.stream(request("Go slowly [[fake:slow]]")).first()
         val start = assertIs<ChatStreamEvent.Started>(first)
         // The stream is already closed by first(); an explicit cancel for a finished stream reports false.
         gateway.cancel(start.streamId)
@@ -111,8 +118,8 @@ class LiveApiContractTest {
     @Test
     fun `a second device pulls the first device's conversations, renames and deletions`() = runBlocking<Unit> {
         // Device 1 chats against the live API (the server stores the conversation).
-        val kept = request(ModelChoice.OPENAI, "Plan the kiosk menu")
-        val dropped = request(ModelChoice.CLAUDE, "A chat that will be deleted")
+        val kept = request("Plan the kiosk menu")
+        val dropped = request("A chat that will be deleted")
         RemoteChatGateway(client).stream(kept).toList()
         RemoteChatGateway(client).stream(dropped).toList()
 
@@ -126,7 +133,7 @@ class LiveApiContractTest {
         val pulled = repo.getMessages(kept.conversationId)
         assertEquals(listOf(MessageRole.USER, MessageRole.ASSISTANT), pulled.map { it.role })
         assertEquals("Plan the kiosk menu", pulled.first().content)
-        assertEquals(ProviderId.OPENAI, pulled.last().provider)
+        assertNull(pulled.last().provider) // sync never says which AI service wrote an answer
         assertTrue(pulled.last().isDemo) // the fake server labels its answers as demonstrations
         assertEquals(pulled.first().id, pulled.last().replyToId)
 
@@ -185,41 +192,40 @@ class LiveApiContractTest {
     }
 
     @Test
-    fun `switching provider inside one conversation never forks or duplicates it on either device`() = runBlocking<Unit> {
+    fun `continuing and regenerating inside one conversation never forks or duplicates it on either device`() = runBlocking<Unit> {
         val phoneRepo = InMemoryConversationRepository()
         val session = ChatSession(scope = this, repository = phoneRepo, gatewayProvider = { RemoteChatGateway(client) })
         suspend fun idle() {
             while (session.state.value.isGenerating) delay(20)
         }
-        assertTrue(session.send("First question", ModelChoice.OPENAI, AssistantMode.GENERAL))
+        assertTrue(session.send("First question", AssistantMode.GENERAL))
         idle()
-        assertTrue(session.send("Second question", ModelChoice.CLAUDE, AssistantMode.GENERAL))
+        assertTrue(session.send("Second question", AssistantMode.WRITING))
         idle()
-        assertTrue(session.send("Third question", ModelChoice.COMPARE, AssistantMode.GENERAL))
+        assertTrue(session.send("Third question", AssistantMode.GENERAL))
         idle()
-        val claudeAnswer = session.state.value.messages.first { it.provider == ProviderId.ANTHROPIC && it.compareGroupId == null }
-        assertTrue(session.retryWithOtherProvider(claudeAnswer.id))
+        val secondAnswerBefore = session.state.value.messages.let { it[it.indexOfFirst { m -> m.content == "Second question" } + 1] }
+        assertTrue(session.regenerate(session.state.value.messages.last().id))
         idle()
         val conversationId = session.state.value.conversation!!.id
         val local = phoneRepo.getMessages(conversationId)
 
         // The phone syncs: nothing new appears, nothing is duplicated.
-        val userId = "live-switch"
+        val userId = "live-continue"
         ConversationSyncService(DashApiSyncRemote(client), phoneRepo, InMemorySyncStateStore()).sync(userId)
         val afterSync = phoneRepo.getMessages(conversationId)
         assertEquals(afterSync.map { it.id }.toSet().size, afterSync.size)
         assertEquals(local.map { it.id }, afterSync.map { it.id })
 
-        // A second device pulls exactly the same single conversation.
+        // A second device pulls exactly the same single conversation, with no provider on any answer.
         val laptopRepo = InMemoryConversationRepository()
         ConversationSyncService(DashApiSyncRemote(client), laptopRepo, InMemorySyncStateStore()).sync(userId)
         assertEquals(listOf(conversationId), laptopRepo.allConversations().map { it.id })
         val laptop = laptopRepo.getMessages(conversationId)
         assertEquals(afterSync.map { it.id }, laptop.map { it.id })
-        assertEquals(afterSync.map { it.provider }, laptop.map { it.provider })
-        // Retrying the Claude answer with OpenAI replaced it: the second question's answer now comes from OpenAI.
-        val secondAnswer = laptop[laptop.indexOfFirst { it.content == "Second question" } + 1]
-        assertEquals(ProviderId.OPENAI, secondAnswer.provider)
+        assertTrue(laptop.all { it.provider == null && it.model == null })
+        assertEquals(6, laptop.size)
+        assertEquals(secondAnswerBefore.id, laptop[laptop.indexOfFirst { it.content == "Second question" } + 1].id)
     }
 
     @Test
@@ -258,7 +264,7 @@ class LiveApiContractTest {
     @Test
     fun `one device, two accounts - signing out removes the first account's data and the second sees none of it`() = runBlocking<Unit> {
         // Alice is this test's account (client/token). She chats, syncs, then signs out.
-        RemoteChatGateway(client).stream(request(ModelChoice.OPENAI, "Alice's private plan")).toList()
+        RemoteChatGateway(client).stream(request("Alice's private plan")).toList()
         val repo = InMemoryConversationRepository()
         val documents = com.dashworldng.ai.core.data.InMemoryDocumentRepository()
         val prompts = com.dashworldng.ai.core.data.InMemoryPromptRepository()
@@ -303,7 +309,7 @@ class LiveApiContractTest {
     @Test
     fun `errors follow the contract`() = runBlocking {
         val error = assertFailsWith<ApiException> {
-            RemoteChatGateway(client).stream(request(ModelChoice.OPENAI, "   ")).toList()
+            RemoteChatGateway(client).stream(request("   ")).toList()
         }
         assertEquals("bad_request", error.error.code)
         assertEquals(400, error.httpStatus)

@@ -35,7 +35,7 @@ opened with `launchSingleTop`. System Back follows the stack; Back from Chat ret
   screen. Data separation itself is enforced by `LocalAccountGuard` (core).
 - Other screens have their own ViewModel per destination (`dashViewModel`).
 - Pure UI decisions live in `apps/android/core/.../presentation` and are unit-tested: start route,
-  greeting and initials, quick actions, history grouping, provider sheet options and safe switching,
+  greeting and initials, quick actions, history grouping, DASH AI availability,
   failure recovery, sync status, document labels and filters, auth failures, tool connection states
   and tool activity labels.
 
@@ -43,13 +43,12 @@ opened with `launchSingleTop`. System Back follows the stack; Back from Chat ret
 
 | Screen | What is real | Deliberately absent |
 | --- | --- | --- |
-| Splash | Brand mark, "DASH AI", "Beyond the Digital.", "A Dash World product" | Long forced delay |
+| Splash | The cinematic brand scene: planet, faceted diamond, "DASH AI", "Beyond the Digital.", flowing terrain, luminous horizon, tiny figure, "A DASH WORLD PRODUCT" ([branding.md](branding.md)); about 1.6 s | Buttons, feature cards |
 | Onboarding | One screen: "What are we building today?", three cues, Get started; shown once | Carousel |
 | Auth | Email + password sign-in and account creation (the only methods the server supports), validation, offline, wrong credentials, existing account, rate limit, server failure with Retry, server address, Demo Mode | Google / Microsoft / Apple, email codes, password reset (not in the API) |
 | Home | Time-aware greeting with the account's own first name (none in Demo Mode), Ask field, quick actions mapped to real modes (Write, Analyse a file, Brainstorm, Code, Research, More tools → Tools), recent chats, empty state | Invented names |
-| Chat | Streaming answers, working state, stop, copy, share (Android share sheet), regenerate, try the other provider, edit and resend, Compare, markdown (headings, lists, code, tables), attachments, mode sheet, provider sheet, tool activity, recovery card, jump to latest | Microphone (no voice input) |
-| Provider sheet | Dash Smart (DASH AI's server-side automatic routing), OpenAI, Claude, Compare; unavailable providers explained; remembered as the default | Automatic switching |
-| Recovery | "Provider temporarily unavailable" (or "This answer couldn't be completed"), the server's message and attempt count, Retry, Change provider (only providers the server named and has configured), Continue later | Silent failover |
+| Chat | Streaming answers, working state, stop, copy, share (Android share sheet), regenerate, edit and resend, markdown (headings, lists, code, tables), attachments, mode sheet, answers labelled "DASH AI", tool activity, recovery card, jump to latest | Provider selector, Compare, microphone (no voice input) |
+| Recovery | "DASH AI couldn't complete that response" (or "This answer couldn't be completed"), DASH AI's neutral message and attempt count, Retry, Continue later | Any provider name or provider switch |
 | History | Search, grouped by day, rename, delete (synced when signed in) | |
 | Documents | Search, filters for the kinds present, rows with type, size, date and status (Ready / Processing / Unsupported / Failed / Demo), upload with progress | "Analysed" claims |
 | Document detail | Metadata, the server's status explanation, Ask about this document, three suggestions that only pre-fill the composer, remove | |

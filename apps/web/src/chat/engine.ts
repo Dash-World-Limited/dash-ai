@@ -5,7 +5,6 @@ import type {
   ConversationMessage,
   HistoryMessage,
   MessageToolActivity,
-  ModelChoice,
   StreamEvent,
 } from "@dash-ai/contracts";
 import { LIMITS } from "@dash-ai/contracts";
@@ -35,8 +34,8 @@ const DEFAULT_TITLE = "New chat";
 export function buildHistory(earlier: ChatMsg[]): HistoryMessage[] {
   const turns: HistoryMessage[] = [];
   for (const m of earlier) {
-    if (m.role === "user") turns.push({ role: "user", content: m.content, origin: null });
-    else if (!m.demo && m.origin && m.content.trim() && m.status !== "failed") turns.push({ role: "assistant", content: m.content, origin: m.origin });
+    if (m.role === "user") turns.push({ role: "user", content: m.content });
+    else if (!m.demo && m.content.trim() && m.status !== "failed") turns.push({ role: "assistant", content: m.content });
   }
   let recent = turns.slice(-LIMITS.maxHistoryMessages);
   while (recent.reduce((n, t) => n + t.content.length, 0) > LIMITS.maxHistoryChars) recent = recent.slice(1);
@@ -56,9 +55,13 @@ export function toolsByMessage(activity: readonly MessageToolActivity[] | undefi
 
 function fromServer(m: ConversationMessage, tools: ToolUse[] = []): ChatMsg {
   return {
-    ...m,
+    id: m.id,
+    role: m.role,
+    content: m.content,
+    status: m.status,
+    demo: m.demo,
+    createdAt: m.createdAt,
     replyToId: null,
-    choice: null,
     attachments: [],
     errorMessage: m.status === "failed" ? "This answer was not completed." : null,
     retryable: m.status === "failed",
@@ -69,7 +72,8 @@ function fromServer(m: ConversationMessage, tools: ToolUse[] = []): ChatMsg {
 
 /**
  * The conversation state machine (mirrors the Android ChatSession): send, stream, stop, regenerate,
- * answer again with an explicitly chosen provider, edit and resend. Only the current request may
+ * edit and resend. DASH AI decides how each answer is produced; the app never picks a provider.
+ * Only the current request may
  * change the visible state; switching chats cancels the old request.
  */
 export class ChatEngine {
@@ -128,7 +132,7 @@ export class ChatEngine {
     this.set((s) => (s.conversation?.id === id ? { ...s, conversation: { ...s.conversation, title } } : s));
   }
 
-  send(text: string, choice: ModelChoice, mode: AssistantMode, attachments: Attachment[] = []): boolean {
+  send(text: string, mode: AssistantMode, attachments: Attachment[] = []): boolean {
     const content = text.trim();
     if (!content || content.length > LIMITS.maxMessageChars || this.state.generating) return false;
     const now = new Date().toISOString();
@@ -136,11 +140,11 @@ export class ChatEngine {
       ? { ...this.state.conversation, mode, updatedAt: now }
       : { id: newId("c"), title: DEFAULT_TITLE, mode, createdAt: now, updatedAt: now };
     const user: ChatMsg = {
-      id: newId("m"), role: "user", content, status: "complete", origin: null, model: null, demo: this.backend.demo,
-      compareGroupId: null, replyToId: null, createdAt: now, choice, attachments, errorMessage: null, retryable: false, tools: [], finishReason: null,
+      id: newId("m"), role: "user", content, status: "complete", demo: this.backend.demo,
+      replyToId: null, createdAt: now, attachments, errorMessage: null, retryable: false, tools: [], finishReason: null,
     };
     this.set((s) => ({ ...s, conversation, messages: [...s.messages, user], error: null }));
-    void this.generate(conversation, user, choice, mode);
+    void this.generate(conversation, user, mode);
     return true;
   }
 
@@ -161,36 +165,36 @@ export class ChatEngine {
     this.controller?.abort(ApiError.connectionLost());
   }
 
-  /** Answers the same question again, optionally with an explicitly chosen provider. */
-  regenerate(answerId: string, choiceOverride?: ModelChoice): boolean {
+  /** Answers the same question again. */
+  regenerate(answerId: string): boolean {
     const messages = this.state.messages;
     const answer = messages.find((m) => m.id === answerId && m.role === "assistant");
     if (!answer) return false;
     const index = messages.indexOf(answer);
     const user = answer.replyToId ? messages.find((m) => m.id === answer.replyToId) : [...messages.slice(0, index)].reverse().find((m) => m.role === "user");
     if (!user) return false;
-    return this.resend(user, user.content, choiceOverride ?? answer.choice ?? user.choice ?? "smart");
+    return this.resend(user, user.content);
   }
 
-  editAndResend(userId: string, text: string, choice: ModelChoice): boolean {
+  editAndResend(userId: string, text: string): boolean {
     const user = this.state.messages.find((m) => m.id === userId && m.role === "user");
     if (!user || !text.trim()) return false;
-    return this.resend(user, text.trim(), choice);
+    return this.resend(user, text.trim());
   }
 
-  retryLast(choice: ModelChoice): boolean {
+  retryLast(): boolean {
     const user = [...this.state.messages].reverse().find((m) => m.role === "user");
-    return user ? this.resend(user, user.content, user.choice ?? choice) : false;
+    return user ? this.resend(user, user.content) : false;
   }
 
-  private resend(user: ChatMsg, content: string, choice: ModelChoice): boolean {
+  private resend(user: ChatMsg, content: string): boolean {
     const conversation = this.state.conversation;
     if (this.state.generating || !conversation) return false;
     const index = this.state.messages.indexOf(user);
     // Same message id: the API replaces that message and everything after it.
-    const updated = { ...user, content, choice };
+    const updated = { ...user, content };
     this.set((s) => ({ ...s, messages: [...s.messages.slice(0, index), updated], error: null }));
-    void this.generate(conversation, updated, choice, conversation.mode);
+    void this.generate(conversation, updated, conversation.mode);
     return true;
   }
 
@@ -204,7 +208,7 @@ export class ChatEngine {
     this.set((s) => ({ ...s, messages: s.messages.map((m) => (m.id === id ? change(m) : m)) }), gen);
   }
 
-  private async generate(conversation: Conversation, user: ChatMsg, choice: ModelChoice, mode: AssistantMode): Promise<void> {
+  private async generate(conversation: Conversation, user: ChatMsg, mode: AssistantMode): Promise<void> {
     this.cancelCurrent();
     const gen = this.generation;
     const controller = new AbortController();
@@ -213,7 +217,7 @@ export class ChatEngine {
     const request: ChatStreamRequest = {
       conversationId: conversation.id,
       mode,
-      modelChoice: choice,
+      modelChoice: "smart",
       message: { id: user.id, content: user.content, attachmentIds: user.attachments.map((a) => a.id) },
       history: buildHistory(earlier),
     };
@@ -222,7 +226,7 @@ export class ChatEngine {
     try {
       for await (const event of this.backend.stream(request, controller.signal)) {
         if (gen !== this.generation) break;
-        this.handle(gen, event, user, choice, answers);
+        this.handle(gen, event, user, answers);
       }
       this.finishStreaming(gen, answers, "failed", "The response ended unexpectedly.");
     } catch (e) {
@@ -260,12 +264,12 @@ export class ChatEngine {
     }
   }
 
-  private handle(gen: number, event: StreamEvent, user: ChatMsg, choice: ModelChoice, answers: Set<string>): void {
+  private handle(gen: number, event: StreamEvent, user: ChatMsg, answers: Set<string>): void {
     switch (event.event) {
       case "stream.start": {
         const placeholders: ChatMsg[] = event.data.targets.map((t) => ({
-          id: t.messageId, role: "assistant", content: "", status: "streaming", origin: t.provider, model: t.model, demo: t.demo,
-          compareGroupId: event.data.compareGroupId, replyToId: user.id, createdAt: new Date().toISOString(), choice, attachments: [],
+          id: t.messageId, role: "assistant", content: "", status: "streaming", demo: t.demo,
+          replyToId: user.id, createdAt: new Date().toISOString(), attachments: [],
           errorMessage: null, retryable: false, tools: [], finishReason: null,
         }));
         placeholders.forEach((p) => answers.add(p.id));
@@ -284,7 +288,7 @@ export class ChatEngine {
       case "message.error":
         if (answers.has(event.data.messageId)) {
           const { error, recovery } = event.data;
-          this.updateAnswer(gen, event.data.messageId, (m) => ({ ...m, status: "failed", errorMessage: error.message, retryable: error.retryable, recovery }));
+          this.updateAnswer(gen, event.data.messageId, (m) => ({ ...m, status: "failed", errorMessage: error.message, retryable: error.retryable, recovery: recovery ? { attempts: recovery.attempts } : undefined }));
         }
         break;
       case "tool.call":

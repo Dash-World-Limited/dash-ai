@@ -129,6 +129,7 @@ export class Metrics {
   readonly aiRequestSeconds = new Histogram("dash_ai_request_seconds", "Duration of one provider answer, from request to final status.", ["provider", "status"], SECONDS);
   readonly providerFailures = new Counter("dash_provider_failures_total", "Provider attempts that failed, by normalized error code.", ["provider", "code", "retryable"]);
   readonly providerRetries = new Counter("dash_provider_retries_total", "Provider requests retried after a retryable failure.", ["provider", "code"]);
+  readonly providerFallbacks = new Counter("dash_provider_fallbacks_total", "Answers DASH AI routed to another provider after a failure before any output.", ["from", "to", "code"]);
   readonly toolInvocations = new Counter("dash_tool_invocations_total", "Tool calls by outcome (ok, denied, invalid_arguments, timeout, error, cancelled, unknown_tool, replayed).", ["plugin", "tool", "status"]);
   readonly syncFailures = new Counter("dash_sync_failures_total", "Sync requests that failed, by operation and error code.", ["operation", "code"]);
   readonly syncRequests = new Counter("dash_sync_requests_total", "Sync requests handled, by operation.", ["operation"]);

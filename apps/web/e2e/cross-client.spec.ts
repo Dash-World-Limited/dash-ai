@@ -54,7 +54,8 @@ test("a chat started on the web reaches Android complete: messages, labels, titl
   expect(change!.deleted).toBe(false);
   expect(change!.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
   expect(change!.messages[0]!.content).toContain("Count these words");
-  expect(change!.messages[1]).toMatchObject({ status: "complete", origin: "openai" });
+  // DASH AI's answer: which AI infrastructure produced it is internal and never synced to clients.
+  expect(change!.messages[1]).toMatchObject({ status: "complete", origin: null, model: null });
   expect(change!.toolActivity).toEqual([expect.objectContaining({ messageId: change!.messages[1]!.id, plugin: "dash-demo", tool: "text_stats", status: "ok" })]);
 
   // Renamed on the web: Android sees the new title with a newer revision, marked as the person's own.
@@ -105,6 +106,9 @@ test("a chat written on Android (offline, then synced) opens on the web, and del
   await page.getByRole("button", { name: /Options for/ }).first().click();
   await page.getByRole("menuitem", { name: "Delete" }).click();
   await page.getByTestId("confirm").click();
+  // The delete has reached the server once the web app has removed the chat from its list.
+  await openMenuIfNeeded(page);
+  await expect(page.getByTestId("history-item").filter({ hasText: "Written on the phone" })).toHaveCount(0);
   const tombstone = (await androidPull(page.request, auth)).changes.find((c) => c.conversation.id === conversationId)!;
   expect(tombstone).toMatchObject({ deleted: true, messages: [], toolActivity: [] });
 });

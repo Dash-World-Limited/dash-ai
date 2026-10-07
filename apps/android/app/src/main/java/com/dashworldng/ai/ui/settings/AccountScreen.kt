@@ -207,7 +207,7 @@ fun AccountScreen(services: AppServices, onBack: () -> Unit, onSignedOut: () -> 
                 if (!signedIn) {
                     Spacer(Modifier.height(Spacing.xl))
                     Notice(
-                        "Demo Mode answers are simulated on this device. Sign in or create an account to use OpenAI and Claude through your DASH AI server. Demo chats are kept separate from your account.",
+                        "Demo Mode answers are simulated on this device. Sign in or create an account to get real answers from DASH AI. Demo chats are kept separate from your account.",
                         title = "You're using Demo Mode",
                         modifier = Modifier.testTag("account_demo"),
                     )
@@ -248,13 +248,12 @@ fun AccountScreen(services: AppServices, onBack: () -> Unit, onSignedOut: () -> 
                             if (usage == null || usage.totals.isEmpty()) {
                                 Text("No usage recorded yet.", style = MaterialTheme.typography.bodyMedium, color = c.inkSecondary)
                             } else {
-                                usage.totals.forEach { t ->
-                                    Text(
-                                        "${if (t.provider == "openai") "OpenAI" else "Claude"} · ${t.requests} answers · ${t.inputTokens + t.outputTokens} tokens",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = c.ink,
-                                    )
-                                }
+                                Text(
+                                    "DASH AI · ${usage.totals.sumOf { it.requests }} answers · ${usage.totals.sumOf { it.inputTokens + it.outputTokens }} tokens",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = c.ink,
+                                    modifier = Modifier.testTag("usage_total"),
+                                )
                             }
                         }
                     }
@@ -300,7 +299,7 @@ fun AccountScreen(services: AppServices, onBack: () -> Unit, onSignedOut: () -> 
                     SettingsGroup(null) {
                         SettingsRow(
                             "About Demo Mode",
-                            subtitle = "Demo chats stay on this device and are never sent to a server or provider.",
+                            subtitle = "Demo chats stay on this device and are never sent anywhere.",
                             icon = Icons.Rounded.Science,
                         )
                     }

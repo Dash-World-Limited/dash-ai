@@ -4,39 +4,28 @@ import com.dashworldng.ai.core.Limits
 import com.dashworldng.ai.core.model.ChatMessage
 import com.dashworldng.ai.core.model.MessageRole
 import com.dashworldng.ai.core.model.MessageStatus
-import com.dashworldng.ai.core.model.ModelChoice
-import com.dashworldng.ai.core.model.ProviderId
 
-/** One prior turn sent as context. Assistant turns always name the provider that produced them. */
-data class HistoryItem(val role: MessageRole, val content: String, val origin: ProviderId?)
+/** One prior turn sent as context. Assistant turns are DASH AI's own earlier answers, as plain text. */
+data class HistoryItem(val role: MessageRole, val content: String)
 
 /**
  * Decides which earlier messages may be sent as context.
  *
  * - Demo answers are never sent anywhere.
  * - Failed or still-streaming answers are skipped.
- * - For an explicit single-provider choice, only that provider's answers are included, so one
- *   provider never silently receives another provider's output. For Dash Smart and Compare the
- *   API applies the same rule per target provider.
+ * - Every other answer is DASH AI's, whichever AI infrastructure produced it, so the conversation
+ *   stays one thread (mirrors the API's history handling).
  * - The oldest turns are dropped to respect the API's message and character limits.
  */
 object ContextBuilder {
-    fun history(earlier: List<ChatMessage>, choice: ModelChoice): List<HistoryItem> {
-        val allowedProvider: ProviderId? = when (choice) {
-            ModelChoice.OPENAI -> ProviderId.OPENAI
-            ModelChoice.CLAUDE -> ProviderId.ANTHROPIC
-            ModelChoice.SMART, ModelChoice.COMPARE -> null
-        }
+    fun history(earlier: List<ChatMessage>): List<HistoryItem> {
         val items = earlier.mapNotNull { m ->
             if (m.content.isBlank()) return@mapNotNull null
             when (m.role) {
-                MessageRole.USER -> HistoryItem(MessageRole.USER, m.content, null)
+                MessageRole.USER -> HistoryItem(MessageRole.USER, m.content)
                 MessageRole.ASSISTANT -> {
-                    val provider = m.provider
-                    val usable = !m.isDemo && provider != null &&
-                        (m.status == MessageStatus.COMPLETE || m.status == MessageStatus.STOPPED) &&
-                        (allowedProvider == null || provider == allowedProvider)
-                    if (usable) HistoryItem(MessageRole.ASSISTANT, m.content, provider) else null
+                    val usable = !m.isDemo && (m.status == MessageStatus.COMPLETE || m.status == MessageStatus.STOPPED)
+                    if (usable) HistoryItem(MessageRole.ASSISTANT, m.content) else null
                 }
             }
         }

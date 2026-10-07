@@ -74,8 +74,8 @@ object StreamEventDecoder {
                 streamId = dto.streamId,
                 conversationId = dto.conversationId,
                 compareGroupId = dto.compareGroupId,
-                targets = dto.targets.mapNotNull { t ->
-                    ProviderId.fromWire(t.provider)?.let { StreamTarget(t.messageId, it, t.model, t.demo) }
+                targets = dto.targets.map { t ->
+                    StreamTarget(t.messageId, t.provider?.let { ProviderId.fromWire(it) }, t.model, t.demo)
                 },
                 routingReason = dto.routingReason,
             )
@@ -91,7 +91,6 @@ object StreamEventDecoder {
                 it.messageId,
                 ApiError(it.error.code, it.error.message, it.error.retryable),
                 attempts = it.recovery?.attempts ?: 1,
-                alternatives = it.recovery?.alternatives.orEmpty().mapNotNull { id -> ProviderId.fromWire(id) },
             )
         }
         "tool.call" -> json.decodeFromString<ToolCallDto>(raw.data).let {

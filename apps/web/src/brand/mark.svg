@@ -1,11 +1,13 @@
-<!-- TEMPORARY typographic "D" mark for DASH AI. Replace this file with the official DASH AI logo (square SVG). -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="31 30 46 48">
+<!-- DASH AI faceted diamond (working mark, pending Director approval). Same geometry as Android's DashBrand.MARK_PATH. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="29 20 50 68">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#E3C989"/>
-      <stop offset="0.55" stop-color="#C9A75B"/>
-      <stop offset="1" stop-color="#8F6C22"/>
-    </linearGradient>
+    <linearGradient id="a" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#F4ECD9"/><stop offset="1" stop-color="#DCC07F"/></linearGradient>
+    <linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#DCC07F"/><stop offset="1" stop-color="#A9843A"/></linearGradient>
+    <linearGradient id="c" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#C9A75B"/><stop offset="1" stop-color="#7A5C1C"/></linearGradient>
+    <linearGradient id="d" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FBF6EA"/><stop offset="1" stop-color="#C9A75B"/></linearGradient>
   </defs>
-  <path fill="url(#g)" fill-rule="evenodd" d="M37 33h15a21 21 0 0 1 0 42H37Zm7.5 7.5H52a13.5 13.5 0 0 1 0 27h-7.5Z"/>
+  <path fill="url(#a)" d="M53.43,23.94 L55.68,47.8 L33.62,49.15 Z"/>
+  <path fill="url(#b)" d="M54.99,24.47 L74.36,49.12 L57.19,47.8 Z"/>
+  <path fill="url(#c)" d="M33.29,50.67 L55.69,49.3 L53.41,83.59 Z"/>
+  <path fill="url(#d)" d="M57.2,49.31 L74.72,50.65 L54.95,83 Z"/>
 </svg>

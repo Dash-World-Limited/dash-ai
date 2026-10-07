@@ -1,8 +1,6 @@
-import type { ChatStreamRequest, Conversation, ConversationMessage, ProviderId, StreamEvent } from "@dash-ai/contracts";
-import { SMART_ROUTING } from "@dash-ai/contracts";
+import type { ChatStreamRequest, Conversation, ConversationMessage, StreamEvent } from "@dash-ai/contracts";
 import { ApiError, type DashApi } from "../api/client";
 import { readEvents } from "../api/sse";
-import { PROVIDER_NAME } from "../logic/presentation";
 import { newId } from "./engine";
 import type { ChatBackend, ChatMsg } from "./types";
 
@@ -43,7 +41,8 @@ export class LiveBackend implements ChatBackend {
   }
 }
 
-export type DemoFailure = "none" | "connection" | "provider";
+/** Simulated problems Demo Mode can show: a lost connection, or DASH AI failing to finish an answer. */
+export type DemoFailure = "none" | "connection" | "service";
 
 const DEMO_KEY = "dash.demo.conversations";
 
@@ -72,15 +71,14 @@ const sleep = (ms: number, signal: AbortSignal) =>
   });
 
 /** The clearly labelled simulated answer (same wording as the Android Demo Mode). */
-export function demoAnswer(request: ChatStreamRequest, provider: ProviderId): string {
+export function demoAnswer(request: ChatStreamRequest): string {
   const firstLine = request.message.content.split("\n").find((l) => l.trim())?.trim() ?? "your request";
   const topic = firstLine.length > 80 ? `${firstLine.slice(0, 79).trimEnd()}…` : firstLine;
-  const company = provider === "openai" ? "OpenAI" : "Anthropic";
-  const label = `**Demo response · simulated ${PROVIDER_NAME[provider]} style.** This is not a real answer from ${company}. Nothing was sent to any AI provider — Demo Mode runs entirely in this browser.`;
-  const voice = provider === "openai" ? "Here is how an answer will be laid out once a live provider is connected." : "Below is a sketch of the kind of structured answer you can expect with a live provider.";
+  const label = "**Demo response · simulated by DASH AI.** This is not a real answer. Nothing was sent anywhere — Demo Mode runs entirely in this browser.";
+  const voice = "Here is how DASH AI lays out an answer once you're signed in.";
   const bodies: Record<string, string> = {
     general:
-      "### What a live answer includes\n\n- A direct answer to your question, written for the mode you picked\n- Clear structure: short paragraphs, **key points** in bold, and lists where they help\n- Follow-up suggestions you can use to continue\n\nDemo Mode lets you try streaming, stopping, regenerating, provider switching and Compare without using any API credits.",
+      "### What a live answer includes\n\n- A direct answer to your question, written for the mode you picked\n- Clear structure: short paragraphs, **key points** in bold, and lists where they help\n- Follow-up suggestions you can use to continue\n\nDemo Mode lets you try streaming, stopping, regenerating and editing without an account.",
     business:
       "## Plan outline (illustrative)\n\n1. **Objective** — the outcome and how it will be measured\n2. **Customer** — who buys, why, and what they pay today\n3. **Offer and pricing** — options with their trade-offs\n4. **Risks** — what could go wrong and early warning signs\n\n| Phase | Focus | Timing |\n| --- | --- | ---: |\n| 1 | Validate demand | Weeks 1–4 |\n| 2 | Pilot and price test | Weeks 5–8 |\n| 3 | Launch and measure | Weeks 9–12 |\n\n_Figures and timings above are placeholders, not analysis._",
     writing:
@@ -88,17 +86,17 @@ export function demoAnswer(request: ChatStreamRequest, provider: ProviderId): st
     research:
       "**Live web research is not connected.** Even live answers use the model's built-in knowledge, which may be out of date.\n\n### Research outline (illustrative)\n\n1. Key concepts and definitions\n2. Main viewpoints and where they disagree\n3. What to verify with current sources",
     documents:
-      "**Demo Mode cannot read documents.** With a live DASH AI server, text is extracted from TXT, DOCX and text-based PDFs and sent only to the provider you choose.",
+      "**Demo Mode cannot read documents.** With a live DASH AI server, DASH AI reads TXT, DOCX and text-based PDFs you attach and uses them to answer.",
   };
   const code = /\b(code|kotlin|python|javascript|typescript|function|sql)\b/i.test(request.message.content)
     ? "\n\n### Example code block\n\n```ts\nfunction greet(name: string): string {\n  return `Hello, ${name}. This snippet is a demo.`;\n}\n```"
     : "";
-  return `${label}\n\nYou asked about: *${topic.replace(/\*/g, "")}*. ${voice}\n\n${bodies[request.mode]}${code}\n\n---\n\nTo get real answers, sign in to a DASH AI server with OpenAI or Claude configured.`;
+  return `${label}\n\nYou asked about: *${topic.replace(/\*/g, "")}*. ${voice}\n\n${bodies[request.mode]}${code}\n\n---\n\nTo get real answers, sign in to DASH AI.`;
 }
 
 /**
  * Demo Mode: answers are simulated in this browser and conversations are kept in this browser's
- * storage, separate from any account. Nothing is sent to the server or to an AI provider.
+ * storage, separate from any account. Nothing is sent to the server or anywhere else.
  */
 export class DemoBackend implements ChatBackend {
   readonly demo = true;
@@ -123,33 +121,29 @@ export class DemoBackend implements ChatBackend {
       await sleep(this.delayMs * 10, signal);
       throw new ApiError("network", "Demo Mode simulated a connection problem. Turn off simulated errors in Settings to continue.", true);
     }
-    const providers: ProviderId[] =
-      request.modelChoice === "compare" ? ["openai", "anthropic"] : request.modelChoice === "openai" ? ["openai"] : request.modelChoice === "claude" ? ["anthropic"] : [SMART_ROUTING[request.mode][0]!];
     const streamId = newId("s");
-    const targets = providers.map((p) => ({ messageId: newId("a"), provider: p, model: `demo-${p}`, demo: true }));
+    const messageId = newId("a");
     yield {
       event: "stream.start",
-      data: { streamId, conversationId: request.conversationId, modelChoice: request.modelChoice, compareGroupId: request.modelChoice === "compare" ? request.message.id : null, targets, routingReason: "Demo Mode" },
+      data: { streamId, conversationId: request.conversationId, modelChoice: "smart", compareGroupId: null, targets: [{ messageId, demo: true }], routingReason: "Demo Mode" },
     };
-    for (const [i, t] of targets.entries()) {
-      if (failure === "provider" && i === targets.length - 1) {
-        await sleep(this.delayMs * 8, signal);
-        yield {
-          event: "message.error",
-          data: {
-            messageId: t.messageId,
-            error: { code: "provider_error", message: `Demo Mode simulated ${t.provider === "openai" ? "an OpenAI" : "a Claude"} error so you can see how failures look.`, retryable: true },
-            recovery: { attempts: 1, alternatives: [t.provider === "openai" ? "anthropic" : "openai"] },
-          },
-        };
-        continue;
-      }
-      const words = demoAnswer(request, t.provider).match(/\S+\s*|\s+/g) ?? [];
+    if (failure === "service") {
+      await sleep(this.delayMs * 8, signal);
+      yield {
+        event: "message.error",
+        data: {
+          messageId,
+          error: { code: "provider_error", message: "Demo Mode simulated DASH AI not completing a response so you can see how failures look.", retryable: true },
+          recovery: { attempts: 1, alternatives: [] },
+        },
+      };
+    } else {
+      const words = demoAnswer(request).match(/\S+\s*|\s+/g) ?? [];
       for (let w = 0; w < words.length; w += 2) {
         await sleep(this.delayMs, signal);
-        yield { event: "message.delta", data: { messageId: t.messageId, text: words.slice(w, w + 2).join("") } };
+        yield { event: "message.delta", data: { messageId, text: words.slice(w, w + 2).join("") } };
       }
-      yield { event: "message.end", data: { messageId: t.messageId, finishReason: "stop", usage: { inputTokens: null, outputTokens: null } } };
+      yield { event: "message.end", data: { messageId, finishReason: "stop", usage: { inputTokens: null, outputTokens: null } } };
     }
     const title = request.message.content.trim().split(/\s+/).slice(0, 7).join(" ");
     yield { event: "conversation.title", data: { conversationId: request.conversationId, title: title[0]!.toUpperCase() + title.slice(1) } };
@@ -169,7 +163,7 @@ export class DemoBackend implements ChatBackend {
   save(conversation: Conversation, messages: ChatMsg[]): void {
     const stored: ConversationMessage[] = messages
       .filter((m) => m.status !== "streaming")
-      .map((m) => ({ id: m.id, role: m.role, content: m.content, origin: m.origin, model: m.model, demo: true, status: m.status === "complete" ? "complete" : m.status === "stopped" ? "stopped" : "failed", compareGroupId: m.compareGroupId, createdAt: m.createdAt }));
+      .map((m) => ({ id: m.id, role: m.role, content: m.content, origin: null, model: null, demo: true, status: m.status === "complete" ? "complete" : m.status === "stopped" ? "stopped" : "failed", compareGroupId: null, createdAt: m.createdAt }));
     const others = readDemo(this.storage).filter((d) => d.conversation.id !== conversation.id);
     this.write([{ conversation: { ...conversation, updatedAt: new Date().toISOString() }, messages: stored }, ...others].slice(0, 200));
   }

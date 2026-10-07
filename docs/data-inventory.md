@@ -13,7 +13,7 @@ the ciphertext bound to its row so it cannot be moved to another row or user.
 | `messages.content_enc` (user) | **Yes** | Encrypted | Since migration 4. |
 | `messages.content_enc` (assistant) | **Yes** — answers restate the user's information | Encrypted | Since migration 4. |
 | `conversations.title`, `messages.content` | Legacy plaintext columns | `NULL` for every row written by this version | Rows from before migration 4 are encrypted by the backfill (`data:encrypt`, automatic at start-up outside production). A later migration drops the columns once `encryptionStatus()` reports zero. |
-| `messages.role`, `status`, `origin` (provider), `model`, `demo`, `compare_group_id`, `created_at` | No — provider/model metadata and structure | Plaintext | Needed for ordering, sync and labelling. Timing and which provider was used are metadata a database reader can see. |
+| `messages.role`, `status`, `origin` (provider), `model`, `demo`, `compare_group_id`, `created_at` | No — provider/model metadata and structure | Plaintext | Needed for ordering, sync and internal operations (provider and model are never sent to the apps; ADR 0012). Timing and which provider was used are metadata a database reader can see. |
 | `messages.attachment_ids` | No (opaque ids) | Plaintext | |
 | `conversations.mode`, `title_is_custom`, `title_rev`, `sync_seq`, timestamps, `deleted_at` | No | Plaintext | Sync machinery. |
 | `documents.extracted_text_enc` | **Yes** | Encrypted | Since migration 1. Raw file bytes are never stored. |

@@ -1,6 +1,6 @@
 # ADR 0011 — Provider failures: bounded retries, explicit recovery, no silent failover
 
-**Status:** accepted
+**Status:** superseded by [ADR 0012](0012-dash-ai-is-the-product.md) (retries kept; DASH AI now fails over internally before any output, and the consumer never chooses or sees a provider)
 
 **Context.** When OpenAI or Anthropic fail (rate limits, 5xx, timeouts, malformed or cut-off streams), the
 user's answer fails. Retrying can help; switching to the other provider automatically would also "help",

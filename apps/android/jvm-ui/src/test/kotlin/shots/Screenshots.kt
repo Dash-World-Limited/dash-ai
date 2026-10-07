@@ -51,7 +51,7 @@ class Screenshots {
     private val drawer = DrawerCallbacks({}, {}, {}, { _, _ -> }, {}, {})
     private val account = AccountInfo("u1", "ngozi@example.com", "Ngozi Adeyemi", isDemo = false)
 
-    private fun chatEvents() = ChatEvents({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, { _, _ -> }, {}, { _, _ -> }, {})
+    private fun chatEvents() = ChatEvents({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, { _, _ -> }, {}, {})
 
     private fun chatState(failed: Boolean = false, demo: Boolean = false): ChatUiState {
         val user = ChatMessage("u", "c1", MessageRole.USER, "Draft a 90-day launch plan for a premium coffee pop-up in Lagos.", now - 60_000)
@@ -60,17 +60,17 @@ class Screenshots {
             if (failed) "" else "## 90-day launch plan\n\n**Goal:** open with a waiting list of 500 people.\n\n1. **Weeks 1–4: Foundations** — confirm the venue, permits and suppliers.\n2. **Weeks 5–8: Build demand** — tasting events and partnerships.\n3. **Weeks 9–12: Launch** — soft opening, then the public launch.\n\n| Week | Focus | Owner |\n| --- | --- | --- |\n| 1–4 | Venue & suppliers | Ops |\n| 5–8 | Community | Marketing |\n\n`Budget: ₦4.2m`",
             now - 50_000,
             status = if (failed) MessageStatus.FAILED else MessageStatus.COMPLETE,
-            provider = ProviderId.OPENAI, model = if (demo) "demo-openai" else "gpt-5", isDemo = demo,
-            replyToId = "u", errorMessage = if (failed) "OpenAI is temporarily unavailable. Please try again shortly." else null, errorRetryable = failed,
+            isDemo = demo,
+            replyToId = "u", errorMessage = if (failed) "DASH AI couldn't complete that response. Please try again." else null, errorRetryable = failed,
         )
         val session = ChatSessionState(
             conversation = conversations[0],
             messages = listOf(user, answer),
             toolUses = if (failed) emptyMap() else mapOf("a" to listOf(ToolUse("c", "dash-demo", "current_time", ToolCallStatus.OK, 4))),
-            recovery = if (failed) mapOf("a" to AnswerRecovery(3, listOf(ProviderId.ANTHROPIC))) else emptyMap(),
+            recovery = if (failed) mapOf("a" to AnswerRecovery(3)) else emptyMap(),
         )
         return ChatUiState(
-            session = session, items = ChatItems.build(session.messages), demoMode = demo, choice = ModelChoice.SMART,
+            session = session, items = ChatItems.build(session.messages), demoMode = demo,
             mode = AssistantMode.BUSINESS, conversations = conversations, account = account, pluginNames = mapOf("dash-demo" to "Dash demo tools"),
         )
     }
@@ -96,10 +96,10 @@ class Screenshots {
         shot("08-new-chat") { ChatContent(ChatUiState(account = account, mode = AssistantMode.GENERAL, demoMode = false), chatEvents(), drawer, true) }
         shot("09-conversation") { ChatContent(chatState(), chatEvents(), drawer, true) }
         shot("10-conversation-dark", ThemePreference.DARK) { ChatContent(chatState(), chatEvents(), drawer, true) }
-        shot("11-provider-failure") { ChatContent(chatState(failed = true), chatEvents(), drawer, true) }
-        shot("12-provider-sheet") {
+        shot("11-recovery") { ChatContent(chatState(failed = true), chatEvents(), drawer, true) }
+        shot("12-mode-sheet") {
             ChatContent(chatState(), chatEvents(), drawer, true)
-            ProviderSheet(ProviderOptions.build(ProviderAvailability(configured = setOf(ProviderId.OPENAI), models = mapOf(ProviderId.OPENAI to "gpt-5")), ModelChoice.SMART, false), false, {}, {})
+            ModeSheet(AssistantMode.BUSINESS, {}, {}, {})
         }
         shot("13-documents") { DocumentsContent(DocumentsUiState(true, docs, emptyList(), false), {}, {}, {}, {}, {}) }
         shot("14-document-detail") { DocumentDetailContent(true, docs[0], false, {}, {}, {}) }

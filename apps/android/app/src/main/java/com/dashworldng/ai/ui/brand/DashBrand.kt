@@ -15,11 +15,16 @@ object DashBrand {
     const val WORDMARK_PRIMARY = "DASH"
     const val WORDMARK_ACCENT = "AI"
 
-    /** TEMPORARY typographic "D" until the official DASH AI logo is supplied. */
-    const val MARK_PATH = "M37,33 L52,33 A21,21 0,0 1,52 75 L37,75 Z M44.5,40.5 L52,40.5 A13.5,13.5 0,0 1,52 67.5 L44.5,67.5 Z"
+    /**
+     * The faceted diamond: four crystal facets separated by hairline cuts, so it stays faceted in a
+     * single colour (themed icons). Working mark from the approved splash concept, pending the
+     * Director's final SVG; same geometry as apps/web/src/brand/mark.svg.
+     */
+    const val MARK_PATH = "M53.43,23.94 L55.68,47.8 L33.62,49.15 Z M54.99,24.47 L74.36,49.12 L57.19,47.8 Z M33.29,50.67 L55.69,49.3 L53.41,83.59 Z M57.2,49.31 L74.72,50.65 L54.95,83 Z"
 
     /** The part of the 108-unit viewport the mark occupies (left, top, right, bottom). */
-    val MARK_BOUNDS = floatArrayOf(37f, 33f, 73f, 75f)
+    val MARK_BOUNDS = floatArrayOf(33f, 23.5f, 75f, 84f)
 
+    /** True until the Director approves the final mark artwork. */
     const val TEMPORARY_MARK = true
 }
