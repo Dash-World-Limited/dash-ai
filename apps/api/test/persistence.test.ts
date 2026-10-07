@@ -89,6 +89,7 @@ describe("migrations are append-only", () => {
     3: "5e209d88684b3ae84563f2add965a54fbee1ab389b58af1c6cfca52106d3144b",
     4: "d3c0d87923a156d30ce6337a87c2c2b501ed9c13cd87ee70f7439b36af38db9b",
     5: "2d96e464a21899d1c864c0d8016c39a26a5d8499fb32fcc9cd62144351572906",
+    6: "ce2b76b5233a62ed48e1cb7a8ac1a64d8d94c878d2eb8c81d110cf73c8c01b0e",
   };
 
   it("ids are consecutive from 1 and every pinned migration is unchanged", () => {

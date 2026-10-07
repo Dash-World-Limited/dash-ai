@@ -1,6 +1,7 @@
 package com.dashworldng.ai
 
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasTestTag
@@ -31,6 +32,7 @@ import com.dashworldng.ai.core.stream.StreamTarget
 import com.dashworldng.ai.data.settings.AccountInfo
 import com.dashworldng.ai.data.settings.AppSettings
 import com.dashworldng.ai.di.InMemoryServices
+import com.dashworldng.ai.di.IncomingShare
 import com.dashworldng.ai.ui.DashAiApp
 import com.dashworldng.ai.ui.Routes
 import com.dashworldng.ai.core.demo.DemoFailure
@@ -46,12 +48,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /** A gateway that starts an answer and never finishes it, so tests can press Stop. */
-private class HangingGateway : ChatGateway {
-    override val isDemo: Boolean = true
+private class HangingGateway(demo: Boolean = true) : ChatGateway {
+    override val isDemo: Boolean = demo
     val cancelled = mutableListOf<String>()
 
     override fun stream(request: ChatRequest): Flow<ChatStreamEvent> = flow {
-        emit(ChatStreamEvent.Started("stream-1", request.conversationId, null, listOf(StreamTarget("answer-1", ProviderId.OPENAI, "demo-openai", true)), "test"))
+        emit(ChatStreamEvent.Started("stream-1", request.conversationId, null, listOf(StreamTarget("answer-1", ProviderId.OPENAI, "demo-openai", isDemo)), "test"))
         emit(ChatStreamEvent.Delta("answer-1", "Partial answer"))
         awaitCancellation()
     }
@@ -174,8 +176,9 @@ class DashAiUiTest {
         launch(services, Routes.AUTH)
         compose.onNodeWithTag("continue_demo").performScrollTo().performClick()
         waitForTag("home_screen")
-        // Demo users get no invented name.
-        compose.onNodeWithTag("home_greeting").assertTextContains("Good", substring = true)
+        // Demo users get no invented name: the greeting is the time-of-day salutation alone.
+        val greeting = compose.onNodeWithTag("home_greeting").fetchSemanticsNode().config[SemanticsProperties.Text].joinToString("") { it.text }
+        assertTrue(greeting in setOf("Good morning", "Good afternoon", "Good evening", "Hello"), "greeting was '$greeting'")
         assertEquals(0, compose.onAllNodes(hasText("Demo user", substring = true)).fetchSemanticsNodes().size)
         assertEquals(true, services.settings.settings.value.account?.isDemo)
         compose.onNodeWithTag("quick_write").performClick()
@@ -319,6 +322,35 @@ class DashAiUiTest {
         compose.onAllNodes(hasTestTag("use_prompt"))[0].performClick()
         waitForTag("composer_input")
         compose.onNodeWithTag("composer_input").assertTextContains("SWOT analysis", substring = true)
+    }
+
+    @Test
+    fun aShareWaitsUntilOnboardingAndSignInAreDone() {
+        val services = InMemoryServices()
+        services.shares.post(IncomingShare(text = "Shared before signing in"))
+        launch(services, Routes.ONBOARDING)
+        waitForTag("onboarding")
+        compose.waitForIdle()
+        assertEquals("Shared before signing in", services.shares.pending.value?.text)
+        assertEquals(0, compose.onAllNodesWithTag("composer_input").fetchSemanticsNodes().size)
+    }
+
+    @Test
+    fun losingTheConnectionEndsAStreamingAnswerWithRetryInsteadOfHanging() {
+        val gateway = HangingGateway(demo = false)
+        val live = signedInDemo.copy(demoMode = false, account = AccountInfo("user-1", "ada@example.com", "Ada", isDemo = false))
+        val services = InMemoryServices(live, chatGatewayOverride = gateway)
+        launch(services, Routes.CHAT)
+        compose.onNodeWithTag("composer_input").performTextInput("Write a long story")
+        compose.onNodeWithTag("send_button").performClick()
+        waitForTag("stop_button")
+        waitForText("Partial answer")
+
+        services.fixedConnectivity.state.value = false
+        waitForTag("send_button")
+        waitForText("connection was lost")
+        compose.onNodeWithText("Partial answer").assertExists()
+        assertEquals(emptyList<String>(), gateway.cancelled) // the server cannot be reached
     }
 
     @Test

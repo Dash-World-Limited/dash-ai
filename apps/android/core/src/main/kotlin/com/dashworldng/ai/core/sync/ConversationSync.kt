@@ -9,6 +9,8 @@ import com.dashworldng.ai.core.model.FinishReason
 import com.dashworldng.ai.core.model.MessageRole
 import com.dashworldng.ai.core.model.MessageStatus
 import com.dashworldng.ai.core.model.ProviderId
+import com.dashworldng.ai.core.model.ToolCallStatus
+import com.dashworldng.ai.core.model.ToolUse
 import com.dashworldng.ai.core.remote.ConversationMessageDto
 import com.dashworldng.ai.core.remote.DashApiClient
 import com.dashworldng.ai.core.remote.PushConversationDto
@@ -338,7 +340,8 @@ class ConversationSyncService(
             isDemo = false,
         )
         conversations.upsertConversation(merged)
-        for (message in mapMessages(id, change.messages, parsed.messageTimes, localMessages)) conversations.upsertMessage(message)
+        val tools = toolsByMessage(change)
+        for (message in mapMessages(id, change.messages, parsed.messageTimes, localMessages, tools)) conversations.upsertMessage(message)
         val next = s.copy(titleRevs = s.titleRevs + (id to server.titleRev))
         return next to if (local == null) so.copy(inserted = so.inserted + 1) else so.copy(updated = so.updated + 1)
     }
@@ -363,6 +366,7 @@ class ConversationSyncService(
         server: List<ConversationMessageDto>,
         times: Map<String, Long>,
         local: Map<String, ChatMessage>,
+        tools: Map<String, List<ToolUse>>,
     ): List<ChatMessage> {
         var lastUserId: String? = null
         return server.map { dto ->
@@ -393,8 +397,18 @@ class ConversationSyncService(
                 errorRetryable = existing?.errorRetryable ?: (status == MessageStatus.FAILED),
                 finishReason = existing?.finishReason ?: if (status == MessageStatus.STOPPED) FinishReason.CANCELLED else null,
                 routingReason = existing?.routingReason,
+                // The server's record wins; an older server sends none, so what this device saved is kept.
+                tools = tools[dto.id] ?: existing?.tools.orEmpty(),
             )
         }
+    }
+
+    /** The recorded tool calls of a change, by message. Only messages in the change are kept. */
+    private fun toolsByMessage(change: SyncChangeDto): Map<String, List<ToolUse>> {
+        val ids = change.messages.mapTo(HashSet()) { it.id }
+        return change.toolActivity
+            .filter { it.messageId in ids }
+            .groupBy({ it.messageId }) { ToolUse(it.callId, it.plugin, it.tool, ToolCallStatus.fromWire(it.status), it.durationMs) }
     }
 
     private fun parseTime(iso: String): Long? = runCatching { OffsetDateTime.parse(iso).toInstant().toEpochMilli() }.getOrNull()

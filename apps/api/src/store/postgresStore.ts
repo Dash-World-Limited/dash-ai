@@ -385,6 +385,7 @@ export class PostgresStore implements Store {
       );
       if (res.rowCount !== 1) return false;
       await client.query("DELETE FROM messages WHERE conversation_id = $1", [id]);
+      await client.query("DELETE FROM tool_invocations WHERE conversation_id = $1 AND user_id = $2", [id, userId]);
       await this.touch(client, id);
       return true;
     });
@@ -414,7 +415,13 @@ export class PostgresStore implements Store {
     const page = rows.slice(0, limit);
     const ids = page.filter((r) => r.deleted_at === null).map((r) => r.id);
     const byConversation = new Map<string, MessageRecord[]>();
+    const toolsByConversation = new Map<string, ToolInvocationRow[]>();
     if (ids.length > 0) {
+      for (const t of await this.readTools(q, userId, ids)) {
+        const list = toolsByConversation.get(t.conversationId) ?? [];
+        list.push(t);
+        toolsByConversation.set(t.conversationId, list);
+      }
       const messages = await q.query<MessageRow>(
         "SELECT * FROM messages WHERE conversation_id = ANY($1) ORDER BY conversation_id, position",
         [ids],
@@ -431,6 +438,7 @@ export class PostgresStore implements Store {
       deleted: r.deleted_at !== null,
       conversation: this.toConversation(r),
       messages: byConversation.get(r.id) ?? [],
+      tools: toolsByConversation.get(r.id) ?? [],
     }));
     return { changes, hasMore: rows.length > limit };
   }
@@ -695,15 +703,27 @@ export class PostgresStore implements Store {
   }
 
   async listToolInvocations(userId: string, limit: number): Promise<ToolInvocationRow[]> {
-    const { rows } = await this.pool.query<{
-      user_id: string; conversation_id: string; message_id: string; call_id: string; provider: string; plugin_id: string;
-      tool_name: string; status: string; duration_ms: number; arg_bytes: number; result_chars: number; created_at: Date;
-    }>("SELECT * FROM tool_invocations WHERE user_id = $1 ORDER BY id DESC LIMIT $2", [userId, limit]);
-    return rows.map((r) => ({
-      userId: r.user_id, conversationId: r.conversation_id, messageId: r.message_id, callId: r.call_id,
-      provider: r.provider as ProviderId, plugin: r.plugin_id, tool: r.tool_name, status: r.status as ToolInvocationRow["status"],
-      durationMs: r.duration_ms, argBytes: r.arg_bytes, resultChars: r.result_chars, createdAt: iso(r.created_at),
-    }));
+    const { rows } = await this.pool.query<ToolInvocationDbRow>(
+      "SELECT * FROM tool_invocations WHERE user_id = $1 ORDER BY id DESC LIMIT $2",
+      [userId, limit],
+    );
+    return rows.map(toToolInvocation);
+  }
+
+  async listConversationToolInvocations(userId: string, conversationId: string): Promise<ToolInvocationRow[]> {
+    return this.readTools(this.pool, userId, [conversationId]);
+  }
+
+  /** Tool calls of these conversations whose message still exists, oldest first. */
+  private async readTools(q: Queryable, userId: string, conversationIds: string[]): Promise<ToolInvocationRow[]> {
+    const { rows } = await q.query<ToolInvocationDbRow>(
+      `SELECT t.* FROM tool_invocations t
+       WHERE t.user_id = $1 AND t.conversation_id = ANY($2)
+         AND EXISTS (SELECT 1 FROM messages m WHERE m.id = t.message_id AND m.conversation_id = t.conversation_id)
+       ORDER BY t.conversation_id, t.id`,
+      [userId, conversationIds],
+    );
+    return rows.map(toToolInvocation);
   }
 
   // ---- usage -----------------------------------------------------------------------------------
@@ -727,3 +747,14 @@ export class PostgresStore implements Store {
     }));
   }
 }
+
+interface ToolInvocationDbRow {
+  user_id: string; conversation_id: string; message_id: string; call_id: string; provider: string; plugin_id: string;
+  tool_name: string; status: string; duration_ms: number; arg_bytes: number; result_chars: number; created_at: Date;
+}
+
+const toToolInvocation = (r: ToolInvocationDbRow): ToolInvocationRow => ({
+  userId: r.user_id, conversationId: r.conversation_id, messageId: r.message_id, callId: r.call_id,
+  provider: r.provider as ProviderId, plugin: r.plugin_id, tool: r.tool_name, status: r.status as ToolInvocationRow["status"],
+  durationMs: r.duration_ms, argBytes: r.arg_bytes, resultChars: r.result_chars, createdAt: iso(r.created_at),
+});

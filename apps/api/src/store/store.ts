@@ -98,6 +98,8 @@ export interface ConversationChange {
   deleted: boolean;
   conversation: ConversationRecord;
   messages: MessageRecord[];
+  /** Tool calls recorded for these messages, oldest first (empty for a tombstone). */
+  tools: ToolInvocationRow[];
 }
 
 export interface ConversationChangePage {
@@ -210,6 +212,11 @@ export interface Store {
   finishToolExecution(keyHash: string, status: string, finishedAt: string): Promise<void>;
   /** Most recent first. */
   listToolInvocations(userId: string, limit: number): Promise<ToolInvocationRow[]>;
+  /**
+   * The user's tool calls recorded in one conversation, oldest first, limited to messages that still
+   * exist (a regenerated or truncated message takes its tool calls with it).
+   */
+  listConversationToolInvocations(userId: string, conversationId: string): Promise<ToolInvocationRow[]>;
 
   /** Deletes sessions that expired before `now`. Returns how many were removed. */
   purgeExpiredSessions(now: Date): Promise<number>;

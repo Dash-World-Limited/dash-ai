@@ -175,4 +175,12 @@ CREATE TABLE tool_executions (
 CREATE INDEX tool_executions_user_idx ON tool_executions (user_id);
 `,
   },
+  {
+    id: 6,
+    name: "tool_invocations_by_conversation",
+    sql: `
+-- Reopening a conversation shows the tool calls recorded for its messages (names and outcomes only).
+CREATE INDEX tool_invocations_conversation_idx ON tool_invocations (conversation_id, id);
+`,
+  },
 ];

@@ -7,6 +7,7 @@ import { AccountScreen } from "./screens/Account";
 import { ChatScreen } from "./screens/Chat";
 import { DocumentDetail, DocumentsScreen } from "./screens/Documents";
 import { Home } from "./screens/Home";
+import { PromptsScreen } from "./screens/Prompts";
 import { SettingsScreen } from "./screens/Settings";
 import { Shell } from "./screens/Shell";
 import { SignIn, Splash, Welcome } from "./screens/Start";
@@ -25,6 +26,8 @@ function Routes() {
         return <ChatScreen />;
       case "documents":
         return parts[1] ? <DocumentDetail /> : <DocumentsScreen />;
+      case "prompts":
+        return <PromptsScreen />;
       case "tools":
         return <ToolsScreen />;
       case "account":

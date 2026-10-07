@@ -1,4 +1,4 @@
-import type { AssistantMode, Conversation, ModelChoice, ProviderId } from "@dash-ai/contracts";
+import { promptCategory, type AssistantMode, type Conversation, type ModelChoice, type PromptItem, type ProviderId } from "@dash-ai/contracts";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { ApiError, DashApi, browserTokenStore, type TokenStore } from "../api/client";
 import { clearDemoData, DemoBackend, LiveBackend } from "../chat/backends";
@@ -6,6 +6,7 @@ import { ChatEngine, type ChatState } from "../chat/engine";
 import type { ChatBackend, PendingAttachment } from "../chat/types";
 import { ALL_AVAILABLE, type ProviderAvailability } from "../logic/presentation";
 import { DocumentsModel, usableInChat, type DocItem } from "./documents";
+import { PromptsModel } from "./prompts";
 import { createSettingsStore, type Account, type Settings } from "./settings";
 import { navigate } from "./router";
 import { Store, useStore } from "./store";
@@ -29,6 +30,7 @@ export class AppModel {
   });
 
   readonly documents: DocumentsModel;
+  readonly prompts: PromptsModel;
 
   constructor(
     readonly storage: Storage,
@@ -38,6 +40,7 @@ export class AppModel {
     this.settings = createSettingsStore(storage);
     this.api = new DashApi(tokens, base, () => this.sessionExpired());
     this.documents = new DocumentsModel(this.api, storage, () => this.live);
+    this.prompts = new PromptsModel(storage, () => this.settings.value.account?.id ?? "demo");
     this.engine = new ChatEngine(this.backend());
     this.engineStore = new Store(this.engine.value);
     let wasGenerating = false;
@@ -96,6 +99,7 @@ export class AppModel {
     this.composer.set((c) => ({ ...c, text: "", attachments: [] }));
     this.conversations.set({ items: [], loading: false, error: null });
     this.documents.reset();
+    this.prompts.reload();
     void this.refreshConversations();
     void this.refreshProviders();
   }
@@ -117,6 +121,8 @@ export class AppModel {
     if (this.live) {
       if (everywhere) await this.api.logoutAll();
       else await this.api.logout().catch(() => undefined);
+      // Like Android on a shared device: this account's own prompts and favourites leave with it.
+      this.prompts.clear();
     }
     this.clearSession();
   }
@@ -199,6 +205,29 @@ export class AppModel {
     navigate("/chat");
   }
 
+  /** The browser lost its connection: an answer that was streaming ends now (kept, with Retry). */
+  wentOffline(): void {
+    this.online.set(false);
+    this.engine.connectionLost();
+  }
+
+  /** Back online: bring what may have changed meanwhile (other devices, the server) up to date. */
+  backOnline(): void {
+    const was = this.online.value;
+    this.online.set(true);
+    if (was || !this.live) return;
+    if (this.engine.value.error?.code === "network") this.engine.dismissError();
+    void this.refreshConversations();
+    void this.refreshProviders();
+  }
+
+  /** "Use prompt": a new chat in the prompt's mode with its text ready to edit and send. */
+  usePrompt(prompt: PromptItem): void {
+    this.engine.newChat();
+    this.composer.set((c) => ({ ...c, text: prompt.body, mode: promptCategory(prompt.category).mode, attachments: [] }));
+    navigate("/chat");
+  }
+
   clearDemo(): void {
     this.documents.clearDemo();
     clearDemoData(this.storage);
@@ -210,8 +239,8 @@ const Ctx = createContext<AppModel | null>(null);
 
 export function AppProvider({ model, children }: { model: AppModel; children: ReactNode }) {
   useEffect(() => {
-    const on = () => model.online.set(true);
-    const off = () => model.online.set(false);
+    const on = () => model.backOnline();
+    const off = () => model.wentOffline();
     window.addEventListener("online", on);
     window.addEventListener("offline", off);
     void model.refreshConversations();

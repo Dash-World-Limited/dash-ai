@@ -1,6 +1,7 @@
 package com.dashworldng.ai.data.local
 
 import android.content.Context
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -10,6 +11,8 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Upsert
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "conversations")
@@ -42,6 +45,8 @@ data class MessageEntity(
     val errorRetryable: Boolean,
     val finishReason: String?,
     val routingReason: String?,
+    /** Tools the answer used (names and outcomes only), JSON. Added in version 2. */
+    @ColumnInfo(defaultValue = "[]") val toolsJson: String = "[]",
 )
 
 @Entity(tableName = "custom_prompts")
@@ -174,7 +179,7 @@ interface DocumentDao {
         FavoritePromptEntity::class,
         DocumentEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class DashDatabase : RoomDatabase() {
@@ -184,8 +189,20 @@ abstract class DashDatabase : RoomDatabase() {
     abstract fun documents(): DocumentDao
 
     companion object {
-        fun create(context: Context): DashDatabase =
-            Room.databaseBuilder(context, DashDatabase::class.java, "dash-ai.db").build()
+        const val FILE_NAME = "dash-ai.db"
+
+        /** Version 2: answers keep the tools they used. Existing messages get none (nothing is invented). */
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN toolsJson TEXT NOT NULL DEFAULT '[]'")
+            }
+        }
+
+        /** Every migration, in order. Data is never dropped: a missing migration fails loudly in tests. */
+        val MIGRATIONS = arrayOf(MIGRATION_1_2)
+
+        fun create(context: Context, name: String = FILE_NAME): DashDatabase =
+            Room.databaseBuilder(context, DashDatabase::class.java, name).addMigrations(*MIGRATIONS).build()
 
         fun inMemory(context: Context): DashDatabase =
             Room.inMemoryDatabaseBuilder(context, DashDatabase::class.java).allowMainThreadQueries().build()

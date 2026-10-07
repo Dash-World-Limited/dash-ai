@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { AssistantMode, Id, IsoDateTime, LIMITS } from "./common.js";
-import { Conversation, ConversationMessage } from "./conversations.js";
+import { Conversation, ConversationMessage, MessageToolActivity } from "./conversations.js";
 
 /** A conversation as sync delivers it. Adds what clients need to merge titles deterministically. */
 export const SyncConversation = Conversation.extend({
@@ -25,6 +25,8 @@ export const SyncChange = z.object({
   deleted: z.boolean(),
   conversation: SyncConversation,
   messages: z.array(ConversationMessage),
+  /** Recorded tool calls of these messages, oldest first (empty for a tombstone). */
+  toolActivity: z.array(MessageToolActivity).default([]),
 });
 export type SyncChange = z.infer<typeof SyncChange>;
 

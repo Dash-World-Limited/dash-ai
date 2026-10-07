@@ -176,6 +176,7 @@ export class MemoryStore implements Store {
     c.deleted = true;
     c.record = { ...c.record, title: "" };
     this.messages.delete(id);
+    this.toolInvocations = this.toolInvocations.filter((t) => t.conversationId !== id);
     this.bump(c);
     return true;
   }
@@ -193,6 +194,7 @@ export class MemoryStore implements Store {
         deleted: c.deleted,
         conversation: { ...c.record },
         messages: c.deleted ? [] : this.cloneMessages(c.record.id),
+        tools: c.deleted ? [] : this.conversationTools(userId, c.record.id),
       })),
     };
   }
@@ -338,6 +340,17 @@ export class MemoryStore implements Store {
 
   async listToolInvocations(userId: string, limit: number): Promise<ToolInvocationRow[]> {
     return this.toolInvocations.filter((t) => t.userId === userId).slice(-limit).reverse().map((t) => ({ ...t }));
+  }
+
+  async listConversationToolInvocations(userId: string, conversationId: string): Promise<ToolInvocationRow[]> {
+    return this.conversationTools(userId, conversationId);
+  }
+
+  private conversationTools(userId: string, conversationId: string): ToolInvocationRow[] {
+    const live = new Set((this.messages.get(conversationId) ?? []).map((m) => m.id));
+    return this.toolInvocations
+      .filter((t) => t.userId === userId && t.conversationId === conversationId && live.has(t.messageId))
+      .map((t) => ({ ...t }));
   }
 
   async close(): Promise<void> {}

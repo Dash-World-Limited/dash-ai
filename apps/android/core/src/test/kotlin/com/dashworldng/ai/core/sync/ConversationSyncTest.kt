@@ -12,9 +12,12 @@ import com.dashworldng.ai.core.model.MessageRole
 import com.dashworldng.ai.core.model.MessageStatus
 import com.dashworldng.ai.core.model.ModelChoice
 import com.dashworldng.ai.core.model.ProviderId
+import com.dashworldng.ai.core.model.ToolCallStatus
+import com.dashworldng.ai.core.model.ToolUse
 import com.dashworldng.ai.core.remote.ConversationMessageDto
 import com.dashworldng.ai.core.remote.DashApiClient
 import com.dashworldng.ai.core.remote.DashJson
+import com.dashworldng.ai.core.remote.MessageToolActivityDto
 import com.dashworldng.ai.core.remote.SyncChangeDto
 import com.dashworldng.ai.core.remote.SyncConversationDto
 import com.dashworldng.ai.core.remote.SyncOperationDto
@@ -50,7 +53,9 @@ private fun ms(offsetSeconds: Long) = Instant.parse("2026-03-04T05:00:00Z").plus
  */
 private class FakeServer {
     class Msg(val dto: ConversationMessageDto)
-    class Conv(val owner: String, var dto: SyncConversationDto, var messages: MutableList<ConversationMessageDto>, var deleted: Boolean, var seq: Long)
+    class Conv(val owner: String, var dto: SyncConversationDto, var messages: MutableList<ConversationMessageDto>, var deleted: Boolean, var seq: Long) {
+        var tools: List<MessageToolActivityDto> = emptyList()
+    }
 
     val conversations = linkedMapOf<String, Conv>()
     private val counters = mutableMapOf<String, Long>()
@@ -72,16 +77,26 @@ private class FakeServer {
     }
 
     /** Server-side writes made by "another device" or by chat on the server. */
-    fun put(owner: String, id: String, title: String = "Chat $id", titleIsCustom: Boolean = false, mode: String = "general", messages: List<ConversationMessageDto> = emptyList()) {
+    fun put(
+        owner: String,
+        id: String,
+        title: String = "Chat $id",
+        titleIsCustom: Boolean = false,
+        mode: String = "general",
+        messages: List<ConversationMessageDto> = emptyList(),
+        tools: List<MessageToolActivityDto> = emptyList(),
+    ) {
         val existing = conversations[id]
         if (existing == null) {
             val c = Conv(owner, SyncConversationDto(id, title, mode, iso(1_000), iso(2_000), titleIsCustom, 0), messages.toMutableList(), false, 0)
+            c.tools = tools
             conversations[id] = c
             bump(owner, c)
         } else {
             val rev = if (existing.dto.title != title) existing.dto.titleRev + 1 else existing.dto.titleRev
             existing.dto = existing.dto.copy(title = title, titleIsCustom = titleIsCustom, mode = mode, titleRev = rev)
             existing.messages = messages.toMutableList()
+            existing.tools = tools
             bump(owner, existing)
         }
     }
@@ -103,7 +118,7 @@ private class FakeServer {
             val rows = conversations.values.filter { it.owner == user && it.seq > after }.sortedBy { it.seq }
             val page = rows.take(limit)
             val dto = SyncPageDto(
-                changes = page.map { SyncChangeDto(it.seq, it.deleted, it.dto, it.messages.toList()) },
+                changes = page.map { SyncChangeDto(it.seq, it.deleted, it.dto, it.messages.toList(), if (it.deleted) emptyList() else it.tools) },
                 cursor = (page.lastOrNull()?.seq ?: after).toString(),
                 latest = overrideLatest ?: (counters[user] ?: 0L).toString(),
                 hasMore = rows.size > limit,
@@ -222,6 +237,29 @@ class ConversationSyncTest {
         assertEquals("u1", messages[1].replyToId)
         assertEquals("2", result.cursor)
         assertEquals(mapOf("conv-1" to 0L, "conv-2" to 0L), device.store.load().titleRevs)
+    }
+
+    @Test
+    fun `recorded tool activity arrives with its answer and only for messages in the change`() = runBlocking<Unit> {
+        fun tool(message: String, call: String, status: String) = MessageToolActivityDto(message, call, "dash-demo", "text_stats", status, 4, iso(11))
+        server.put(
+            me,
+            "conv-1",
+            messages = listOf(user("u1"), assistant("a1")),
+            tools = listOf(tool("a1", "call_1", "ok"), tool("a1", "call_2", "timeout"), tool("gone", "call_3", "ok")),
+        )
+        server.put(me, "conv-2", messages = listOf(user("u2"), assistant("a2")))
+
+        device.sync()
+
+        val answer = device.repo.getMessages("conv-1").single { it.id == "a1" }
+        assertEquals(
+            listOf(ToolUse("call_1", "dash-demo", "text_stats", ToolCallStatus.OK, 4), ToolUse("call_2", "dash-demo", "text_stats", ToolCallStatus.TIMEOUT, 4)),
+            answer.tools,
+        )
+        assertTrue(device.repo.getMessages("conv-1").single { it.id == "u1" }.tools.isEmpty())
+        // No activity recorded: none shown.
+        assertTrue(device.repo.getMessages("conv-2").all { it.tools.isEmpty() })
     }
 
     @Test
@@ -685,6 +723,8 @@ class ConversationSyncTest {
         val result = ConversationSyncService(remote, repo, InMemorySyncStateStore()).sync(me)
         assertEquals(1, result.inserted)
         assertEquals("Premium coffee kiosk plan", repo.getConversation("3f0b8f2e-6a4d-4c1e-9d7a-1b2c3d4e5f60")!!.title)
+        val answer = repo.getMessages("3f0b8f2e-6a4d-4c1e-9d7a-1b2c3d4e5f60").single { it.isAssistant }
+        assertEquals(listOf(ToolCallStatus.OK, ToolCallStatus.TIMEOUT), answer.tools.map { it.status })
     }
 
     @Test

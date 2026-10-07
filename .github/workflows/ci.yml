@@ -187,9 +187,9 @@ jobs:
         run: cat /tmp/api.log || true
 
   web-e2e:
-    name: Web app in Chromium against the real API (fake providers, PostgreSQL) + screenshots
+    name: Web app in Chromium and Firefox against the real API (fake providers, PostgreSQL) + screenshots
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16
@@ -212,9 +212,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - name: Install Chromium for Playwright
+      - name: Install Chromium and Firefox for Playwright
         working-directory: apps/web
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium firefox
       - name: Start the API (fake providers) and the built web app
         run: |
           export DATABASE_URL=postgres://postgres@127.0.0.1:5432/dash_web
@@ -225,10 +225,11 @@ jobs:
           (cd apps/web && npx vite preview --host 127.0.0.1 --port 4173 > /tmp/web.log 2>&1 &)
           for _ in $(seq 1 30); do curl -sf http://127.0.0.1:4173/health && break; sleep 1; done
           curl -sf http://127.0.0.1:4173/health
-      - name: End-to-end tests (phone and desktop sizes)
+      - name: End-to-end tests (Chromium and Firefox, phone and desktop sizes)
         working-directory: apps/web
         env:
           DASH_SHOTS_DIR: ${{ github.workspace }}/apps/web/test-results/screenshots
+          DASH_E2E_FIREFOX: "1"
         run: |
           mkdir -p "$DASH_SHOTS_DIR"
           npx playwright test

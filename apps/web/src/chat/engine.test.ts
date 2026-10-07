@@ -1,4 +1,6 @@
-import type { ChatStreamRequest, StreamEvent } from "@dash-ai/contracts";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { ConversationDetailResponse, type ChatStreamRequest, type StreamEvent } from "@dash-ai/contracts";
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../api/client";
 import { DemoBackend } from "./backends";
@@ -11,7 +13,7 @@ class Scripted implements ChatBackend {
   cancelled: string[] = [];
   constructor(private script: (r: ChatStreamRequest, signal: AbortSignal) => AsyncGenerator<StreamEvent>) {}
   async list() { return []; }
-  async get() { return null; }
+  get: ChatBackend["get"] = async () => null;
   stream(r: ChatStreamRequest, s: AbortSignal) { this.requests.push(r); return this.script(r, s); }
   async cancel(id: string) { this.cancelled.push(id); }
   async rename() {}
@@ -30,7 +32,26 @@ function* answer(provider: "openai" | "anthropic", id: string, text: string): Ge
   yield { event: "stream.end", data: { streamId: "stream0001" } };
 }
 
+const fixture = (name: string) => JSON.parse(readFileSync(resolve(process.cwd(), "../../packages/contracts/fixtures", name), "utf8"));
+
 describe("ChatEngine", () => {
+  it("reopening a conversation shows the tools its answers used, from the server record only", async () => {
+    const detail = ConversationDetailResponse.parse(fixture("conversation-detail.json"));
+    const backend = new Scripted(async function* () {});
+    backend.get = async () => detail;
+    const engine = new ChatEngine(backend);
+    await engine.open(detail.conversation.id);
+    const [question, reply] = engine.value.messages;
+    expect(question!.tools).toEqual([]);
+    expect(reply!.tools).toEqual([{ callId: "call_1", plugin: "dash-demo", tool: "text_stats", status: "ok", durationMs: 3 }]);
+
+    // An older server sends no toolActivity: nothing is shown, nothing invented.
+    const { toolActivity: _none, ...older } = detail;
+    backend.get = async () => older;
+    await engine.open(detail.conversation.id);
+    expect(engine.value.messages.every((m) => m.tools.length === 0)).toBe(true);
+  });
+
   it("streams a labelled answer, records tool activity and applies the server title", async () => {
     const backend: Scripted = new Scripted(async function* (): AsyncGenerator<StreamEvent> {
       yield { event: "stream.start", data: { streamId: "stream0001", conversationId: "c", modelChoice: "openai", compareGroupId: null, targets: [{ messageId: "answer0001", provider: "openai", model: "gpt", demo: false }], routingReason: "r" } };
@@ -89,6 +110,26 @@ describe("ChatEngine", () => {
     const a = engine.value.messages[1]!;
     expect([a.content, a.status, a.tools[0]!.status]).toEqual(["Partial", "stopped", "cancelled"]);
     expect(backend.cancelled).toEqual(["stream0001"]);
+  });
+
+  it("a lost connection ends a streaming answer at once as failed, keeping the text and offering Retry", async () => {
+    const backend = new Scripted(async function* (_r, signal): AsyncGenerator<StreamEvent> {
+      yield { event: "stream.start", data: { streamId: "stream0001", conversationId: "c", modelChoice: "openai", compareGroupId: null, targets: [{ messageId: "answer0001", provider: "openai", model: "gpt", demo: false }], routingReason: "r" } };
+      yield { event: "message.delta", data: { messageId: "answer0001", text: "Part one" } };
+      // A dropped connection: nothing more arrives, and the request would hang until the browser gives up.
+      await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    });
+    const engine = new ChatEngine(backend);
+    engine.send("Tell me", "openai", "general");
+    await new Promise((r) => setTimeout(r, 5));
+    expect(engine.value.generating).toBe(true);
+    engine.connectionLost();
+    await idle(engine);
+    const answer = engine.value.messages.at(-1)!;
+    expect(answer).toMatchObject({ content: "Part one", status: "failed", retryable: true });
+    expect(answer.errorMessage).toContain("connection was lost");
+    expect(engine.value.error?.code).toBe("network");
+    expect(backend.cancelled).toEqual([]); // nothing to tell a server we cannot reach
   });
 
   it("request failures keep the question and show the error", async () => {

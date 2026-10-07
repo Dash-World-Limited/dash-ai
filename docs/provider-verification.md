@@ -74,8 +74,31 @@ provider's wire format** (`apps/api/test/providerServer.ts`), plus the in-proces
 - the opt-in smoke harness itself, including negative tests (non-streaming, missing usage, deaf cancellation,
   secret leakage).
 
+- configuration from the environment only (`provider-readiness.test.ts`): both providers live with the
+  configured models; keys trimmed (secret managers often add a newline); a half-configured provider stays
+  off with a warning naming the variable, never the value; one provider is enough; placeholder values
+  (`your-api-key`, `sk-...`, `<…>`) are flagged at start-up; keys never appear in `/v1/providers`;
+- Compare through **both real SDK adapters** and the whole API: two labelled, stored answers under one
+  compare group, each request sent to its provider's own endpoint with the configured model, and usage
+  accounted per provider in `/v1/usage`.
+
 Mutation checks were run on the main fixes: disabling the Claude continuation, or dropping `tools` on the
 last round, makes the contract tests fail.
+
+## Turning on real providers (production)
+
+Nothing in the code or the repository changes. Keys live only in the deployment's secret store:
+
+1. Put `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` in the secret manager of the host running the API
+   (never in `.env.example`, the repository, a client app or a build). Set `OPENAI_MODEL` /
+   `ANTHROPIC_MODEL` to current model ids from each provider's documentation.
+2. Set `PROVIDER_MODE=live` (the default when unset). Keep `PROVIDER_MODE=fake` for demos and CI.
+3. Start the API and read the start-up warnings: a missing model, a placeholder key, or no provider at
+   all is reported by variable name. `GET /v1/providers` must show `mode: "live"` for each provider.
+4. Run the live smoke (below) once per provider and model before inviting users.
+
+The clients need no change: both read `/v1/providers` and only offer what is configured; Demo Mode
+stays available in the apps and never calls a provider.
 
 ## Live smoke test (opt-in, never in PR CI)
 

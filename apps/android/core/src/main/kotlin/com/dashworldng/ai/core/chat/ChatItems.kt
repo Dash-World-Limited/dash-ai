@@ -3,6 +3,8 @@ package com.dashworldng.ai.core.chat
 import com.dashworldng.ai.core.model.AttachmentRef
 import com.dashworldng.ai.core.model.ChatMessage
 import com.dashworldng.ai.core.model.DocumentKind
+import com.dashworldng.ai.core.model.ToolCallStatus
+import com.dashworldng.ai.core.model.ToolUse
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -65,6 +67,36 @@ object AttachmentCodec {
             json.decodeFromString(serializer, value).map {
                 AttachmentRef(it.documentId, it.remoteId, it.name, DocumentKind.fromWire(it.kind) ?: DocumentKind.TXT, it.sizeBytes)
             }
+        }.getOrDefault(emptyList())
+    }
+}
+
+@Serializable
+private data class ToolUseJson(
+    val callId: String,
+    val plugin: String,
+    val tool: String,
+    val status: String,
+    val durationMs: Long? = null,
+)
+
+/**
+ * Stores the tools an answer used as a JSON column. Only calls that finished are stored: a call that
+ * was still running has no outcome to show later, and none is invented for it.
+ */
+object ToolUseCodec {
+    private val json = Json { ignoreUnknownKeys = true }
+    private val serializer = ListSerializer(ToolUseJson.serializer())
+
+    fun encode(tools: List<ToolUse>): String = json.encodeToString(
+        serializer,
+        tools.mapNotNull { use -> use.status?.let { ToolUseJson(use.callId, use.plugin, use.tool, it.wire, use.durationMs) } },
+    )
+
+    fun decode(value: String?): List<ToolUse> {
+        if (value.isNullOrBlank()) return emptyList()
+        return runCatching {
+            json.decodeFromString(serializer, value).map { ToolUse(it.callId, it.plugin, it.tool, ToolCallStatus.fromWire(it.status), it.durationMs) }
         }.getOrDefault(emptyList())
     }
 }

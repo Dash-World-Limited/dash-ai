@@ -1,5 +1,6 @@
 package com.dashworldng.ai.ui.home
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -181,6 +182,8 @@ fun HomeContent(state: HomeUiState, drawer: DrawerCallbacks, events: HomeEvents)
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val account = state.account
+    // System Back closes the open history drawer first, before leaving the screen.
+    BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
 
     ModalNavigationDrawer(
         drawerState = drawerState,

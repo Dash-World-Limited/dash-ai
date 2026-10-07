@@ -1,5 +1,5 @@
 import type { Conversation } from "@dash-ai/contracts";
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { LIMITS } from "@dash-ai/contracts";
 import { groupHistory, initials } from "../logic/presentation";
 import { useApp, useNow } from "../state/app";
@@ -12,13 +12,30 @@ import { BrandMark, Confirm, DemoBadge, Dialog, Wordmark } from "../ui/kit";
 export function Shell({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const { path } = useRoute();
+  const sidebar = useRef<HTMLDivElement>(null);
   useEffect(() => setOpen(false), [path]);
+  // On phones the sidebar is a drawer: keyboard focus moves into it, Escape closes it, and focus
+  // returns to the menu button.
+  useEffect(() => {
+    if (!open) return;
+    const opener = document.activeElement as HTMLElement | null;
+    sidebar.current?.querySelector<HTMLElement>("button, input")?.focus();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      opener?.focus();
+    };
+  }, [open]);
   return (
     <div className={`shell${open ? " open" : ""}`}>
-      <Sidebar onClose={() => setOpen(false)} />
+      <a className="skip-link" href="#main">Skip to content</a>
+      <div ref={sidebar} style={{ display: "contents" }}>
+        <Sidebar onClose={() => setOpen(false)} />
+      </div>
       <div className="scrim" onClick={() => setOpen(false)} />
       <MenuContext.Provider value={() => setOpen(true)}>
-        <div className="main">{children}</div>
+        <div className="main" id="main" tabIndex={-1}>{children}</div>
       </MenuContext.Provider>
     </div>
   );
@@ -111,8 +128,20 @@ function Sidebar({ onClose }: { onClose: () => void }) {
         </div>
       </div>
       <div className="sidebar-body" data-testid="history">
-        {error && <p className="small" style={{ color: "var(--error)", padding: "8px 12px" }}>{error}</p>}
-        {!loading && groups.length === 0 && (
+        {error && (
+          <div className="row small" style={{ color: "var(--error)", padding: "8px 12px", gap: 8 }} role="alert" data-testid="history-error">
+            <span className="grow">{error}</span>
+            <button className="btn btn-text" style={{ minHeight: 32, padding: "0 8px" }} onClick={() => void app.refreshConversations()}>
+              Retry
+            </button>
+          </div>
+        )}
+        {loading && items.length === 0 && (
+          <p className="small muted" role="status" style={{ padding: "8px 12px" }}>
+            Loading chats…
+          </p>
+        )}
+        {!loading && !error && groups.length === 0 && (
           <p className="small muted" style={{ padding: "8px 12px" }} data-testid="history-empty">
             {query.trim() ? `No chats match “${query.trim()}”.` : "No chats yet. Start one and it will appear here."}
           </p>
@@ -154,6 +183,7 @@ function Sidebar({ onClose }: { onClose: () => void }) {
       <div className="sidebar-foot">
         <NavItem icon="home" label="Home" to="/" testId="nav-home" />
         <NavItem icon="folder" label="Documents" to="/documents" testId="nav-documents" />
+        <NavItem icon="library" label="Prompt library" to="/prompts" testId="nav-prompts" />
         <NavItem icon="puzzle" label="Tools & Connections" to="/tools" testId="nav-tools" />
         <NavItem icon="settings" label="Settings" to="/settings" testId="nav-settings" />
         <button className="nav-item" onClick={() => navigate("/account")} aria-current={location.pathname === "/account" ? "page" : undefined} data-testid="nav-account">

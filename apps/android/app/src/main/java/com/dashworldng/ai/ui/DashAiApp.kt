@@ -16,6 +16,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.dashworldng.ai.core.presentation.StartDestination
@@ -54,6 +55,9 @@ object Routes {
     const val PROMPTS = "prompts"
     const val SETTINGS = "settings"
     const val ACCOUNT = "account"
+
+    /** Screens before the app is ready (onboarding, sign-in): a share waits until they are done. */
+    val ENTRY = setOf(SPLASH, ONBOARDING, AUTH)
 
     fun document(id: String) = "documents/$id"
 
@@ -123,6 +127,17 @@ private fun AppNavigation(services: AppServices, startDestination: String, setti
         )
     }
     val openChat = { nav.open(Routes.CHAT) }
+
+    // "Share → DASH AI": once past onboarding and sign-in, the share opens a new chat above Home.
+    val current by nav.currentBackStackEntryAsState()
+    val share by services.shares.pending.collectAsStateWithLifecycle()
+    val route = current?.destination?.route
+    LaunchedEffect(share, route) {
+        if (share == null || route == null || route in Routes.ENTRY) return@LaunchedEffect
+        val incoming = services.shares.consume() ?: return@LaunchedEffect
+        chat.receiveShare(incoming)
+        nav.navigate(Routes.CHAT) { popUpTo(Routes.HOME) { inclusive = false } }
+    }
     val duration = if (reducedMotion) 0 else 220
 
     NavHost(

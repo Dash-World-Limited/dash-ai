@@ -21,6 +21,7 @@ val appSources = tasks.register<Sync>("appSources") {
             "com/dashworldng/ai/data/local/**",
             "com/dashworldng/ai/data/security/TokenStore.kt",
             "com/dashworldng/ai/data/Platform.kt",
+            "com/dashworldng/ai/data/share/**",
             "com/dashworldng/ai/data/settings/DataStoreSettings.kt",
         )
     }

@@ -24,6 +24,7 @@ import com.dashworldng.ai.core.sync.ConversationSyncService
 import com.dashworldng.ai.data.settings.AccountInfo
 import com.dashworldng.ai.di.AppServices
 import com.dashworldng.ai.di.ComposerPrefill
+import com.dashworldng.ai.di.IncomingShare
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -175,7 +176,14 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
         // Coming back online: deliver anything written or changed while offline.
         viewModelScope.launch {
             // A StateFlow already emits only distinct values.
-            services.connectivity.isOnline.collect { online -> if (online) syncNow() }
+            services.connectivity.isOnline.collect { online ->
+                if (online) {
+                    syncNow()
+                } else if (!services.settings.settings.value.demoMode) {
+                    // The connection dropped: an answer that was streaming ends now, kept, with Retry.
+                    session.connectionLost()
+                }
+            }
         }
         viewModelScope.launch {
             services.prefill.pending.filterNotNull().collect {
@@ -388,6 +396,16 @@ class ChatViewModel(private val services: AppServices) : ViewModel() {
 
     private fun updateAttachment(id: String, change: (PendingAttachment) -> PendingAttachment) {
         local.update { s -> s.copy(attachments = s.attachments.map { if (it.localId == id) change(it) else it }) }
+    }
+
+    /** "Share → DASH AI": a new chat with the shared text ready to edit and the files attaching. */
+    fun receiveShare(share: IncomingShare) {
+        newChat()
+        local.update { it.copy(composer = share.text.orEmpty()) }
+        share.files.forEach(::attach)
+        if (share.refused > 0) {
+            notice(if (share.refused == 1) "One shared item couldn't be added." else "${share.refused} shared items couldn't be added.")
+        }
     }
 
     private fun applyPrefill(prefill: ComposerPrefill) {
