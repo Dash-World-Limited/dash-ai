@@ -25,6 +25,8 @@ data class AppSettings(
     val demoFailure: DemoFailure = DemoFailure.NONE,
     val account: AccountInfo? = null,
     val theme: ThemePreference = ThemePreference.SYSTEM,
+    /** The person has answered DASH AI's "notify me when results are ready" offer on this device. */
+    val notificationPromptAnswered: Boolean = false,
 )
 
 /** Light, dark, or follow the system. Stored in settings (Settings → Appearance). */

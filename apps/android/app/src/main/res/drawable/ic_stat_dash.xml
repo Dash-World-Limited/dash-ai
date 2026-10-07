@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status-bar icon for DASH AI notifications: the faceted mark, white on transparent (Android tints it). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="60"
+    android:viewportHeight="60"
+    android:tint="#FFFFFFFF">
+    <group android:translateX="-24" android:translateY="-24">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M53.43,23.94 L55.68,47.8 L33.62,49.15 Z M54.99,24.47 L74.36,49.12 L57.19,47.8 Z M33.29,50.67 L55.69,49.3 L53.41,83.59 Z M57.2,49.31 L74.72,50.65 L54.95,83 Z" />
+    </group>
+</vector>

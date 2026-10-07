@@ -18,6 +18,7 @@ junit = "4.13.2"
 robolectric = "4.14.1"
 androidxTestCore = "1.6.1"
 androidxTestExt = "1.2.1"
+firebaseMessaging = "24.1.0"
 
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
@@ -54,6 +55,7 @@ compose-material-icons-extended = { module = "androidx.compose.material:material
 robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
 androidx-test-core = { module = "androidx.test:core", version.ref = "androidxTestCore" }
 androidx-test-ext-junit = { module = "androidx.test.ext:junit", version.ref = "androidxTestExt" }
+firebase-messaging = { module = "com.google.firebase:firebase-messaging", version.ref = "firebaseMessaging" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

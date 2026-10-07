@@ -51,6 +51,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -97,6 +98,7 @@ import com.dashworldng.ai.ui.theme.DashTheme
 import com.dashworldng.ai.ui.theme.Radii
 import com.dashworldng.ai.ui.theme.Spacing
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.time.Instant
 
 /** How often an open screen checks on a run in progress (bounded, so nothing polls forever). */
@@ -118,6 +120,11 @@ fun AutomatesScreen(
 ) {
     val vm = dashViewModel { AutomatesListViewModel(services) }
     val state by vm.state.collectAsStateWithLifecycle()
+    val settings by services.settings.settings.collectAsStateWithLifecycle()
+    val notificationsAllowed by services.notificationPermission.granted.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    val answerNotificationOffer = { scope.launch { services.settings.update { it.copy(notificationPromptAnswered = true) } }; Unit }
+    val requestNotifications = rememberNotificationRequest(services, onAnswered = answerNotificationOffer)
     val running = state.automations.any { it.state == "running" }
     LaunchedEffect(Unit) { vm.load() }
     LaunchedEffect(running) {
@@ -150,6 +157,15 @@ fun AutomatesScreen(
                         style = MaterialTheme.typography.bodyLarge,
                         color = c.inkSecondary,
                     )
+                }
+                // First use of Automates: explain notifications before Android asks (never at first launch).
+                if (state.signedIn && !notificationsAllowed && !settings.notificationPromptAnswered) {
+                    item {
+                        NotificationOfferCard(
+                            onTurnOn = requestNotifications,
+                            onNotNow = answerNotificationOffer,
+                        )
+                    }
                 }
                 when {
                     !state.signedIn -> item {
