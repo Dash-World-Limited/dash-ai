@@ -357,3 +357,126 @@ data class ToolActivityDto(
 
 @Serializable
 data class ToolActivityResponseDto(val activity: List<ToolActivityDto>)
+
+// ---- DASH Automates -----------------------------------------------------------------------------
+
+/**
+ * When an automation runs, in its own time zone. `kind` is once | daily | weekly | monthly; only the
+ * fields of that kind are set (the others are left out of the JSON, never sent as null).
+ */
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+@Serializable
+data class AutomationScheduleDto(
+    val kind: String,
+    val time: String,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val date: String? = null,
+    /** 0 = Sunday … 6 = Saturday. */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val days: List<Int>? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val day: Int? = null,
+)
+
+/** A run as lists show it (no content). Never names a provider or model. */
+@Serializable
+data class AutomationRunSummaryDto(
+    val id: String,
+    val automationId: String,
+    val status: String,
+    val trigger: String,
+    val createdAt: String,
+    val startedAt: String?,
+    val finishedAt: String?,
+    val editedAt: String?,
+    val error: String?,
+    val demo: Boolean,
+    val preview: String,
+)
+
+@Serializable
+data class AutomationRunDto(
+    val id: String,
+    val automationId: String,
+    val status: String,
+    val trigger: String,
+    val createdAt: String,
+    val startedAt: String?,
+    val finishedAt: String?,
+    val editedAt: String?,
+    val error: String?,
+    val demo: Boolean,
+    val preview: String,
+    val content: String,
+)
+
+@Serializable
+data class AutomationDto(
+    val id: String,
+    val name: String,
+    val prompt: String,
+    val mode: String,
+    val schedule: AutomationScheduleDto,
+    val timeZone: String,
+    val status: String,
+    /** scheduled | running | ready | failed | paused | completed: the one label clients show. */
+    val state: String,
+    val nextRunAt: String?,
+    val lastRun: AutomationRunSummaryDto?,
+    val createdAt: String,
+    val updatedAt: String,
+)
+
+@Serializable
+data class CreateAutomationRequestDto(
+    val name: String,
+    val prompt: String,
+    val mode: String,
+    val schedule: AutomationScheduleDto,
+    val timeZone: String,
+)
+
+/** Only the fields being changed are sent; a schedule or time-zone change recomputes the next run. */
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+@Serializable
+data class UpdateAutomationRequestDto(
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val name: String? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val prompt: String? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val mode: String? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val schedule: AutomationScheduleDto? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val timeZone: String? = null,
+)
+
+@Serializable
+data class AutomationListDto(val automations: List<AutomationDto>)
+
+@Serializable
+data class AutomationDetailDto(val automation: AutomationDto, val runs: List<AutomationRunSummaryDto>)
+
+@Serializable
+data class AutomationRunResponseDto(val run: AutomationRunDto)
+
+@Serializable
+data class UpdateAutomationRunRequestDto(val content: String)
+
+@Serializable
+data class AppNotificationDto(
+    val id: String,
+    /** automation.ready | automation.failed */
+    val kind: String,
+    val title: String,
+    val body: String,
+    val automationId: String,
+    val runId: String,
+    val createdAt: String,
+    val readAt: String?,
+)
+
+@Serializable
+data class NotificationListDto(val notifications: List<AppNotificationDto>, val unread: Int)
+
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+@Serializable
+data class MarkNotificationsReadRequestDto(
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val ids: List<String>? = null,
+)
+
+@Serializable
+data class MarkNotificationsReadResponseDto(val updated: Int)

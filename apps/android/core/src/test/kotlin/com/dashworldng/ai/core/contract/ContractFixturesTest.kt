@@ -18,6 +18,9 @@ import com.dashworldng.ai.core.prompts.PromptCategory
 import com.dashworldng.ai.core.prompts.PromptLibrary
 import com.dashworldng.ai.core.presentation.ToolConnections
 import com.dashworldng.ai.core.remote.PluginsResponseDto
+import com.dashworldng.ai.core.remote.AutomationDetailDto
+import com.dashworldng.ai.core.remote.NotificationListDto
+import com.dashworldng.ai.core.presentation.AutomationLabels
 import com.dashworldng.ai.core.remote.ToolActivityResponseDto
 import com.dashworldng.ai.core.remote.AuthResponseDto
 import com.dashworldng.ai.core.remote.ChatStreamRequestDto
@@ -139,6 +142,18 @@ class ContractFixturesTest {
         val end = assertIs<ChatStreamEvent.MessageEnded>(events[6])
         assertEquals(FinishReason.STOP, end.finishReason)
         assertIs<ChatStreamEvent.Ended>(events[7])
+    }
+
+    @Test
+    fun `automation and notification fixtures decode strictly`() {
+        val detail = strict.decodeFromString(AutomationDetailDto.serializer(), Fixtures.text("automation-detail.json"))
+        assertEquals("Weekdays at 08:00", AutomationLabels.schedule(detail.automation.schedule))
+        assertEquals("Ready", AutomationLabels.state(detail.automation.state).text)
+        assertEquals(listOf("ready", "failed"), detail.runs.map { it.status })
+        assertEquals("DASH AI couldn't complete this run.", detail.runs[1].error)
+        val notices = strict.decodeFromString(NotificationListDto.serializer(), Fixtures.text("notification-list.json"))
+        assertEquals(1, notices.unread)
+        assertEquals("automation.ready", notices.notifications.single().kind)
     }
 
     @Test
