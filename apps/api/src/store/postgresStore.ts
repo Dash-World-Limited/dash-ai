@@ -331,6 +331,10 @@ export class PostgresStore implements Store {
     return rows[0] && this.toRun(rows[0]);
   }
 
+  async discardRun(runId: string): Promise<void> {
+    await this.pool.query("DELETE FROM automation_runs WHERE id = $1 AND status = 'running'", [runId]);
+  }
+
   async finishRun(input: FinishRunInput): Promise<boolean> {
     try {
       return await this.tx(async (client) => {

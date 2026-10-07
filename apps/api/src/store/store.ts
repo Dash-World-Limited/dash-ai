@@ -325,6 +325,8 @@ export interface Store {
   claimQueuedRun(now: string, leaseUntil: string): Promise<AutomationRunRecord | undefined>;
   /** Records the outcome of a running run and its notification; prunes old runs. False if the run is gone. */
   finishRun(input: FinishRunInput): Promise<boolean>;
+  /** Drops a running run without a result or notification (a scheduled run whose automation was paused). */
+  discardRun(runId: string): Promise<void>;
   /** Running runs whose lease expired before `now` (their instance stopped). */
   listStaleRuns(now: string, limit: number): Promise<AutomationRunRecord[]>;
   getRun(userId: string, automationId: string, runId: string): Promise<AutomationRunRecord | undefined>;

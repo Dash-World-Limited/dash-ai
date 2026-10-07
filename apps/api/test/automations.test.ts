@@ -9,7 +9,7 @@ import {
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import { isValidTimeZone, nextRunAfter, zonedTimeToInstant } from "../src/automations/schedule.js";
-import { previewOf } from "../src/automations/service.js";
+import { newRun, previewOf } from "../src/automations/service.js";
 import { containsProviderName } from "../src/chat/publicSurface.js";
 import { FAKE_TRIGGERS } from "../src/providers/fake.js";
 import { ProviderRegistry } from "../src/providers/registry.js";
@@ -302,6 +302,30 @@ describe("the server-side scheduler", () => {
     expect(AutomationDetailResponse.parse((await app.inject({ method: "GET", url: `/v1/automations/${automation!.id}`, headers: user.auth })).json()).runs).toHaveLength(0);
   });
 
+  it("drops a scheduled run that was queued before the automation was paused", async () => {
+    const { app, user, context, clock } = await setup();
+    const { automation } = await create(app, user.auth);
+    const record = (await context.store.getAutomation(user.user.id, automation!.id))!;
+    // As if every worker slot was busy when the occurrence was queued.
+    const outcome = await context.store.scheduleRun({
+      automationId: record.id,
+      expectedNextRunAt: record.nextRunAt!,
+      nextRunAt: new Date(Date.parse(record.nextRunAt!) + 86_400_000).toISOString(),
+      updatedAt: new Date(clock.t).toISOString(),
+      run: newRun(record, "schedule", new Date(clock.t)),
+    });
+    expect(outcome).toBe("queued");
+    await app.inject({ method: "POST", url: `/v1/automations/${automation!.id}/pause`, headers: user.auth });
+    await context.automations.tick();
+    await context.automations.idle();
+    expect(await context.store.listRuns(user.user.id, automation!.id, 10)).toEqual([]);
+    expect(await context.store.countUnreadNotifications(user.user.id)).toBe(0);
+    // Run now still works while paused.
+    expect((await app.inject({ method: "POST", url: `/v1/automations/${automation!.id}/run`, headers: user.auth })).statusCode).toBe(202);
+    await context.automations.idle();
+    expect((await context.store.listRuns(user.user.id, automation!.id, 10)).map((r) => r.status)).toEqual(["ready"]);
+  });
+
   it("two API instances sharing one database run each occurrence exactly once", async () => {
     const pg = USING_POSTGRES ? await createTestPgStore() : undefined;
     const store: Store = pg?.store ?? new MemoryStore();
@@ -356,6 +380,7 @@ describe("ownership, export and account deletion", () => {
       ["DELETE", `/v1/automations/${automation!.id}`],
       ["POST", `/v1/automations/${automation!.id}/run`],
       ["POST", `/v1/automations/${automation!.id}/pause`],
+      ["POST", `/v1/automations/${automation!.id}/resume`],
       ["GET", `/v1/automations/${automation!.id}/runs/${runId}`],
       ["PATCH", `/v1/automations/${automation!.id}/runs/${runId}`],
       ["POST", `/v1/automations/${automation!.id}/runs/${runId}/regenerate`],

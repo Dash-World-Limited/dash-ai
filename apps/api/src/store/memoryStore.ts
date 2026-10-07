@@ -466,6 +466,10 @@ export class MemoryStore implements Store {
     return true;
   }
 
+  async discardRun(runId: string): Promise<void> {
+    if (this.runs.get(runId)?.status === "running") this.runs.delete(runId);
+  }
+
   async listStaleRuns(now: string, limit: number): Promise<AutomationRunRecord[]> {
     const t = Date.parse(now);
     return [...this.runs.values()]

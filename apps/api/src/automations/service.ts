@@ -238,6 +238,11 @@ export class AutomationService {
     const { store, log, metrics } = this.deps;
     const automation = await store.getAutomation(run.userId, run.automationId);
     if (!automation) return; // deleted meanwhile (its runs went with it)
+    if (automation.status === "paused" && run.trigger === "schedule") {
+      // Queued before the pause: a paused automation never runs on its schedule (Run now still works).
+      await store.discardRun(run.id);
+      return;
+    }
     const started = Date.now();
     // A run never outlives its lease, so another instance can never recover a run that is still going.
     const budget = AbortSignal.any([signal, AbortSignal.timeout(Math.max(1_000, this.leaseMs() - 30_000))]);
