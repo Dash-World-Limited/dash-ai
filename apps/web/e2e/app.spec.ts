@@ -120,7 +120,7 @@ test("DASH AI only: no provider choice, label or Compare anywhere a person can s
   await shot(page, "06-mode-sheet");
   await expectNoProviderWords(page, "mode sheet");
   await page.keyboard.press("Escape");
-  for (const route of ["/settings", "/account", "/tools", "/documents", "/prompts"]) {
+  for (const route of ["/settings", "/account", "/tools", "/documents", "/prompts", "/automates"]) {
     await page.goto(route);
     await expect(page.locator("#main")).toBeVisible();
     await expectNoProviderWords(page, route);
@@ -201,6 +201,65 @@ test("live: documents upload, detail, ask about it; tools from the server regist
   await page.getByTestId("sign-out-everywhere").click();
   await page.getByTestId("confirm").click();
   await expect(page.getByTestId("auth")).toBeVisible();
+});
+
+test("live: Automates schedule, run on the server, notify, then view, edit, regenerate, download and share", async ({ page }) => {
+  await register(page, "Chidi Okafor");
+  await openMenuIfNeeded(page);
+  await page.getByTestId("nav-automates").click();
+  await expect(page.getByTestId("automates-empty")).toBeVisible();
+  await page.getByTestId("new-automation").click();
+  await page.getByTestId("automation-name").fill("Morning brief");
+  await page.getByTestId("automation-prompt").fill("Draft three priorities for my day.");
+  await page.getByTestId("repeat-weekly").click();
+  await page.getByTestId("automation-time").fill("08:00");
+  await expect(page.getByTestId("automation-editor")).toContainText("Weekdays at 08:00");
+  await shot(page, "20-automation-editor");
+  await page.getByTestId("save-automation").click();
+  await expect(page.getByTestId("automation-detail")).toContainText("Scheduled");
+  await expect(page.getByTestId("next-run")).toContainText("Next run:");
+  await expect(page.getByTestId("last-run")).toContainText("Not run yet.");
+
+  await page.getByTestId("run-now").click();
+  await expect(page.getByTestId("run-item").first()).toContainText("Ready", { timeout: 20_000 });
+  await expect(page.getByTestId("automation-detail")).toContainText("Ready");
+  await expect(page.getByTestId("last-run")).toContainText("Last run:");
+  await shot(page, "21-automation-detail");
+  await expectNoProviderWords(page, "automation detail");
+
+  // The finished run left a notice: it opens the result and is then read.
+  await page.goto("/automates");
+  await expect(page.getByTestId("notifications")).toContainText("Morning brief is ready");
+  await shot(page, "22-automates");
+  await page.getByTestId("notification").first().click();
+  await expect(page.getByTestId("run-content")).toContainText("Demonstration answer from DASH AI");
+  await expectNoProviderWords(page, "automation result");
+  await shot(page, "23-automation-result");
+
+  const download = page.waitForEvent("download");
+  await page.getByTestId("run-download").click();
+  expect((await download).suggestedFilename()).toMatch(/^morning-brief-\d{4}-\d{2}-\d{2}\.md$/);
+  await page.getByTestId("run-share").click(); // the device share sheet, or a copy where there is none
+
+  await page.getByTestId("run-edit").click();
+  await page.getByTestId("run-editor").fill("# My priorities\n\n1. Ship the brief");
+  await page.getByTestId("save-run").click();
+  await expect(page.getByTestId("run-content")).toContainText("Ship the brief");
+  await page.reload();
+  await expect(page.getByTestId("run-content")).toContainText("Ship the brief");
+
+  await page.getByTestId("run-regenerate").click();
+  await expect(page.getByTestId("automation-detail")).toBeVisible();
+  await expect(page.getByTestId("run-item")).toHaveCount(2, { timeout: 20_000 });
+  await expect(page.getByTestId("run-item").first()).toContainText("Ready", { timeout: 20_000 });
+
+  await page.getByTestId("pause").click();
+  await expect(page.getByTestId("next-run")).toContainText("Paused");
+  await page.getByTestId("resume").click();
+  await expect(page.getByTestId("next-run")).toContainText("Next run:");
+  await page.getByTestId("delete-automation").click();
+  await page.getByTestId("confirm").click();
+  await expect(page.getByTestId("automates-empty")).toBeVisible();
 });
 
 test("live: tool activity is recorded with the answer and shown again after a reload", async ({ page }) => {

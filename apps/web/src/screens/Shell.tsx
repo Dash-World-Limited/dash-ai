@@ -68,13 +68,14 @@ export function TopBar({ title, back, actions, children }: { title?: string; bac
   );
 }
 
-function NavItem({ icon, label, to, testId }: { icon: IconName; label: string; to: string; testId: string }) {
+function NavItem({ icon, label, to, testId, count = 0 }: { icon: IconName; label: string; to: string; testId: string; count?: number }) {
   const { path } = useRoute();
   const current = to === "/" ? path === "/" : path.startsWith(to);
   return (
-    <button className="nav-item" aria-current={current ? "page" : undefined} onClick={() => navigate(to)} data-testid={testId}>
+    <button className="nav-item" aria-current={current ? "page" : undefined} onClick={() => navigate(to)} data-testid={testId} aria-label={count > 0 ? `${label}, ${count} new` : undefined}>
       <Icon name={icon} />
-      {label}
+      <span className="grow">{label}</span>
+      {count > 0 && <span className="badge tone-progress" data-testid={`${testId}-count`}>{count}</span>}
     </button>
   );
 }
@@ -83,6 +84,7 @@ function Sidebar({ onClose }: { onClose: () => void }) {
   const app = useApp();
   const settings = useStore(app.settings);
   const { items, loading, error } = useStore(app.conversations);
+  const { unread } = useStore(app.notifications);
   const engine = useStore(app.engineStore);
   const now = useNow();
   const [query, setQuery] = useState("");
@@ -183,6 +185,7 @@ function Sidebar({ onClose }: { onClose: () => void }) {
       <div className="sidebar-foot">
         <NavItem icon="home" label="Home" to="/" testId="nav-home" />
         <NavItem icon="folder" label="Documents" to="/documents" testId="nav-documents" />
+        <NavItem icon="clock" label="Automates" to="/automates" testId="nav-automates" count={unread} />
         <NavItem icon="library" label="Prompt library" to="/prompts" testId="nav-prompts" />
         <NavItem icon="puzzle" label="Tools & Connections" to="/tools" testId="nav-tools" />
         <NavItem icon="settings" label="Settings" to="/settings" testId="nav-settings" />

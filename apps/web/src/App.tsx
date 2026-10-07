@@ -4,6 +4,7 @@ import { useRoute } from "./state/router";
 import { useStore } from "./state/store";
 import { Toast } from "./ui/kit";
 import { AccountScreen } from "./screens/Account";
+import { AutomatesRoutes } from "./screens/Automates";
 import { ChatScreen } from "./screens/Chat";
 import { DocumentDetail, DocumentsScreen } from "./screens/Documents";
 import { Home } from "./screens/Home";
@@ -30,6 +31,8 @@ function Routes() {
         return <PromptsScreen />;
       case "tools":
         return <ToolsScreen />;
+      case "automates":
+        return <AutomatesRoutes />;
       case "account":
         return <AccountScreen />;
       case "settings":

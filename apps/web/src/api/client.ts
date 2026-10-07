@@ -1,4 +1,11 @@
 import type {
+  Automation,
+  AutomationDetailResponse,
+  AutomationListResponse,
+  AutomationRunResponse,
+  CreateAutomationRequest,
+  NotificationListResponse,
+  UpdateAutomationRequest,
   AuthResponse,
   ConversationDetailResponse,
   ConversationListResponse,
@@ -185,6 +192,24 @@ export class DashApi {
       xhr.send(form);
     });
   }
+
+  // ---- DASH Automates ----
+  automations = () => this.request<AutomationListResponse>("GET", "/v1/automations");
+  automation = (id: string) => this.request<AutomationDetailResponse>("GET", `/v1/automations/${encodeURIComponent(id)}`);
+  createAutomation = (body: CreateAutomationRequest) => this.request<Automation>("POST", "/v1/automations", body);
+  updateAutomation = (id: string, body: UpdateAutomationRequest) => this.request<Automation>("PATCH", `/v1/automations/${encodeURIComponent(id)}`, body);
+  pauseAutomation = (id: string) => this.request<Automation>("POST", `/v1/automations/${encodeURIComponent(id)}/pause`);
+  resumeAutomation = (id: string) => this.request<Automation>("POST", `/v1/automations/${encodeURIComponent(id)}/resume`);
+  deleteAutomation = (id: string) => this.request<void>("DELETE", `/v1/automations/${encodeURIComponent(id)}`);
+  runAutomation = (id: string) => this.request<AutomationRunResponse>("POST", `/v1/automations/${encodeURIComponent(id)}/run`);
+  automationRun = (id: string, runId: string) =>
+    this.request<AutomationRunResponse>("GET", `/v1/automations/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`);
+  editAutomationRun = (id: string, runId: string, content: string) =>
+    this.request<AutomationRunResponse>("PATCH", `/v1/automations/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}`, { content });
+  regenerateAutomationRun = (id: string, runId: string) =>
+    this.request<AutomationRunResponse>("POST", `/v1/automations/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/regenerate`);
+  notifications = () => this.request<NotificationListResponse>("GET", "/v1/notifications");
+  markNotificationsRead = (ids?: string[]) => this.request<{ updated: number }>("POST", "/v1/notifications/read", ids ? { ids } : {});
 
   // ---- Tools ----
   plugins = () => this.request<PluginsResponse>("GET", "/v1/plugins");

@@ -44,6 +44,10 @@ const PATHS = {
   library: "M5 4h4v16H5zM10 4h4v16h-4zM15 5l3.5-1 3 15-3.5 1z",
   download: "M12 4v12M6 11l6 6 6-6M5 20h14",
   check: "M5 12l5 5 9-10",
+  clock: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2",
+  bell: "M6 16V11a6 6 0 1 1 12 0v5l2 2H4zM10 21h4",
+  play: "M8 5l11 7-11 7z",
+  pause: "M8 5h3v14H8zM13 5h3v14h-3z",
   star: "M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z",
 } as const;
 
