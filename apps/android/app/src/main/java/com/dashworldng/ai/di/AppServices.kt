@@ -22,6 +22,9 @@ import com.dashworldng.ai.core.model.AssistantMode
 import com.dashworldng.ai.core.model.DocumentItem
 import com.dashworldng.ai.core.presentation.SyncTracker
 import com.dashworldng.ai.core.tools.ToolsService
+import com.dashworldng.ai.core.automations.AutomationNotices
+import com.dashworldng.ai.core.automations.AutomationsApi
+import com.dashworldng.ai.core.automations.RemoteAutomations
 import com.dashworldng.ai.core.remote.DashApiClient
 import com.dashworldng.ai.core.remote.RemoteChatGateway
 import com.dashworldng.ai.core.remote.RemoteDocumentGateway
@@ -140,6 +143,12 @@ interface AppServices {
     /** The server's plugin registry and this account's tool choices. Null when no valid server is configured. */
     fun toolsService(): ToolsService?
 
+    /** DASH Automates on the server. Null when no valid server is configured. */
+    fun automations(): AutomationsApi?
+
+    /** Unread Automates notices for this app session. */
+    val notices: AutomationNotices
+
     /** What this app session knows about sync (shown as Synced / Syncing / Offline / Sync issue). */
     val syncTracker: SyncTracker
 }
@@ -204,6 +213,10 @@ abstract class BaseServices : AppServices {
 
     override fun toolsService(): ToolsService? = apiClient()?.let { client -> ToolsService { client } }
 
+    override fun automations(): AutomationsApi? = apiClient()?.let { client -> RemoteAutomations { client } }
+
+    override val notices: AutomationNotices = AutomationNotices()
+
     override val syncTracker: SyncTracker by lazy { SyncTracker(clock) }
 
     @Volatile
@@ -263,6 +276,7 @@ class InMemoryServices(
     private val chatGatewayOverride: ChatGateway? = null,
     documentGatewayOverride: DocumentGateway? = null,
     val fixedConnectivity: FixedConnectivity = FixedConnectivity(true),
+    private val automationsOverride: AutomationsApi? = null,
 ) : BaseServices() {
     override val settings: SettingsRepository = InMemorySettingsRepository(initialSettings)
     override val localConversations: ConversationRepository = InMemoryConversationRepository()
@@ -278,4 +292,6 @@ class InMemoryServices(
     override val demoDocuments: DocumentGateway = documentGatewayOverride ?: DemoDocumentGateway(stepDelayMillis = 0)
 
     override fun chatGateway(): ChatGateway = chatGatewayOverride ?: super.chatGateway()
+
+    override fun automations(): AutomationsApi? = automationsOverride ?: super.automations()
 }

@@ -40,7 +40,12 @@ limits and title algorithm, and compare the JSON the app sends with `chat-stream
   `/v1/conversations`, `POST /v1/chat/stream`, `POST /v1/chat/streams/:id/cancel`,
   `POST|GET /v1/documents`, `DELETE /v1/documents/:id`, `GET /v1/sync/conversations`,
   `POST /v1/sync/push` ([sync.md](sync.md)), `GET /v1/plugins`, `PUT /v1/plugins/:id`, `GET /v1/tools/activity`
-  ([plugins.md](plugins.md)).
+  ([plugins.md](plugins.md)), DASH Automates under `/v1/automations` and `/v1/notifications`
+  ([automates.md](automates.md)), operator-only `GET /v1/router`.
+- **Intelligence Router** (`src/intelligence`): picks the provider order for every task from a
+  configurable policy, live health and the request's needs ([intelligence-router.md](intelligence-router.md)).
+- **Automates** (`src/automations`): schedule maths in the automation's time zone and the
+  server-side scheduler/queue that runs automations in every API instance.
 - **Orchestrator** (`src/chat/orchestrator.ts`): validates everything that can fail *before*
   the stream starts (so those failures are JSON errors with proper status codes), then runs the
   answer on DASH AI's route: the first configured provider for the mode, with bounded retries and an
@@ -69,7 +74,8 @@ Everything that does not need Android: `ChatSession` (send, stream, stop, regene
 crash-safe restore; no provider choice), `ContextBuilder`, `SmartRouting`,
 `SseParser` + `StreamEventDecoder`, `DashApiClient` (Retrofit + OkHttp), `RemoteChatGateway`,
 `RemoteDocumentGateway` (streamed multipart with progress), `DemoChatGateway`, `DemoDocumentGateway`,
-`Markdown` parser, `PromptLibrary`, `FileRules`, `TitleGenerator` and `DataExport`.
+`Markdown` parser, `PromptLibrary`, `FileRules`, `TitleGenerator`, `DataExport`, and the Automates
+client (`RemoteAutomations`) with its labels and editor validation (`presentation/Automates.kt`).
 It is an included build of `apps/android`, so it compiles and tests without Google's Maven.
 
 ### `apps/android/app`

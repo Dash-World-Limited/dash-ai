@@ -6,8 +6,11 @@ import { StreamRegistry } from "./chat/streamRegistry.js";
 import type { AppConfig } from "./config.js";
 import { AppError } from "./errors.js";
 import { loggerOptions, type LogStream } from "./logging.js";
+import { IntelligenceRouter } from "./intelligence/router.js";
 import { ProviderRegistry } from "./providers/registry.js";
+import { AutomationService } from "./automations/service.js";
 import { accountRoutes } from "./routes/account.js";
+import { automationRoutes } from "./routes/automations.js";
 import { authRoutes } from "./routes/auth.js";
 import { chatRoutes } from "./routes/chat.js";
 import type { RouteContext } from "./routes/context.js";
@@ -70,6 +73,7 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   const now = deps.now ?? (() => new Date());
   const store = deps.store ?? new MemoryStore();
   const providers = deps.providers ?? ProviderRegistry.fromConfig(config);
+  const router = new IntelligenceRouter(config.routerPolicy, () => providers.configured());
 
   const app = Fastify({
     logger: loggerOptions(config.logLevel, deps.logStream),
@@ -106,10 +110,13 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
       retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000)),
     });
 
+  const automations = new AutomationService({ store, providers, router, config, log: app.log, metrics, now });
   const context: RouteContext = {
     config,
     store,
     providers,
+    router,
+    automations,
     tools: ToolRuntime.fromConfig(config, store, deps.plugins),
     streams: new StreamRegistry(),
     rateLimits,
@@ -170,9 +177,11 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   documentRoutes(app, context);
   pluginRoutes(app, context);
   syncRoutes(app, context);
+  automationRoutes(app, context);
 
   app.addHook("onClose", async () => {
     context.streams.cancelAll();
+    await automations.stop();
   });
   // The caller that created the store (index.ts / tests) owns closing it.
 

@@ -205,4 +205,34 @@ class RemoteClientTest {
         // Only the switch is sent; the server decides the default (read-only) scopes.
         assertEquals("""{"enabled":false}""", updated.body.readUtf8())
     }
+
+    @Test
+    fun `automations are listed, run and edited through the API`() = runBlocking {
+        val api = com.dashworldng.ai.core.automations.RemoteAutomations { client }
+        val detail = Json.parseToJsonElement(Fixtures.text("automation-detail.json")).jsonObject
+        server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"automations":[${detail.getValue("automation")}]}"""))
+        assertEquals("Morning brief", api.list().single().name)
+        assertEquals("/v1/automations", server.takeRequest().path)
+
+        val run = """{"run":{"id":"run-00000001","automationId":"6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b","status":"queued","trigger":"manual","createdAt":"2026-10-07T07:00:00.000Z","startedAt":null,"finishedAt":null,"editedAt":null,"error":null,"demo":false,"preview":"","content":""}}"""
+        server.enqueue(MockResponse().setResponseCode(202).setHeader("Content-Type", "application/json").setBody(run))
+        assertEquals("queued", api.runNow("6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b").status)
+        val posted = server.takeRequest()
+        assertEquals("POST", posted.method)
+        assertEquals("/v1/automations/6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b/run", posted.path)
+
+        server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody(run))
+        api.editRun("6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b", "run-00000001", "My edit")
+        val edited = server.takeRequest()
+        assertEquals("PATCH", edited.method)
+        assertEquals("""{"content":"My edit"}""", edited.body.readUtf8())
+
+        server.enqueue(MockResponse().setHeader("Content-Type", "application/json").setBody("""{"updated":1}"""))
+        api.markRead()
+        assertEquals("{}", server.takeRequest().body.readUtf8())
+
+        server.enqueue(MockResponse().setResponseCode(409).setHeader("Content-Type", "application/json").setBody(Fixtures.text("error-response.json")))
+        val failure = runCatching { api.runNow("6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b") }.exceptionOrNull()
+        assertTrue(failure is com.dashworldng.ai.core.stream.ApiException)
+    }
 }

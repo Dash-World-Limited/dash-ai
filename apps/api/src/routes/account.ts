@@ -1,6 +1,7 @@
-import type { DataExportResponse, MeResponse, ProviderId, UsageSummaryResponse } from "@dash-ai/contracts";
+import { AUTOMATION_LIMITS, type DataExportResponse, type MeResponse, type ProviderId, type UsageSummaryResponse } from "@dash-ai/contracts";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { currentUser } from "../auth/requireAuth.js";
+import { toRun } from "../automations/service.js";
 import type { RouteContext } from "./context.js";
 import { viewFor, toConversation, toDocument, toMessage, toPluginSetting, toMessageToolActivity, toToolActivity, toUsage, toUser } from "./mappers.js";
 
@@ -38,6 +39,12 @@ export function accountRoutes(app: FastifyInstance, ctx: RouteContext): void {
       usage: (await ctx.store.listUsage(user.id)).map((u) => toUsage(u, view)),
       plugins: (await ctx.store.getPluginSettings(user.id)).map(toPluginSetting),
       toolActivity: (await ctx.store.listToolInvocations(user.id, 1000)).map((t) => toToolActivity(t, view)),
+      automations: await Promise.all(
+        (await ctx.store.listAutomations(user.id)).map(async (a) => ({
+          automation: await ctx.automations.view(a),
+          runs: (await ctx.store.listRuns(user.id, a.id, AUTOMATION_LIMITS.maxRunsKept)).map(toRun),
+        })),
+      ),
     };
   });
 

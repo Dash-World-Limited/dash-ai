@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { loadPolicy, PolicyError, type RouterPolicy } from "./intelligence/policy.js";
 
 const emptyToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 const optionalString = z.preprocess(emptyToUndefined, z.string().trim().min(1).optional());
@@ -82,6 +83,20 @@ const EnvSchema = z.object({
    * operator access when provider details are hidden. Secret.
    */
   OPERATOR_TOKEN: z.preprocess(emptyToUndefined, z.string().trim().min(32).optional()),
+  /**
+   * DASH Intelligence Router policy override (JSON, merged over the defaults): provider profiles
+   * (capabilities, context size, relative cost, quality per route), task weights, preferences and
+   * the circuit breaker. Empty = defaults. See docs/intelligence-router.md.
+   */
+  ROUTER_POLICY: optionalString,
+  /** Server-side scheduled tasks (DASH Automates). false stops the scheduler and refuses new runs. */
+  AUTOMATIONS_ENABLED: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("true")),
+  /** How often each instance looks for due automations and queued runs. */
+  AUTOMATIONS_TICK_MS: int(15_000, 1_000, 600_000),
+  /** Automation runs one instance executes at the same time. */
+  AUTOMATIONS_CONCURRENCY: int(2, 1, 32),
+  /** Automations one account may keep. */
+  AUTOMATIONS_MAX_PER_USER: int(25, 1, 500),
   /** Production refuses to start on the in-memory store unless this is "true". */
   ALLOW_MEMORY_STORE: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("false")),
 });
@@ -136,6 +151,8 @@ export interface AppConfig {
     allowMemoryStore: boolean;
   };
   tools: { enabled: boolean; timeoutMs: number; maxRounds: number; maxResultChars: number };
+  routerPolicy: RouterPolicy;
+  automations: { enabled: boolean; tickMs: number; concurrency: number; maxPerUser: number };
   dataEncryption: { key: string | undefined; keyId: string; previousKeys: string | undefined };
   version: string;
 }
@@ -155,6 +172,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   }
   if (e.OPERATOR_TOKEN && e.OPERATOR_TOKEN === e.METRICS_TOKEN) {
     throw new ConfigError("Invalid configuration: OPERATOR_TOKEN must be a different secret from METRICS_TOKEN.");
+  }
+  let routerPolicy: RouterPolicy;
+  try {
+    routerPolicy = loadPolicy(e.ROUTER_POLICY);
+  } catch (err) {
+    if (err instanceof PolicyError) throw new ConfigError(`Invalid configuration: ${err.message}`);
+    throw err;
   }
   return {
     nodeEnv: e.NODE_ENV,
@@ -198,6 +222,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       timeoutMs: e.TOOL_TIMEOUT_MS,
       maxRounds: e.TOOL_MAX_ROUNDS,
       maxResultChars: e.TOOL_MAX_RESULT_CHARS,
+    },
+    routerPolicy,
+    automations: {
+      enabled: e.AUTOMATIONS_ENABLED === "true",
+      tickMs: e.AUTOMATIONS_TICK_MS,
+      concurrency: e.AUTOMATIONS_CONCURRENCY,
+      maxPerUser: e.AUTOMATIONS_MAX_PER_USER,
     },
     dataEncryption: {
       key: e.DATA_ENCRYPTION_KEY,

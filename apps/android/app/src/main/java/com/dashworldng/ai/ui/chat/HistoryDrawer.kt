@@ -24,6 +24,7 @@ import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.automirrored.rounded.LibraryBooks
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.AlertDialog
@@ -37,6 +38,7 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,10 +67,13 @@ import com.dashworldng.ai.ui.theme.DashTheme
 import com.dashworldng.ai.ui.theme.Radii
 import com.dashworldng.ai.ui.theme.Sizing
 import com.dashworldng.ai.ui.theme.Spacing
+import com.dashworldng.ai.ui.automates.CountBadge
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import java.text.DateFormat
 import java.util.Date
 
-enum class DrawerDestination { HOME, DOCUMENTS, TOOLS, PROMPTS, SETTINGS }
+enum class DrawerDestination { HOME, DOCUMENTS, AUTOMATES, TOOLS, PROMPTS, SETTINGS }
 
 /** What the drawer can do; shared by Home and the chat screen. */
 class DrawerCallbacks(
@@ -79,6 +84,8 @@ class DrawerCallbacks(
     val onDelete: (String) -> Unit,
     val onNavigate: (DrawerDestination) -> Unit,
     val now: () -> Long = System::currentTimeMillis,
+    /** Unread Automates results, shown as a count on the menu. */
+    val unread: StateFlow<Int> = MutableStateFlow(0),
 )
 
 /**
@@ -97,6 +104,7 @@ fun AppDrawer(
     var renaming by remember { mutableStateOf<Conversation?>(null) }
     var deleting by remember { mutableStateOf<Conversation?>(null) }
     val groups = remember(conversations) { HistoryGrouping.group(conversations, callbacks.now()) }
+    val unread by callbacks.unread.collectAsState()
 
     ModalDrawerSheet(drawerContainerColor = c.background, drawerContentColor = c.ink, modifier = Modifier.testTag("history_drawer")) {
         Column(Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.md)) {
@@ -161,6 +169,7 @@ fun AppDrawer(
         Column(Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.sm)) {
             DrawerRow("Home", Icons.Rounded.Home, tag = "drawer_home") { close(); callbacks.onNavigate(DrawerDestination.HOME) }
             DrawerRow("Documents", Icons.Rounded.FolderOpen, tag = "drawer_documents") { close(); callbacks.onNavigate(DrawerDestination.DOCUMENTS) }
+            DrawerRow("Automates", Icons.Rounded.Schedule, tag = "drawer_automates", count = unread) { close(); callbacks.onNavigate(DrawerDestination.AUTOMATES) }
             DrawerRow("Tools & Connections", Icons.Rounded.Extension, tag = "drawer_tools") { close(); callbacks.onNavigate(DrawerDestination.TOOLS) }
             DrawerRow("Prompt library", Icons.AutoMirrored.Rounded.LibraryBooks, tag = "drawer_prompts") { close(); callbacks.onNavigate(DrawerDestination.PROMPTS) }
             DrawerRow("Settings", Icons.Rounded.Settings, tag = "drawer_settings") { close(); callbacks.onNavigate(DrawerDestination.SETTINGS) }
@@ -194,7 +203,7 @@ fun AppDrawer(
 }
 
 @Composable
-private fun DrawerRow(label: String, icon: ImageVector, tag: String, emphasised: Boolean = false, onClick: () -> Unit) {
+private fun DrawerRow(label: String, icon: ImageVector, tag: String, emphasised: Boolean = false, count: Int = 0, onClick: () -> Unit) {
     val c = DashTheme.colors
     Row(
         Modifier
@@ -208,7 +217,8 @@ private fun DrawerRow(label: String, icon: ImageVector, tag: String, emphasised:
     ) {
         Icon(icon, contentDescription = null, tint = if (emphasised) c.accentInk else c.inkSecondary, modifier = Modifier.size(Sizing.icon))
         Spacer(Modifier.width(Spacing.md))
-        Text(label, style = if (emphasised) MaterialTheme.typography.titleSmall else MaterialTheme.typography.bodyLarge, color = c.ink)
+        Text(label, style = if (emphasised) MaterialTheme.typography.titleSmall else MaterialTheme.typography.bodyLarge, color = c.ink, modifier = Modifier.weight(1f))
+        CountBadge(count)
     }
 }
 

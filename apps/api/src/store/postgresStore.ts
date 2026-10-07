@@ -1,9 +1,14 @@
 import pg from "pg";
-import type { AssistantMode, DocumentKind, DocumentStatus, MessageRole, MessageStatus, ProviderId } from "@dash-ai/contracts";
+import type { AssistantMode, AutomationRunStatus, AutomationRunTrigger, AutomationSchedule, AutomationStatus, NotificationKind, DocumentKind, DocumentStatus, MessageRole, MessageStatus, ProviderId } from "@dash-ai/contracts";
 import type { PluginSettingRecord, ToolInvocationRow } from "../tools/types.js";
 import { DataKeyError, type DataCipher } from "../security/dataCrypto.js";
 import { assertMigrated, migrate } from "./migrate.js";
 import {
+  type AutomationRecord,
+  type AutomationRunRecord,
+  type FinishRunInput,
+  type NotificationRecord,
+  type ScheduleRunInput,
   type ConversationChange,
   type ConversationChangePage,
   type ConversationRecord,
@@ -66,6 +71,30 @@ const toSummary = (r: DocumentRow): DocumentSummary => ({
 const documentAad = (userId: string, id: string) => `dash-ai:document:${userId}:${id}`;
 const titleAad = (conversationId: string) => `dash-ai:conversation-title:${conversationId}`;
 const contentAad = (conversationId: string, messageId: string) => `dash-ai:message:${conversationId}:${messageId}`;
+
+const automationNameAad = (id: string) => `dash-ai:automation-name:${id}`;
+const automationPromptAad = (id: string) => `dash-ai:automation-prompt:${id}`;
+const runContentAad = (automationId: string, runId: string) => `dash-ai:automation-run:${automationId}:${runId}`;
+
+interface AutomationRow {
+  id: string; user_id: string; name_enc: Buffer; prompt_enc: Buffer; enc_key_id: string; mode: string;
+  schedule: AutomationSchedule; time_zone: string; status: string; next_run_at: Date | null; created_at: Date; updated_at: Date;
+}
+interface RunRow {
+  id: string; automation_id: string; user_id: string; trigger: string; status: string; content_enc: Buffer | null;
+  content_key_id: string | null; error_code: string | null; created_at: Date; started_at: Date | null; finished_at: Date | null;
+  lease_until: Date | null; edited_at: Date | null; provider: string | null; model: string | null; demo: boolean;
+}
+interface NotificationRow {
+  id: string; user_id: string; kind: string; automation_id: string; run_id: string; created_at: Date; read_at: Date | null;
+}
+const isoOrNull = (d: Date | null): string | null => (d === null ? null : iso(d));
+const toNotification = (r: NotificationRow): NotificationRecord => ({
+  id: r.id, userId: r.user_id, kind: r.kind as NotificationKind, automationId: r.automation_id, runId: r.run_id,
+  createdAt: iso(r.created_at), readAt: isoOrNull(r.read_at),
+});
+const RUN_COLUMNS =
+  "id, automation_id, user_id, trigger, status, content_enc, content_key_id, error_code, created_at, started_at, finished_at, lease_until, edited_at, provider, model, demo";
 
 const MESSAGE_COLUMNS = "conversation_id, id, role, content_enc, content_key_id, origin, model, demo, status, compare_group_id, attachment_ids, created_at";
 
@@ -157,14 +186,15 @@ export class PostgresStore implements Store {
   }
 
   /** Repeats encryptionMaintenanceBatch until nothing is left. Returns the totals changed. */
-  async runEncryptionMaintenance(batch = 200): Promise<{ titles: number; messages: number; documents: number }> {
-    const total = { titles: 0, messages: 0, documents: 0 };
+  async runEncryptionMaintenance(batch = 200): Promise<{ titles: number; messages: number; documents: number; automations: number }> {
+    const total = { titles: 0, messages: 0, documents: 0, automations: 0 };
     for (;;) {
       const n = await this.encryptionMaintenanceBatch(batch);
       total.titles += n.titles;
       total.messages += n.messages;
       total.documents += n.documents;
-      if (n.titles + n.messages + n.documents === 0) return total;
+      total.automations += n.automations;
+      if (n.titles + n.messages + n.documents + n.automations === 0) return total;
     }
   }
 
@@ -172,6 +202,224 @@ export class PostgresStore implements Store {
   async dropSchema(schema: string): Promise<void> {
     if (!/^[a-z_][a-z0-9_]{0,62}$/.test(schema)) throw new Error("Invalid schema name.");
     await this.pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+  }
+
+  // ---- DASH Automates (names, prompts and results encrypted at rest) ----------------------------
+
+  private toAutomation(r: AutomationRow): AutomationRecord {
+    return {
+      id: r.id, userId: r.user_id,
+      name: this.cipher.decrypt({ keyId: r.enc_key_id, payload: r.name_enc }, automationNameAad(r.id)),
+      prompt: this.cipher.decrypt({ keyId: r.enc_key_id, payload: r.prompt_enc }, automationPromptAad(r.id)),
+      mode: r.mode as AssistantMode, schedule: r.schedule, timeZone: r.time_zone, status: r.status as AutomationStatus,
+      nextRunAt: isoOrNull(r.next_run_at), createdAt: iso(r.created_at), updatedAt: iso(r.updated_at),
+    };
+  }
+
+  private toRun(r: RunRow): AutomationRunRecord {
+    const content =
+      r.content_enc && r.content_key_id ? this.cipher.decrypt({ keyId: r.content_key_id, payload: r.content_enc }, runContentAad(r.automation_id, r.id)) : "";
+    return {
+      id: r.id, automationId: r.automation_id, userId: r.user_id, trigger: r.trigger as AutomationRunTrigger,
+      status: r.status as AutomationRunStatus, content, errorCode: r.error_code, createdAt: iso(r.created_at),
+      startedAt: isoOrNull(r.started_at), finishedAt: isoOrNull(r.finished_at), leaseUntil: isoOrNull(r.lease_until),
+      editedAt: isoOrNull(r.edited_at), provider: r.provider as ProviderId | null, model: r.model, demo: r.demo,
+    };
+  }
+
+  private async insertRun(q: Queryable, run: AutomationRunRecord): Promise<boolean> {
+    const enc = run.content ? this.cipher.encrypt(run.content, runContentAad(run.automationId, run.id)) : null;
+    const res = await q.query(
+      `INSERT INTO automation_runs (id, automation_id, user_id, trigger, status, content_enc, content_key_id, error_code,
+         created_at, started_at, finished_at, lease_until, edited_at, provider, model, demo)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+       ON CONFLICT (automation_id) WHERE status IN ('queued', 'running') DO NOTHING`,
+      [run.id, run.automationId, run.userId, run.trigger, run.status, enc?.payload ?? null, enc?.keyId ?? null, run.errorCode,
+        run.createdAt, run.startedAt, run.finishedAt, run.leaseUntil, run.editedAt, run.provider, run.model, run.demo],
+    );
+    return res.rowCount === 1;
+  }
+
+  async countAutomations(userId: string): Promise<number> {
+    const { rows } = await this.pool.query<{ n: string }>("SELECT count(*) AS n FROM automations WHERE user_id = $1", [userId]);
+    return Number(rows[0]!.n);
+  }
+
+  async createAutomation(a: AutomationRecord): Promise<boolean> {
+    const name = this.cipher.encrypt(a.name, automationNameAad(a.id));
+    const prompt = this.cipher.encrypt(a.prompt, automationPromptAad(a.id));
+    try {
+      const res = await this.pool.query(
+        `INSERT INTO automations (id, user_id, name_enc, prompt_enc, enc_key_id, mode, schedule, time_zone, status, next_run_at, created_at, updated_at)
+         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12 WHERE EXISTS (SELECT 1 FROM users WHERE id = $2)
+         ON CONFLICT (id) DO NOTHING`,
+        [a.id, a.userId, name.payload, prompt.payload, name.keyId, a.mode, JSON.stringify(a.schedule), a.timeZone, a.status, a.nextRunAt, a.createdAt, a.updatedAt],
+      );
+      return res.rowCount === 1;
+    } catch (err) {
+      // The account was deleted between the check and the insert.
+      if ((err as { code?: string }).code === "23503") return false;
+      throw err;
+    }
+  }
+
+  async getAutomation(userId: string, id: string): Promise<AutomationRecord | undefined> {
+    const { rows } = await this.pool.query<AutomationRow>("SELECT * FROM automations WHERE id = $1 AND user_id = $2", [id, userId]);
+    return rows[0] && this.toAutomation(rows[0]);
+  }
+
+  async listAutomations(userId: string): Promise<AutomationRecord[]> {
+    const { rows } = await this.pool.query<AutomationRow>("SELECT * FROM automations WHERE user_id = $1 ORDER BY created_at DESC, id DESC", [userId]);
+    return rows.map((r) => this.toAutomation(r));
+  }
+
+  async updateAutomation(a: AutomationRecord): Promise<boolean> {
+    const name = this.cipher.encrypt(a.name, automationNameAad(a.id));
+    const prompt = this.cipher.encrypt(a.prompt, automationPromptAad(a.id));
+    const res = await this.pool.query(
+      `UPDATE automations SET name_enc = $3, prompt_enc = $4, enc_key_id = $5, mode = $6, schedule = $7, time_zone = $8,
+         status = $9, next_run_at = $10, updated_at = $11
+       WHERE id = $1 AND user_id = $2`,
+      [a.id, a.userId, name.payload, prompt.payload, name.keyId, a.mode, JSON.stringify(a.schedule), a.timeZone, a.status, a.nextRunAt, a.updatedAt],
+    );
+    return res.rowCount === 1;
+  }
+
+  async deleteAutomation(userId: string, id: string): Promise<boolean> {
+    const res = await this.pool.query("DELETE FROM automations WHERE id = $1 AND user_id = $2", [id, userId]);
+    return res.rowCount === 1;
+  }
+
+  async listDueAutomations(now: string, limit: number): Promise<AutomationRecord[]> {
+    const { rows } = await this.pool.query<AutomationRow>(
+      "SELECT * FROM automations WHERE status = 'active' AND next_run_at <= $1 ORDER BY next_run_at LIMIT $2",
+      [now, limit],
+    );
+    return rows.map((r) => this.toAutomation(r));
+  }
+
+  async scheduleRun(input: ScheduleRunInput): Promise<"queued" | "skipped" | "lost"> {
+    return this.tx(async (client) => {
+      const moved = await client.query(
+        `UPDATE automations SET next_run_at = $2, status = CASE WHEN $2::timestamptz IS NULL THEN 'completed' ELSE status END, updated_at = $3
+         WHERE id = $1 AND status = 'active' AND next_run_at = $4`,
+        [input.automationId, input.nextRunAt, input.updatedAt, input.expectedNextRunAt],
+      );
+      if (moved.rowCount !== 1) return "lost";
+      return (await this.insertRun(client, input.run)) ? "queued" : "skipped";
+    });
+  }
+
+  async enqueueRun(run: AutomationRunRecord): Promise<boolean> {
+    try {
+      const { rows } = await this.pool.query("SELECT 1 FROM automations WHERE id = $1 AND user_id = $2", [run.automationId, run.userId]);
+      if (rows.length === 0) return false;
+      return await this.insertRun(this.pool, run);
+    } catch (err) {
+      if ((err as { code?: string }).code === "23503") return false;
+      throw err;
+    }
+  }
+
+  async claimQueuedRun(now: string, leaseUntil: string): Promise<AutomationRunRecord | undefined> {
+    const { rows } = await this.pool.query<RunRow>(
+      `UPDATE automation_runs SET status = 'running', started_at = $1, lease_until = $2
+       WHERE id = (SELECT id FROM automation_runs WHERE status = 'queued' ORDER BY position FOR UPDATE SKIP LOCKED LIMIT 1)
+       RETURNING ${RUN_COLUMNS}`,
+      [now, leaseUntil],
+    );
+    return rows[0] && this.toRun(rows[0]);
+  }
+
+  async discardRun(runId: string): Promise<void> {
+    await this.pool.query("DELETE FROM automation_runs WHERE id = $1 AND status = 'running'", [runId]);
+  }
+
+  async finishRun(input: FinishRunInput): Promise<boolean> {
+    try {
+      return await this.tx(async (client) => {
+        const { rows } = await client.query<{ automation_id: string }>("SELECT automation_id FROM automation_runs WHERE id = $1 AND status = 'running' FOR UPDATE", [input.runId]);
+        const automationId = rows[0]?.automation_id;
+        if (!automationId) return false;
+        const enc = input.content ? this.cipher.encrypt(input.content, runContentAad(automationId, input.runId)) : null;
+        await client.query(
+          `UPDATE automation_runs SET status = $2, content_enc = $3, content_key_id = $4, error_code = $5, finished_at = $6,
+             lease_until = NULL, provider = $7, model = $8, demo = $9
+           WHERE id = $1`,
+          [input.runId, input.status, enc?.payload ?? null, enc?.keyId ?? null, input.errorCode, input.finishedAt, input.provider, input.model, input.demo],
+        );
+        const n = input.notification;
+        await client.query(
+          "INSERT INTO notifications (id, user_id, kind, automation_id, run_id, created_at, read_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+          [n.id, n.userId, n.kind, n.automationId, n.runId, n.createdAt, n.readAt],
+        );
+        // Keep the newest finished runs; their notifications go with them (FK cascade).
+        await client.query(
+          `DELETE FROM automation_runs WHERE automation_id = $1 AND status IN ('ready', 'failed') AND id NOT IN (
+             SELECT id FROM automation_runs WHERE automation_id = $1 AND status IN ('ready', 'failed') ORDER BY position DESC LIMIT $2)`,
+          [automationId, input.keep],
+        );
+        return true;
+      });
+    } catch (err) {
+      // The automation or account was deleted while the run was finishing.
+      if ((err as { code?: string }).code === "23503") return false;
+      throw err;
+    }
+  }
+
+  async listStaleRuns(now: string, limit: number): Promise<AutomationRunRecord[]> {
+    const { rows } = await this.pool.query<RunRow>(
+      `SELECT ${RUN_COLUMNS} FROM automation_runs WHERE status = 'running' AND lease_until < $1 ORDER BY lease_until LIMIT $2`,
+      [now, limit],
+    );
+    return rows.map((r) => this.toRun(r));
+  }
+
+  async getRun(userId: string, automationId: string, runId: string): Promise<AutomationRunRecord | undefined> {
+    const { rows } = await this.pool.query<RunRow>(
+      `SELECT ${RUN_COLUMNS} FROM automation_runs WHERE id = $1 AND automation_id = $2 AND user_id = $3`,
+      [runId, automationId, userId],
+    );
+    return rows[0] && this.toRun(rows[0]);
+  }
+
+  async listRuns(userId: string, automationId: string, limit: number): Promise<AutomationRunRecord[]> {
+    const { rows } = await this.pool.query<RunRow>(
+      `SELECT ${RUN_COLUMNS} FROM automation_runs WHERE automation_id = $1 AND user_id = $2 ORDER BY position DESC LIMIT $3`,
+      [automationId, userId, limit],
+    );
+    return rows.map((r) => this.toRun(r));
+  }
+
+  async updateRunContent(userId: string, automationId: string, runId: string, content: string, editedAt: string): Promise<boolean> {
+    const enc = this.cipher.encrypt(content, runContentAad(automationId, runId));
+    const res = await this.pool.query(
+      `UPDATE automation_runs SET content_enc = $4, content_key_id = $5, edited_at = $6
+       WHERE id = $1 AND automation_id = $2 AND user_id = $3 AND status = 'ready'`,
+      [runId, automationId, userId, enc.payload, enc.keyId, editedAt],
+    );
+    return res.rowCount === 1;
+  }
+
+  async listNotifications(userId: string, limit: number): Promise<NotificationRecord[]> {
+    const { rows } = await this.pool.query<NotificationRow>(
+      "SELECT id, user_id, kind, automation_id, run_id, created_at, read_at FROM notifications WHERE user_id = $1 ORDER BY position DESC LIMIT $2",
+      [userId, limit],
+    );
+    return rows.map(toNotification);
+  }
+
+  async countUnreadNotifications(userId: string): Promise<number> {
+    const { rows } = await this.pool.query<{ n: string }>("SELECT count(*) AS n FROM notifications WHERE user_id = $1 AND read_at IS NULL", [userId]);
+    return Number(rows[0]!.n);
+  }
+
+  async markNotificationsRead(userId: string, ids: string[] | null, readAt: string): Promise<number> {
+    const res = ids
+      ? await this.pool.query("UPDATE notifications SET read_at = $3 WHERE user_id = $1 AND id = ANY($2) AND read_at IS NULL", [userId, ids, readAt])
+      : await this.pool.query("UPDATE notifications SET read_at = $2 WHERE user_id = $1 AND read_at IS NULL", [userId, readAt]);
+    return res.rowCount ?? 0;
   }
 
   async close(): Promise<void> {
@@ -562,7 +810,7 @@ export class PostgresStore implements Store {
    * re-encrypts up to `limit` rows of each kind still under a retired key. Returns how many rows changed;
    * call until it returns 0. Safe to run while the server is serving traffic (row locks, SKIP LOCKED).
    */
-  async encryptionMaintenanceBatch(limit = 200): Promise<{ titles: number; messages: number; documents: number }> {
+  async encryptionMaintenanceBatch(limit = 200): Promise<{ titles: number; messages: number; documents: number; automations: number }> {
     const current = this.cipher.keyId;
     // Rows under a key this server does not hold are left alone (reading them fails clearly instead).
     const retired = this.cipher.keyIds.filter((k) => k !== current);
@@ -599,7 +847,30 @@ export class PostgresStore implements Store {
         const enc = this.cipher.encrypt(text, documentAad(d.user_id, d.id));
         await client.query("UPDATE documents SET extracted_text_enc = $2, enc_key_id = $3 WHERE id = $1", [d.id, enc.payload, enc.keyId]);
       }
-      return { titles: convs.rowCount ?? 0, messages: msgs.rowCount ?? 0, documents: docs.rowCount ?? 0 };
+      const autos = await client.query<AutomationRow>(
+        "SELECT * FROM automations WHERE enc_key_id = ANY($1) ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED",
+        [retired, limit],
+      );
+      for (const r of autos.rows) {
+        const a = this.toAutomation(r);
+        const name = this.cipher.encrypt(a.name, automationNameAad(a.id));
+        const prompt = this.cipher.encrypt(a.prompt, automationPromptAad(a.id));
+        await client.query("UPDATE automations SET name_enc = $2, prompt_enc = $3, enc_key_id = $4 WHERE id = $1", [a.id, name.payload, prompt.payload, name.keyId]);
+      }
+      const runs = await client.query<RunRow>(
+        `SELECT ${RUN_COLUMNS} FROM automation_runs WHERE content_key_id = ANY($1) ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED`,
+        [retired, limit],
+      );
+      for (const r of runs.rows) {
+        const enc = this.cipher.encrypt(this.toRun(r).content, runContentAad(r.automation_id, r.id));
+        await client.query("UPDATE automation_runs SET content_enc = $2, content_key_id = $3 WHERE id = $1", [r.id, enc.payload, enc.keyId]);
+      }
+      return {
+        titles: convs.rowCount ?? 0,
+        messages: msgs.rowCount ?? 0,
+        documents: docs.rowCount ?? 0,
+        automations: (autos.rowCount ?? 0) + (runs.rowCount ?? 0),
+      };
     });
   }
 
@@ -612,7 +883,9 @@ export class PostgresStore implements Store {
          (SELECT count(*) FROM messages WHERE content IS NOT NULL) AS m,
          (SELECT count(*) FROM conversations WHERE title_key_id IS NOT NULL AND title_key_id <> $1)
          + (SELECT count(*) FROM messages WHERE content_key_id IS NOT NULL AND content_key_id <> $1)
-         + (SELECT count(*) FROM documents WHERE enc_key_id <> $1) AS r`,
+         + (SELECT count(*) FROM documents WHERE enc_key_id <> $1)
+         + (SELECT count(*) FROM automations WHERE enc_key_id <> $1)
+         + (SELECT count(*) FROM automation_runs WHERE content_key_id IS NOT NULL AND content_key_id <> $1) AS r`,
       [current],
     );
     return { plaintextTitles: Number(rows[0]!.t), plaintextMessages: Number(rows[0]!.m), retiredKeyRows: Number(rows[0]!.r) };

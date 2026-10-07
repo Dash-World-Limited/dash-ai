@@ -5,6 +5,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isRoot
@@ -13,6 +14,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performScrollTo
@@ -26,6 +28,15 @@ import com.dashworldng.ai.core.model.AssistantMode
 import com.dashworldng.ai.core.model.ChatMessage
 import com.dashworldng.ai.core.model.Conversation
 import com.dashworldng.ai.core.model.MessageRole
+import com.dashworldng.ai.core.remote.AppNotificationDto
+import com.dashworldng.ai.core.remote.AutomationDetailDto
+import com.dashworldng.ai.core.remote.AutomationDto
+import com.dashworldng.ai.core.remote.AutomationRunDto
+import com.dashworldng.ai.core.remote.AutomationRunSummaryDto
+import com.dashworldng.ai.core.remote.AutomationScheduleDto
+import com.dashworldng.ai.core.remote.CreateAutomationRequestDto
+import com.dashworldng.ai.core.remote.NotificationListDto
+import com.dashworldng.ai.core.remote.UpdateAutomationRequestDto
 import com.dashworldng.ai.core.stream.ChatStreamEvent
 import com.dashworldng.ai.core.stream.StreamTarget
 import com.dashworldng.ai.data.settings.AccountInfo
@@ -60,6 +71,66 @@ private class HangingGateway(demo: Boolean = true) : ChatGateway {
     override suspend fun cancel(streamId: String) {
         cancelled += streamId
     }
+}
+
+/** A server-side Automates stand-in: one automation with a ready result. */
+private class FakeAutomations : com.dashworldng.ai.core.automations.AutomationsApi {
+    private val ts = java.time.Instant.now().minusSeconds(3600).toString()
+    private fun summary(id: String, status: String, trigger: String = "schedule") = AutomationRunSummaryDto(
+        id = id, automationId = "auto-0001", status = status, trigger = trigger, createdAt = ts, startedAt = ts,
+        finishedAt = if (status == "ready") ts else null, editedAt = null, error = null, demo = false,
+        preview = if (status == "ready") "1. Finish the quarterly report" else "",
+    )
+    var content = "1. Finish the quarterly report\n2. Call the bank"
+    val runs = mutableListOf(summary("run-00000001", "ready"))
+    var status = "active"
+    val created = mutableListOf<CreateAutomationRequestDto>()
+    val calls = mutableListOf<String>()
+
+    fun automation() = AutomationDto(
+        id = "auto-0001", name = "Morning brief", prompt = "Draft three priorities for my day.", mode = "general",
+        schedule = AutomationScheduleDto("weekly", "08:00", days = listOf(1, 2, 3, 4, 5)), timeZone = "Africa/Lagos",
+        status = status, state = if (status == "paused") "paused" else if (runs.first().status == "queued") "running" else "ready",
+        nextRunAt = if (status == "paused") null else java.time.Instant.now().plusSeconds(86_400).toString(),
+        lastRun = runs.first(), createdAt = ts, updatedAt = ts,
+    )
+
+    private fun full(r: AutomationRunSummaryDto) = AutomationRunDto(
+        r.id, r.automationId, r.status, r.trigger, r.createdAt, r.startedAt, r.finishedAt, r.editedAt, r.error, r.demo, r.preview,
+        if (r.status == "ready") content else "",
+    )
+
+    override suspend fun list() = listOf(automation())
+    override suspend fun create(body: CreateAutomationRequestDto): AutomationDto {
+        created += body
+        return automation()
+    }
+    override suspend fun detail(id: String) = AutomationDetailDto(automation(), runs.toList())
+    override suspend fun update(id: String, body: UpdateAutomationRequestDto) = automation()
+    override suspend fun delete(id: String) { calls += "delete" }
+    override suspend fun pause(id: String): AutomationDto { status = "paused"; calls += "pause"; return automation() }
+    override suspend fun resume(id: String): AutomationDto { status = "active"; calls += "resume"; return automation() }
+    override suspend fun runNow(id: String): AutomationRunDto {
+        calls += "run"
+        runs.add(0, summary("run-00000002", "queued", "manual"))
+        return full(runs.first())
+    }
+    override suspend fun run(id: String, runId: String) = full(runs.first { it.id == runId })
+    override suspend fun editRun(id: String, runId: String, content: String): AutomationRunDto {
+        this.content = content
+        calls += "edit"
+        return full(runs.first { it.id == runId })
+    }
+    override suspend fun regenerate(id: String, runId: String): AutomationRunDto {
+        calls += "regenerate"
+        runs.add(0, summary("run-00000003", "queued", "regenerate"))
+        return full(runs.first())
+    }
+    override suspend fun notifications() = NotificationListDto(
+        listOf(AppNotificationDto("note-00000001", "automation.ready", "Morning brief is ready", "1. Finish the quarterly report", "auto-0001", "run-00000001", ts, null)),
+        unread = if ("read" in calls) 0 else 1,
+    )
+    override suspend fun markRead(ids: List<String>?) { calls += "read" }
 }
 
 @RunWith(AndroidJUnit4::class)
@@ -434,5 +505,112 @@ class DashAiUiTest {
         compose.onNodeWithTag("data_protection").performScrollTo().performClick()
         waitForText("encrypted at rest")
         compose.onNodeWithText("not end-to-end encryption", substring = true).assertExists()
+    }
+
+    private val signedInAccount = AppSettings(
+        loaded = true, onboardingComplete = true, demoMode = false, serverUrl = "http://127.0.0.1:8787/",
+        account = AccountInfo("user-0001", "chidi@example.com", "Chidi Okafor", isDemo = false),
+    )
+
+    private fun assertBadge(tag: String, text: String) {
+        compose.onNode(hasTestTag(tag) and hasAnyDescendant(hasText(text)), useUnmergedTree = true).assertExists()
+    }
+
+    @Test
+    fun automatesNeedAnAccountAndAreNeverInventedInDemoMode() {
+        val services = InMemoryServices(signedInDemo, automationsOverride = FakeAutomations())
+        launch(services, Routes.AUTOMATES)
+        compose.onNodeWithTag("automates_signed_out").assertExists()
+        assertEquals(0, compose.onAllNodesWithTag("automation_card").fetchSemanticsNodes().size)
+    }
+
+    @Test
+    fun automatesShowStateScheduleAndNewResults() {
+        val api = FakeAutomations()
+        val services = InMemoryServices(signedInAccount, automationsOverride = api)
+        launch(services, Routes.AUTOMATES)
+        waitForTag("automation_card")
+        compose.onNodeWithText("Weekdays at 08:00").assertExists()
+        assertBadge("automation_state", "Ready")
+        compose.onNodeWithTag("automates_notices").assertExists()
+        compose.onNodeWithText("Morning brief is ready").assertExists()
+        assertEquals(1, services.notices.unread.value)
+        assertNoProviderWording("Automates")
+    }
+
+    @Test
+    fun anAutomationCanBeRunPausedAndResumed() {
+        val api = FakeAutomations()
+        val services = InMemoryServices(signedInAccount, automationsOverride = api)
+        launch(services, Routes.automation("auto-0001"))
+        waitForTag("automation_run_now")
+        compose.onNodeWithTag("automation_next_run").assertTextContains("Next run: Tomorrow", substring = true)
+        compose.onNodeWithTag("automation_last_run").assertTextContains("Last run:", substring = true)
+        compose.onNodeWithTag("automation_pause").performScrollTo().performClick()
+        waitForTag("automation_resume")
+        assertBadge("automation_detail_state", "Paused")
+        compose.onNodeWithTag("automation_resume").performClick()
+        waitForTag("automation_pause")
+        compose.onNodeWithTag("automation_run_now").performClick()
+        waitForText("Running…")
+        assertEquals(listOf("pause", "resume", "run"), api.calls)
+        assertNoProviderWording("an automation")
+    }
+
+    @Test
+    fun aResultCanBeEditedAndRegenerated() {
+        val api = FakeAutomations()
+        val services = InMemoryServices(signedInAccount, automationsOverride = api)
+        launch(services, Routes.automationRun("auto-0001", "run-00000001"))
+        waitForTag("result_edit")
+        compose.onNodeWithText("Call the bank", substring = true).assertExists()
+        listOf("result_copy", "result_download", "result_share", "result_regenerate").forEach { compose.onNodeWithTag(it).assertExists() }
+        // Opening the result reads its notice.
+        await("the notice to be read") { "read" in api.calls }
+        compose.onNodeWithTag("result_edit").performClick()
+        compose.onNodeWithTag("automation_result_editor").performTextInput("Edited: ")
+        compose.onNodeWithTag("automation_result_save").performClick()
+        waitForTag("result_edit")
+        assertTrue(api.content.startsWith("Edited: "))
+        compose.onNodeWithTag("result_regenerate").performClick()
+        // Back on the automation, the new run shows as Running.
+        waitForTag("automation_detail")
+        waitForText("Running…")
+        assertTrue("regenerate" in api.calls)
+    }
+
+    @Test
+    fun theEditorCreatesAScheduleInTheChosenZone() {
+        val api = FakeAutomations()
+        val services = InMemoryServices(signedInAccount, automationsOverride = api)
+        launch(services, Routes.AUTOMATION_NEW)
+        waitForTag("automation_editor")
+        compose.onNodeWithTag("automation_save").performScrollTo().performClick()
+        waitForText("Give the automation a name.")
+        compose.onNodeWithTag("automation_name").performTextInput("Weekly report")
+        compose.onNodeWithTag("automation_prompt").performTextInput("Summarise my week.")
+        compose.onNodeWithTag("automation_day_5").performScrollTo().performClick()
+        compose.onNodeWithTag("automation_zone").performScrollTo().performClick()
+        compose.onNodeWithTag("zone_search").performTextInput("Lagos")
+        compose.onNodeWithText("Africa/Lagos").performScrollTo().performClick()
+        compose.onNodeWithTag("automation_save").performScrollTo().performClick()
+        await("the automation to be created") { api.created.isNotEmpty() }
+        val body = api.created.single()
+        assertEquals("Weekly report", body.name)
+        assertEquals(AutomationScheduleDto("weekly", "08:00", days = listOf(1, 2, 3, 4)), body.schedule)
+        assertEquals("Africa/Lagos", body.timeZone)
+        // Saved: the automation opens.
+        waitForTag("automation_detail")
+    }
+
+    @Test
+    fun theMenuShowsNewAutomatesResults() {
+        val services = InMemoryServices(signedInDemo)
+        launch(services, Routes.CHAT)
+        // The count is refreshed from the server while signed in; here it is set directly.
+        services.notices.set(2)
+        openHistoryDrawer()
+        compose.onNodeWithTag("drawer_automates").assertExists()
+        compose.onNodeWithContentDescription("2 new", useUnmergedTree = true).assertExists()
     }
 }

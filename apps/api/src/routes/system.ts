@@ -3,6 +3,7 @@ import { hideProviders } from "../chat/publicSurface.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { AppError } from "../errors.js";
+import { TaskType } from "../intelligence/policy.js";
 import type { RouteContext } from "./context.js";
 
 export function systemRoutes(app: FastifyInstance, ctx: RouteContext): void {
@@ -74,6 +75,26 @@ export function systemRoutes(app: FastifyInstance, ctx: RouteContext): void {
       compareAvailable: configured.has("openai") && configured.has("anthropic"),
       smartRouting: { ...SMART_ROUTING } as ProvidersResponse["smartRouting"],
       research,
+    };
+  });
+
+  /**
+   * OPERATOR VIEW of the DASH Intelligence Router: the active policy, what this instance has observed
+   * about each provider (reliability, latency, circuit), and the route each task would take right now.
+   * Same protection as /v1/providers. Counts and codes only; never content.
+   */
+  app.get("/v1/router", async (request: FastifyRequest) => {
+    if (hideProviders(ctx.config) && !bearerMatches(request, ctx.config.operatorToken)) throw new AppError("not_found", "Not found.");
+    const routes = Object.fromEntries(
+      TaskType.options.map((task) => {
+        const d = ctx.router.route({ task });
+        return [task, d.ok ? { providers: d.providers, candidates: d.candidates } : { unavailable: d.reason, rejected: d.rejected }];
+      }),
+    );
+    return {
+      policy: ctx.router.policy,
+      health: ctx.router.health.snapshot([...ctx.providers.configured()]),
+      routes,
     };
   });
 }

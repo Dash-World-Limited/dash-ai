@@ -1,6 +1,11 @@
 import type { PluginSettingRecord, ToolInvocationRow } from "../tools/types.js";
 import type {
   AssistantMode,
+  AutomationRunStatus,
+  AutomationRunTrigger,
+  AutomationSchedule,
+  AutomationStatus,
+  NotificationKind,
   DocumentKind,
   DocumentStatus,
   MessageRole,
@@ -128,6 +133,83 @@ export interface RenameResult {
   status: "applied" | "conflict" | "deleted" | "not_found";
 }
 
+/** A scheduled task. Name and prompt are user content (encrypted at rest by durable stores). */
+export interface AutomationRecord {
+  id: string;
+  userId: string;
+  name: string;
+  prompt: string;
+  mode: AssistantMode;
+  schedule: AutomationSchedule;
+  timeZone: string;
+  status: AutomationStatus;
+  /** Next scheduled run (UTC), or null when paused or completed. */
+  nextRunAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * One execution of an automation; also the work queue (status "queued" is claimed by a scheduler).
+ * `content` is the result (encrypted at rest). Provider and model are internal diagnostics only.
+ */
+export interface AutomationRunRecord {
+  id: string;
+  automationId: string;
+  userId: string;
+  trigger: AutomationRunTrigger;
+  status: AutomationRunStatus;
+  content: string;
+  /** Normalized failure code (never provider text): provider_error, provider_timeout, rate_limited, unavailable, interrupted. */
+  errorCode: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  /** While running: when another instance may consider this run abandoned. */
+  leaseUntil: string | null;
+  editedAt: string | null;
+  provider: ProviderId | null;
+  model: string | null;
+  demo: boolean;
+}
+
+export interface NotificationRecord {
+  id: string;
+  userId: string;
+  kind: NotificationKind;
+  automationId: string;
+  runId: string;
+  createdAt: string;
+  readAt: string | null;
+}
+
+/** How a finished run is recorded; the notification is written in the same step. */
+export interface FinishRunInput {
+  runId: string;
+  status: "ready" | "failed";
+  content: string;
+  errorCode: string | null;
+  finishedAt: string;
+  provider: ProviderId | null;
+  model: string | null;
+  demo: boolean;
+  notification: NotificationRecord;
+  /** Runs kept per automation; older finished runs are removed. */
+  keep: number;
+}
+
+/** The scheduler's compare-and-set step for one due automation. */
+export interface ScheduleRunInput {
+  automationId: string;
+  /** The nextRunAt the scheduler read: only one instance can move it on. */
+  expectedNextRunAt: string;
+  /** The following occurrence, or null for a one-time automation (which then becomes completed). */
+  nextRunAt: string | null;
+  updatedAt: string;
+  /** Queued unless a run of this automation is already queued or running. */
+  run: AutomationRunRecord;
+}
+
 /**
  * Persistence boundary. `PostgresStore` is the production implementation and `MemoryStore` is
  * for isolated tests and local demos. Both are held to the same contract tests
@@ -217,6 +299,46 @@ export interface Store {
    * exist (a regenerated or truncated message takes its tool calls with it).
    */
   listConversationToolInvocations(userId: string, conversationId: string): Promise<ToolInvocationRow[]>;
+
+  // ---- DASH Automates ----
+  countAutomations(userId: string): Promise<number>;
+  /** False when the user no longer exists. */
+  createAutomation(automation: AutomationRecord): Promise<boolean>;
+  getAutomation(userId: string, id: string): Promise<AutomationRecord | undefined>;
+  /** Newest first. */
+  listAutomations(userId: string): Promise<AutomationRecord[]>;
+  /** Replaces the mutable fields of the user's automation. False when it does not exist. */
+  updateAutomation(automation: AutomationRecord): Promise<boolean>;
+  /** Deletes the automation with its runs and notifications. */
+  deleteAutomation(userId: string, id: string): Promise<boolean>;
+  /** Active automations whose next run is at or before `now`, across all users, oldest first. */
+  listDueAutomations(now: string, limit: number): Promise<AutomationRecord[]>;
+  /**
+   * Moves a due automation's nextRunAt on (compare-and-set) and queues its run in one step. "queued":
+   * this caller won and the run is queued. "skipped": this caller won but a run was already in flight,
+   * so none was added. "lost": another scheduler (or an edit) got there first; nothing changed.
+   */
+  scheduleRun(input: ScheduleRunInput): Promise<"queued" | "skipped" | "lost">;
+  /** Queues a manual or regenerate run unless one is already queued or running. */
+  enqueueRun(run: AutomationRunRecord): Promise<boolean>;
+  /** Claims the oldest queued run (any user): it becomes running with a lease. */
+  claimQueuedRun(now: string, leaseUntil: string): Promise<AutomationRunRecord | undefined>;
+  /** Records the outcome of a running run and its notification; prunes old runs. False if the run is gone. */
+  finishRun(input: FinishRunInput): Promise<boolean>;
+  /** Drops a running run without a result or notification (a scheduled run whose automation was paused). */
+  discardRun(runId: string): Promise<void>;
+  /** Running runs whose lease expired before `now` (their instance stopped). */
+  listStaleRuns(now: string, limit: number): Promise<AutomationRunRecord[]>;
+  getRun(userId: string, automationId: string, runId: string): Promise<AutomationRunRecord | undefined>;
+  /** Most recent first. */
+  listRuns(userId: string, automationId: string, limit: number): Promise<AutomationRunRecord[]>;
+  /** Replaces a ready result's content (the person's edit). */
+  updateRunContent(userId: string, automationId: string, runId: string, content: string, editedAt: string): Promise<boolean>;
+  /** Most recent first. */
+  listNotifications(userId: string, limit: number): Promise<NotificationRecord[]>;
+  countUnreadNotifications(userId: string): Promise<number>;
+  /** Marks the given notifications (or all when ids is null) read. Returns how many changed. */
+  markNotificationsRead(userId: string, ids: string[] | null, readAt: string): Promise<number>;
 
   /** Deletes sessions that expired before `now`. Returns how many were removed. */
   purgeExpiredSessions(now: Date): Promise<number>;

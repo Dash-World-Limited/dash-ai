@@ -51,6 +51,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -202,8 +204,17 @@ fun HomeContent(state: HomeUiState, drawer: DrawerCallbacks, events: HomeEvents)
                         .padding(horizontal = Spacing.xs),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    val unread by drawer.unread.collectAsState()
                     IconButton(onClick = { scope.launch { drawerState.open() } }, modifier = Modifier.testTag("open_history")) {
-                        Icon(Icons.Rounded.Menu, contentDescription = "Open menu and chat history", tint = c.ink)
+                        Box {
+                            Icon(
+                                Icons.Rounded.Menu,
+                                contentDescription = if (unread > 0) "Open menu and chat history ($unread new results)" else "Open menu and chat history",
+                                tint = c.ink,
+                            )
+                            // A quiet dot for new Automates results; the count is on the Automates entry.
+                            if (unread > 0) Box(Modifier.align(Alignment.TopEnd).size(8.dp).clip(CircleShape).background(c.accent).testTag("menu_unread_dot"))
+                        }
                     }
                     Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                         Row(verticalAlignment = Alignment.CenterVertically) {

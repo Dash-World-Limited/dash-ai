@@ -1,4 +1,4 @@
-import { promptCategory, type AssistantMode, type Conversation, type PromptItem } from "@dash-ai/contracts";
+import { promptCategory, type AppNotification, type AssistantMode, type Conversation, type PromptItem } from "@dash-ai/contracts";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { ApiError, DashApi, browserTokenStore, type TokenStore } from "../api/client";
 import { clearDemoData, DemoBackend, LiveBackend } from "../chat/backends";
@@ -21,6 +21,8 @@ export class AppModel {
   readonly assistant = new Store<AssistantAvailability>(ASSUMED_AVAILABLE);
   readonly online = new Store<boolean>(typeof navigator === "undefined" ? true : navigator.onLine);
   readonly toast = new Store<string | null>(null);
+  /** DASH Automates notices for the signed-in account (results ready or failed). */
+  readonly notifications = new Store<{ items: AppNotification[]; unread: number }>({ items: [], unread: 0 });
   /** The open conversation, as a store (mirrors the chat engine). */
   readonly engineStore: Store<ChatState>;
   readonly composer = new Store<{ text: string; mode: AssistantMode; attachments: PendingAttachment[] }>({
@@ -90,8 +92,43 @@ export class AppModel {
     }
   }
 
+  /**
+   * Fetches Automates notices. A notice that arrived since the last check is announced in the app and,
+   * when the person allowed it, as a browser notification. Results are produced on the server whether
+   * or not this page is open.
+   */
+  async refreshNotifications(announce = true): Promise<void> {
+    if (!this.live) return this.notifications.set({ items: [], unread: 0 });
+    try {
+      const r = await this.api.notifications();
+      const known = new Set(this.notifications.value.items.map((n) => n.id));
+      const fresh = this.notificationsLoaded ? r.notifications.filter((n) => !known.has(n.id) && n.readAt === null) : [];
+      this.notificationsLoaded = true;
+      this.notifications.set({ items: r.notifications, unread: r.unread });
+      if (!announce || fresh.length === 0) return;
+      const first = fresh[0]!;
+      this.notify(fresh.length === 1 ? first.title : `${fresh.length} automation results are ready`);
+      if (typeof Notification !== "undefined" && Notification.permission === "granted" && document.visibilityState !== "visible") {
+        for (const n of fresh.slice(0, 3)) new Notification(n.title, { body: n.body, tag: n.id, icon: "/favicon.svg" });
+      }
+    } catch {
+      // Notices are best-effort; the Automates screen shows the same state.
+    }
+  }
+
+  private notificationsLoaded = false;
+
+  async markNotificationsRead(ids?: string[]): Promise<void> {
+    if (!this.live) return;
+    await this.api.markNotificationsRead(ids).catch(() => undefined);
+    await this.refreshNotifications(false);
+  }
+
   /** The account (or Demo Mode) changed: start clean so nothing of the previous one stays on screen. */
   private switched(): void {
+    this.notificationsLoaded = false;
+    this.notifications.set({ items: [], unread: 0 });
+    void this.refreshNotifications(false);
     this.engine.setBackend(this.backend());
     this.composer.set((c) => ({ ...c, text: "", attachments: [] }));
     this.conversations.set({ items: [], loading: false, error: null });
@@ -242,9 +279,16 @@ export function AppProvider({ model, children }: { model: AppModel; children: Re
     window.addEventListener("offline", off);
     void model.refreshConversations();
     void model.refreshAssistant();
+    void model.refreshNotifications(false);
+    // Automates results arrive on the server's schedule: check now and then, and when the tab returns.
+    const poll = setInterval(() => void model.refreshNotifications(), 60_000);
+    const visible = () => document.visibilityState === "visible" && void model.refreshNotifications();
+    document.addEventListener("visibilitychange", visible);
     return () => {
       window.removeEventListener("online", on);
       window.removeEventListener("offline", off);
+      clearInterval(poll);
+      document.removeEventListener("visibilitychange", visible);
     };
   }, [model]);
   return <Ctx.Provider value={model}>{children}</Ctx.Provider>;

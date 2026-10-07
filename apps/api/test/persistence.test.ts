@@ -90,6 +90,7 @@ describe("migrations are append-only", () => {
     4: "d3c0d87923a156d30ce6337a87c2c2b501ed9c13cd87ee70f7439b36af38db9b",
     5: "2d96e464a21899d1c864c0d8016c39a26a5d8499fb32fcc9cd62144351572906",
     6: "ce2b76b5233a62ed48e1cb7a8ac1a64d8d94c878d2eb8c81d110cf73c8c01b0e",
+    7: "a0f35b6f9b3ed826745e433e155f3677d6f397586fa0d8a5279703e9153c8d5e",
   };
 
   it("ids are consecutive from 1 and every pinned migration is unchanged", () => {
@@ -298,7 +299,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL", () => {
     expect((await store.getConversation(userId, conv.id))?.title).toBe("Legacy title");
     expect(await store.encryptionStatus()).toMatchObject({ plaintextTitles: 1, plaintextMessages: 2 });
 
-    expect(await store.runEncryptionMaintenance(1)).toEqual({ titles: 1, messages: 2, documents: 0 });
+    expect(await store.runEncryptionMaintenance(1)).toEqual({ titles: 1, messages: 2, documents: 0, automations: 0 });
     expect(await store.encryptionStatus()).toEqual({ plaintextTitles: 0, plaintextMessages: 0, retiredKeyRows: 0 });
     expect((await store.getConversation(userId, conv.id))?.title).toBe("Legacy title");
     expect((await store.listMessages(conv.id)).map((m) => m.content)).toEqual(["Legacy text", "Legacy text"]);
@@ -323,7 +324,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL", () => {
 
     const both = await PostgresStore.connect({ connectionString: TEST_DATABASE_URL!, schema, autoMigrate: false, cipher: DataCipher.fromConfig(b64(k2), "k2", `k1:${b64(k1)}`) });
     expect((await both.encryptionStatus()).retiredKeyRows).toBe(4); // 1 title + 2 messages + 1 document
-    expect(await both.runEncryptionMaintenance()).toEqual({ titles: 1, messages: 2, documents: 1 });
+    expect(await both.runEncryptionMaintenance()).toEqual({ titles: 1, messages: 2, documents: 1, automations: 0 });
     expect((await both.encryptionStatus()).retiredKeyRows).toBe(0);
     await both.close();
 

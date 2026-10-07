@@ -46,6 +46,7 @@ export async function makeApp(
     logs?: LogCapture;
     env?: Record<string, string>;
     store?: Store;
+    now?: () => Date;
   } = {},
 ) {
   const config = options.config ?? testConfig({ ...(options.logs ? { LOG_LEVEL: "debug" } : {}), ...options.env });
@@ -55,6 +56,7 @@ export async function makeApp(
     providers: options.providers,
     logStream: options.logs,
     store: options.store ?? pg?.store,
+    now: options.now,
   });
   if (pg) app.addHook("onClose", async () => pg.dispose());
   await app.ready();

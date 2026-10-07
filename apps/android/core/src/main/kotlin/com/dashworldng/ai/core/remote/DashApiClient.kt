@@ -87,6 +87,39 @@ interface DashApiService {
     @PUT("v1/plugins/{id}") suspend fun updatePlugin(@Path("id") id: String, @Body body: UpdatePluginRequestDto): PluginDto
 
     @GET("v1/tools/activity") suspend fun toolActivity(): ToolActivityResponseDto
+
+    @GET("v1/automations") suspend fun automations(): AutomationListDto
+
+    @POST("v1/automations") suspend fun createAutomation(@Body body: CreateAutomationRequestDto): AutomationDto
+
+    @GET("v1/automations/{id}") suspend fun automation(@Path("id") id: String): AutomationDetailDto
+
+    @PATCH("v1/automations/{id}") suspend fun updateAutomation(@Path("id") id: String, @Body body: UpdateAutomationRequestDto): AutomationDto
+
+    @DELETE("v1/automations/{id}") suspend fun deleteAutomation(@Path("id") id: String): retrofit2.Response<Unit>
+
+    @POST("v1/automations/{id}/pause") suspend fun pauseAutomation(@Path("id") id: String): AutomationDto
+
+    @POST("v1/automations/{id}/resume") suspend fun resumeAutomation(@Path("id") id: String): AutomationDto
+
+    @POST("v1/automations/{id}/run") suspend fun runAutomation(@Path("id") id: String): AutomationRunResponseDto
+
+    @GET("v1/automations/{id}/runs/{runId}") suspend fun automationRun(@Path("id") id: String, @Path("runId") runId: String): AutomationRunResponseDto
+
+    @PATCH("v1/automations/{id}/runs/{runId}") suspend fun editAutomationRun(
+        @Path("id") id: String,
+        @Path("runId") runId: String,
+        @Body body: UpdateAutomationRunRequestDto,
+    ): AutomationRunResponseDto
+
+    @POST("v1/automations/{id}/runs/{runId}/regenerate") suspend fun regenerateAutomationRun(
+        @Path("id") id: String,
+        @Path("runId") runId: String,
+    ): AutomationRunResponseDto
+
+    @GET("v1/notifications") suspend fun notifications(): NotificationListDto
+
+    @POST("v1/notifications/read") suspend fun markNotificationsRead(@Body body: MarkNotificationsReadRequestDto): MarkNotificationsReadResponseDto
 }
 
 /**

@@ -1,6 +1,18 @@
 # Roadmap
 
-## Current state (final production hardening before staging)
+## Current state (Intelligence Router and DASH Automates foundation)
+
+### Added in this milestone
+- **DASH Intelligence Router** ([intelligence-router.md](intelligence-router.md)): one configurable
+  policy for every task (chat today, automations, and Documents, Research, Reports, Editing, Tools,
+  Graphics, Voice and workflows later) weighing quality, reliability, latency, cost, context limits
+  and capabilities, with live health and a circuit breaker. Chat now routes through it.
+- **DASH Automates, first version** ([automates.md](automates.md)): schedule → generate → notify →
+  review/share on API, Web and Android. Server-side scheduler on the existing PostgreSQL. **No social
+  auto-posting.**
+- Not yet: push notifications (FCM / Web Push), tools or web access inside automations.
+
+## Earlier: final production hardening before staging
 
 Nothing here is deployed. Nothing paid has been provisioned. Demo Mode is unchanged. Gate-by-gate
 status, evidence and what each remaining gate needs: [release-readiness.md](release-readiness.md).

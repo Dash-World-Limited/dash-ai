@@ -40,6 +40,11 @@ import com.dashworldng.ai.ui.system.rememberReducedMotion
 import com.dashworldng.ai.ui.theme.DashAiTheme
 import com.dashworldng.ai.ui.theme.DashTheme
 import com.dashworldng.ai.ui.tools.ToolsScreen
+import com.dashworldng.ai.ui.automates.AutomatesScreen
+import com.dashworldng.ai.ui.automates.AutomationDetailScreen
+import com.dashworldng.ai.ui.automates.AutomationEditorScreen
+import com.dashworldng.ai.ui.automates.AutomationRunScreen
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 /** Navigation map (see docs/android-navigation.md). Home is the root once signed in or in Demo Mode. */
@@ -51,6 +56,12 @@ object Routes {
     const val CHAT = "chat"
     const val DOCUMENTS = "documents"
     const val DOCUMENT = "documents/{id}"
+    const val AUTOMATES = "automates"
+    // Not under "automates/", where navigation would read "new" as an automation id.
+    const val AUTOMATION_NEW = "new-automation"
+    const val AUTOMATION = "automates/{id}"
+    const val AUTOMATION_EDIT = "automates/{id}/edit"
+    const val AUTOMATION_RUN = "automates/{id}/runs/{runId}"
     const val TOOLS = "tools"
     const val PROMPTS = "prompts"
     const val SETTINGS = "settings"
@@ -60,6 +71,12 @@ object Routes {
     val ENTRY = setOf(SPLASH, ONBOARDING, AUTH)
 
     fun document(id: String) = "documents/$id"
+
+    fun automation(id: String) = "automates/$id"
+
+    fun automationEdit(id: String) = "automates/$id/edit"
+
+    fun automationRun(id: String, runId: String) = "automates/$id/runs/$runId"
 
     fun afterSplash(settings: AppSettings): String =
         when (StartRoute.resolve(settings.onboardingComplete, hasAccount = settings.account != null)) {
@@ -118,12 +135,14 @@ private fun AppNavigation(services: AppServices, startDestination: String, setti
                 when (destination) {
                     DrawerDestination.HOME -> nav.popBackStack(Routes.HOME, inclusive = false)
                     DrawerDestination.DOCUMENTS -> nav.open(Routes.DOCUMENTS)
+                    DrawerDestination.AUTOMATES -> nav.open(Routes.AUTOMATES)
                     DrawerDestination.TOOLS -> nav.open(Routes.TOOLS)
                     DrawerDestination.PROMPTS -> nav.open(Routes.PROMPTS)
                     DrawerDestination.SETTINGS -> nav.open(Routes.SETTINGS)
                 }
             },
             now = services.clock::now,
+            unread = services.notices.unread,
         )
     }
     val openChat = { nav.open(Routes.CHAT) }
@@ -137,6 +156,20 @@ private fun AppNavigation(services: AppServices, startDestination: String, setti
         val incoming = services.shares.consume() ?: return@LaunchedEffect
         chat.receiveShare(incoming)
         nav.navigate(Routes.CHAT) { popUpTo(Routes.HOME) { inclusive = false } }
+    }
+    // Automates run on the server: the unread count is refreshed as people move around the app.
+    LaunchedEffect(route, settings.account, settings.demoMode) {
+        val signedIn = !settings.demoMode && settings.account?.isDemo == false
+        if (!signedIn) return@LaunchedEffect services.notices.clear()
+        if (route == null || route in Routes.ENTRY) return@LaunchedEffect
+        val api = services.automations() ?: return@LaunchedEffect
+        try {
+            services.notices.refresh(api)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Offline or an older server: the count simply stays as it was.
+        }
     }
     val duration = if (reducedMotion) 0 else 220
 
@@ -188,6 +221,57 @@ private fun AppNavigation(services: AppServices, startDestination: String, setti
                 onAsk = {
                     // The chat ViewModel picks the prefill up; Home stays underneath for Back.
                     nav.navigate(Routes.CHAT) { popUpTo(Routes.HOME) { inclusive = false } }
+                },
+            )
+        }
+        composable(Routes.AUTOMATES) {
+            AutomatesScreen(
+                services,
+                onBack = { nav.popBackStack() },
+                onSignIn = {
+                    scope.launch { services.settings.update { it.copy(account = null, demoMode = true) } }
+                    nav.goFresh(Routes.AUTH)
+                },
+                onNew = { nav.open(Routes.AUTOMATION_NEW) },
+                onOpen = { nav.open(Routes.automation(it)) },
+                onOpenRun = { id, runId -> nav.open(Routes.automationRun(id, runId)) },
+            )
+        }
+        composable(Routes.AUTOMATION_NEW) {
+            AutomationEditorScreen(services, automationId = null, onBack = { nav.popBackStack() }, onSaved = { id ->
+                nav.popBackStack()
+                nav.open(Routes.automation(id))
+            })
+        }
+        composable(Routes.AUTOMATION, arguments = listOf(navArgument("id") { type = NavType.StringType })) { entry ->
+            val id = entry.arguments?.getString("id").orEmpty()
+            AutomationDetailScreen(
+                services,
+                automationId = id,
+                onBack = { nav.popBackStack() },
+                onEdit = { nav.open(Routes.automationEdit(id)) },
+                onOpenRun = { runId -> nav.open(Routes.automationRun(id, runId)) },
+            )
+        }
+        composable(Routes.AUTOMATION_EDIT, arguments = listOf(navArgument("id") { type = NavType.StringType })) { entry ->
+            AutomationEditorScreen(services, automationId = entry.arguments?.getString("id").orEmpty(), onBack = { nav.popBackStack() }, onSaved = {
+                nav.popBackStack()
+            })
+        }
+        composable(
+            Routes.AUTOMATION_RUN,
+            arguments = listOf(navArgument("id") { type = NavType.StringType }, navArgument("runId") { type = NavType.StringType }),
+        ) { entry ->
+            val id = entry.arguments?.getString("id").orEmpty()
+            AutomationRunScreen(
+                services,
+                automationId = id,
+                runId = entry.arguments?.getString("runId").orEmpty(),
+                onBack = { nav.popBackStack() },
+                onRegenerated = {
+                    // Back to the automation, where the new run shows as Running.
+                    nav.popBackStack()
+                    nav.open(Routes.automation(id))
                 },
             )
         }
