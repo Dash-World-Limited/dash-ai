@@ -6,6 +6,7 @@ import { StreamRegistry } from "./chat/streamRegistry.js";
 import type { AppConfig } from "./config.js";
 import { AppError } from "./errors.js";
 import { loggerOptions, type LogStream } from "./logging.js";
+import { IntelligenceRouter } from "./intelligence/router.js";
 import { ProviderRegistry } from "./providers/registry.js";
 import { accountRoutes } from "./routes/account.js";
 import { authRoutes } from "./routes/auth.js";
@@ -70,6 +71,7 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   const now = deps.now ?? (() => new Date());
   const store = deps.store ?? new MemoryStore();
   const providers = deps.providers ?? ProviderRegistry.fromConfig(config);
+  const router = new IntelligenceRouter(config.routerPolicy, () => providers.configured());
 
   const app = Fastify({
     logger: loggerOptions(config.logLevel, deps.logStream),
@@ -110,6 +112,7 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
     config,
     store,
     providers,
+    router,
     tools: ToolRuntime.fromConfig(config, store, deps.plugins),
     streams: new StreamRegistry(),
     rateLimits,

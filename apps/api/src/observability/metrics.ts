@@ -130,6 +130,10 @@ export class Metrics {
   readonly providerFailures = new Counter("dash_provider_failures_total", "Provider attempts that failed, by normalized error code.", ["provider", "code", "retryable"]);
   readonly providerRetries = new Counter("dash_provider_retries_total", "Provider requests retried after a retryable failure.", ["provider", "code"]);
   readonly providerFallbacks = new Counter("dash_provider_fallbacks_total", "Answers DASH AI routed to another provider after a failure before any output.", ["from", "to", "code"]);
+  readonly routerDecisions = new Counter("dash_router_decisions_total", "Requests the DASH Intelligence Router routed, by task and first-choice provider.", ["task", "provider"]);
+  readonly routerUnavailable = new Counter("dash_router_unavailable_total", "Requests the router could not route, by task and reason.", ["task", "reason"]);
+  readonly automationRuns = new Counter("dash_automation_runs_total", "Automation runs finished, by trigger and status.", ["trigger", "status"]);
+  readonly automationRunSeconds = new Histogram("dash_automation_run_seconds", "Duration of one automation run, from start to final status.", ["status"], SECONDS);
   readonly toolInvocations = new Counter("dash_tool_invocations_total", "Tool calls by outcome (ok, denied, invalid_arguments, timeout, error, cancelled, unknown_tool, replayed).", ["plugin", "tool", "status"]);
   readonly syncFailures = new Counter("dash_sync_failures_total", "Sync requests that failed, by operation and error code.", ["operation", "code"]);
   readonly syncRequests = new Counter("dash_sync_requests_total", "Sync requests handled, by operation.", ["operation"]);

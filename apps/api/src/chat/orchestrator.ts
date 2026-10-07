@@ -2,7 +2,6 @@ import {
   LIMITS,
   providerHint,
   resolveProviders,
-  smartRoute,
   type ChatStreamRequest,
   type MessageStatus,
   type StreamEvent,
@@ -27,6 +26,7 @@ import { DUPLICATE_TEXT } from "../tools/executor.js";
 import type { ToolRuntime } from "../tools/runtime.js";
 import type { ModelToolCall } from "../tools/types.js";
 import type { Metrics } from "../observability/metrics.js";
+import { estimateTokens, type IntelligenceRouter } from "../intelligence/router.js";
 import { hideProviders, neutralErrorMessage, NEUTRAL_ROUTING_REASON, NEUTRAL_UNAVAILABLE } from "./publicSurface.js";
 import { withIdleTimeout } from "./timeouts.js";
 import { DEFAULT_TITLE, generateTitle } from "./titles.js";
@@ -40,6 +40,7 @@ export interface SseSink {
 export interface ChatContext {
   store: Store;
   providers: ProviderRegistry;
+  router: IntelligenceRouter;
   tools: ToolRuntime;
   config: AppConfig;
   log: FastifyBaseLogger;
@@ -113,6 +114,7 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
     documents.push(doc);
   }
 
+  const offered = await ctx.tools.offeredFor(userId);
   // Consumers never choose a provider: with provider details hidden every request is DASH AI routed.
   const hidden = hideProviders(ctx.config);
   const choice = hidden ? "smart" : request.modelChoice;
@@ -120,13 +122,35 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
   let targets: PreparedTarget[];
   let routingReason: string;
   if (choice === "smart") {
-    // A provider the person named in their own words is a preference, applied silently when available.
-    const route = smartRoute(request.mode, configured, providerHint(request.message.content));
-    const adapters = route.map((p) => ctx.providers.get(p)).filter((a): a is ProviderAdapter => a !== undefined);
+    // The DASH Intelligence Router decides. A provider the person named in their own words is a
+    // preference, applied silently when available.
+    const inputChars =
+      historyChars + request.message.content.length + documents.reduce((n, d) => n + d.extractedText.length, 0);
+    const decision = ctx.router.route({
+      task: "chat",
+      mode: request.mode,
+      hint: providerHint(request.message.content),
+      estimatedInputTokens: estimateTokens(inputChars),
+      requires: offered.size > 0 ? ["tool_use"] : [],
+    });
+    if (!decision.ok) {
+      ctx.metrics?.routerUnavailable.inc({ task: "chat", reason: decision.reason });
+      if (decision.reason === "context_too_large") {
+        throw new AppError("payload_too_large", "This conversation and its documents are too long to answer. Start a new chat or attach fewer documents.");
+      }
+      throw new AppError("no_provider_available", hidden ? NEUTRAL_UNAVAILABLE : "No AI provider is configured on this server.");
+    }
+    const adapters = decision.providers.map((p) => ctx.providers.get(p)).filter((a): a is ProviderAdapter => a !== undefined);
     if (adapters.length === 0) throw new AppError("no_provider_available", hidden ? NEUTRAL_UNAVAILABLE : "No AI provider is configured on this server.");
+    ctx.metrics?.routerDecisions.inc({ task: "chat", provider: adapters[0]!.id });
+    ctx.log.debug({ routeKey: decision.routeKey, candidates: decision.candidates, rejected: decision.rejected }, "routing decision");
     targets = [{ adapter: adapters[0]!, messageId: newId(), fallbacks: adapters.slice(1) }];
     const legacy = resolveProviders("smart", request.mode, configured);
-    routingReason = hidden ? NEUTRAL_ROUTING_REASON : legacy.ok ? legacy.reason : "";
+    routingReason = hidden
+      ? NEUTRAL_ROUTING_REASON
+      : legacy.ok && legacy.providers[0] === adapters[0]!.id
+        ? legacy.reason
+        : `DASH AI routed this request to ${adapters[0]!.displayName} (${decision.routeKey}).`;
   } else {
     const routing = resolveProviders(choice, request.mode, configured);
     if (!routing.ok) throw new AppError(routing.code, routing.message);
@@ -146,7 +170,7 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
     routingReason,
     compareGroupId: choice === "compare" ? request.message.id : null,
     documents,
-    offered: await ctx.tools.offeredFor(userId),
+    offered,
   };
 }
 
@@ -352,13 +376,17 @@ async function runTarget(
     let finishReason: "stop" | "length" | "refusal" = "stop";
     for (let c = 0; ; c++) {
       adapter = candidates[c]!;
+      const attemptStarted = Date.now();
       try {
         finishReason = await generate(adapter);
+        ctx.router.recordSuccess(adapter.id, Date.now() - attemptStarted);
         break;
       } catch (err) {
+        const error = toProviderError(adapter.displayName, err, controller.signal);
+        // Health learns from provider failures (timeouts included); a person's cancel is ignored.
+        ctx.router.recordFailure(adapter.id, error.code, error.retryable);
         if (controller.signal.aborted) throw err;
         const next = candidates[c + 1];
-        const error = toProviderError(adapter.displayName, err, controller.signal);
         // Safe only while nothing reached the person and no tool ran: the next provider starts clean.
         if (!next || content !== "" || seenCallIds.size > 0 || !error.retryable) throw err;
         ctx.metrics?.providerFallbacks?.inc({ from: adapter.id, to: next.id, code: error.code });
