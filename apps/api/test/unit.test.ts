@@ -24,6 +24,14 @@ import { RateLimiter } from "../src/security/rateLimiter.js";
 import type { DocumentRecord } from "../src/store/store.js";
 import { contractsFixture, PNG_BYTES } from "./helpers.js";
 
+/** Made-up provider settings for production-mode config tests (not real keys, not key-shaped). */
+const TEST_PROVIDERS = {
+  OPENAI_API_KEY: "test-openai-key-not-real",
+  OPENAI_MODEL: "test-openai-model",
+  ANTHROPIC_API_KEY: "test-anthropic-key-not-real",
+  ANTHROPIC_MODEL: "test-claude-model",
+};
+
 describe("config", () => {
   it("applies defaults and treats empty strings as unset", () => {
     const c = loadConfig({ OPENAI_API_KEY: "", OPENAI_MODEL: " ", PORT: "" });
@@ -103,7 +111,7 @@ describe("config", () => {
       const filled = loadConfig({
         ...Object.fromEntries(template),
         DATABASE_URL: "postgres://placeholder", DATA_ENCRYPTION_KEY: "", REDIS_URL: "rediss://placeholder",
-        OPENAI_API_KEY: "placeholder", OPENAI_MODEL: "placeholder-model",
+        ...TEST_PROVIDERS,
       });
       expect(configWarnings(filled)).toEqual([]);
       expect(filled).toMatchObject({ nodeEnv: "production", providerMode: "live", trustProxy: true, database: { ssl: "require", autoMigrate: false, allowMemoryStore: false }, rateLimits: { backend: "redis" } });
@@ -111,7 +119,7 @@ describe("config", () => {
   });
 
   it("warns about deliberate insecure choices in production only", () => {
-    const shared = { RATE_LIMIT_BACKEND: "redis", REDIS_URL: "rediss://placeholder" };
+    const shared = { RATE_LIMIT_BACKEND: "redis", REDIS_URL: "rediss://placeholder", ...TEST_PROVIDERS };
     const prod = (env: Record<string, string>) =>
       configWarnings(loadConfig({ NODE_ENV: "production", DATABASE_URL: "postgres://placeholder", ...shared, ...env })).join(" ");
     expect(prod({})).toBe("");
@@ -122,9 +130,67 @@ describe("config", () => {
     expect(prod({ DATABASE_SSL: "no-verify" })).toMatch(/not verified/);
     expect(prod({ LOG_LEVEL: "debug" })).toMatch(/LOG_LEVEL=debug/);
     expect(prod({ PROVIDER_MODE: "fake" })).toMatch(/demonstration/);
+    // One live provider runs, but has nothing to fall back to.
+    expect(prod({ ANTHROPIC_API_KEY: "", ANTHROPIC_MODEL: "" })).toMatch(/no second provider to fall back to/);
+    expect(prod({ OPENAI_API_KEY: "", OPENAI_MODEL: "" })).toMatch(/no second provider to fall back to/);
     expect(configWarnings(loadConfig({ DATABASE_SSL: "disable", LOG_LEVEL: "trace" }))).toEqual([]);
     // Defaults in production are the safe ones.
-    expect(loadConfig({ NODE_ENV: "production" }).database).toMatchObject({ ssl: "require", autoMigrate: false, allowMemoryStore: false });
+    expect(loadConfig({ NODE_ENV: "production", ...TEST_PROVIDERS }).database).toMatchObject({ ssl: "require", autoMigrate: false, allowMemoryStore: false });
+  });
+
+  describe("production with PROVIDER_MODE=live refuses to start without usable provider credentials", () => {
+    const prod = (env: Record<string, string>) => () => loadConfig({ NODE_ENV: "production", PROVIDER_MODE: "live", ...env });
+    const refusal = (env: Record<string, string>): string => {
+      try {
+        prod(env)();
+      } catch (err) {
+        expect(err).toBeInstanceOf(ConfigError);
+        return (err as Error).message;
+      }
+      throw new Error("expected a ConfigError");
+    };
+
+    it("no provider at all, including when PROVIDER_MODE is left unset (live is the default)", () => {
+      expect(refusal({})).toMatch(/PROVIDER_MODE=live needs real AI provider credentials in production\. No AI provider is configured/);
+      expect(() => loadConfig({ NODE_ENV: "production" })).toThrow(/No AI provider is configured/);
+      expect(() => loadConfig({ NODE_ENV: "production", OPENAI_API_KEY: "  ", OPENAI_MODEL: "" })).toThrow(/No AI provider is configured/);
+    });
+
+    it("a key without its model, or a model without its key, even when the other provider is complete", () => {
+      const anthropic = { ANTHROPIC_API_KEY: TEST_PROVIDERS.ANTHROPIC_API_KEY, ANTHROPIC_MODEL: TEST_PROVIDERS.ANTHROPIC_MODEL };
+      expect(refusal({ OPENAI_API_KEY: TEST_PROVIDERS.OPENAI_API_KEY })).toMatch(/OPENAI_API_KEY is set without OPENAI_MODEL\./);
+      expect(refusal({ OPENAI_MODEL: "m" })).toMatch(/OPENAI_MODEL is set without OPENAI_API_KEY\./);
+      expect(refusal({ ...anthropic, OPENAI_API_KEY: TEST_PROVIDERS.OPENAI_API_KEY })).toMatch(/OPENAI_API_KEY is set without OPENAI_MODEL/);
+      expect(refusal({ OPENAI_API_KEY: TEST_PROVIDERS.OPENAI_API_KEY, OPENAI_MODEL: "m", ANTHROPIC_MODEL: "m" })).toMatch(/ANTHROPIC_MODEL is set without ANTHROPIC_API_KEY/);
+    });
+
+    it("a key copied from an example", () => {
+      for (const bad of ["your-api-key", "sk-...", "<ANTHROPIC_API_KEY>", "changeme", "short"]) {
+        expect(refusal({ ANTHROPIC_API_KEY: bad, ANTHROPIC_MODEL: "m" }), bad).toMatch(/ANTHROPIC_API_KEY looks like a placeholder, not a real key\./);
+      }
+    });
+
+    it("a key or model id that kept its quotes from the environment file", () => {
+      expect(refusal({ OPENAI_API_KEY: `"${TEST_PROVIDERS.OPENAI_API_KEY}"`, OPENAI_MODEL: "m" })).toMatch(/OPENAI_API_KEY is wrapped in quotes/);
+      expect(refusal({ ANTHROPIC_API_KEY: TEST_PROVIDERS.ANTHROPIC_API_KEY, ANTHROPIC_MODEL: "'claude-model'" })).toMatch(/ANTHROPIC_MODEL is wrapped in quotes/);
+    });
+
+    it("names variables only, never a value", () => {
+      const secret = "test-openai-key-SECRETVALUE";
+      const message = refusal({ OPENAI_API_KEY: secret, ANTHROPIC_API_KEY: "changeme", ANTHROPIC_MODEL: "model-SECRETVALUE" });
+      expect(message).toMatch(/OPENAI_API_KEY is set without OPENAI_MODEL/);
+      expect(message).not.toMatch(/SECRETVALUE|changeme/);
+    });
+
+    it("starts with one or both providers complete; fake mode, development and tests need no keys", () => {
+      expect(prod(TEST_PROVIDERS)().providerMode).toBe("live");
+      expect(prod({ ANTHROPIC_API_KEY: TEST_PROVIDERS.ANTHROPIC_API_KEY, ANTHROPIC_MODEL: "m" })).not.toThrow();
+      expect(loadConfig({ NODE_ENV: "production", PROVIDER_MODE: "fake" }).providerMode).toBe("fake");
+      // Development keeps starting and the registry reports what is missing instead.
+      const dev = loadConfig({ NODE_ENV: "development", PROVIDER_MODE: "live", OPENAI_API_KEY: TEST_PROVIDERS.OPENAI_API_KEY });
+      expect(ProviderRegistry.fromConfig(dev).warnings).toContain("OpenAI needs both OPENAI_API_KEY and OPENAI_MODEL.");
+      expect(() => loadConfig({ NODE_ENV: "test", PROVIDER_MODE: "live" })).not.toThrow();
+    });
   });
 
   it("fake mode activates clearly-labelled fake adapters for both providers", () => {

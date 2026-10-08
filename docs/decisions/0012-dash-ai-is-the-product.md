@@ -20,6 +20,9 @@ product; OpenAI, Anthropic, Gemini and future DASH models are infrastructure DAS
 - **Routing is DASH's responsibility.** DASH AI's route is every configured provider, best first for the
   mode. A provider failure that happens **before anything reached the person** (no text, no tool run) and
   is retryable moves the same message to the next provider (`dash_provider_fallbacks_total{from,to,code}`).
+  So does a provider refusing this server's own configuration (credentials rejected, HTTP 401/403, or the
+  configured model not found, 404), which the next provider does not share. A request the provider
+  rejects as invalid, too long or against its policies (400/413/422) is not sent elsewhere.
   After partial output or a tool run there is no failover: the answer fails with a neutral message and the
   person can Retry, Regenerate or Continue later. Bounded retries from ADR 0011 still apply first.
 - **Natural-language preference.** If the person's own words name a provider ("ask Claude…"), that

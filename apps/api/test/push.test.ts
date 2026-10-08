@@ -575,7 +575,7 @@ describe("payload and configuration", () => {
     const ok = loadConfig({ PUSH_TRANSPORT: "fcm", FCM_SERVICE_ACCOUNT: Buffer.from(JSON.stringify(serviceAccount())).toString("base64") });
     expect(ok.push.fcm).toMatchObject({ projectId: "dash-test", clientEmail: "push@dash-test.iam.gserviceaccount.com" });
     expect(loadConfig({}).push.transport).toBe("none");
-    expect(configWarnings(loadConfig({ NODE_ENV: "production", DATABASE_URL: "postgres://x", RATE_LIMIT_BACKEND: "redis", REDIS_URL: "rediss://x", PUSH_TRANSPORT: "fake" })).join(" ")).toMatch(/PUSH_TRANSPORT=fake/);
+    expect(configWarnings(loadConfig({ NODE_ENV: "production", PROVIDER_MODE: "fake", DATABASE_URL: "postgres://x", RATE_LIMIT_BACKEND: "redis", REDIS_URL: "rediss://x", PUSH_TRANSPORT: "fake" })).join(" ")).toMatch(/PUSH_TRANSPORT=fake/);
   });
 });
 

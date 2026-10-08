@@ -1,20 +1,14 @@
 import type { ProviderId, ProviderStatus } from "@dash-ai/contracts";
 import type { AppConfig } from "../config.js";
 import { AnthropicAdapter } from "./anthropic.js";
+import { looksLikePlaceholder } from "./credentials.js";
 import { FakeAdapter } from "./fake.js";
 import { OpenAIAdapter } from "./openai.js";
 import type { ProviderAdapter } from "./types.js";
 
 const DISPLAY: Record<ProviderId, string> = { openai: "OpenAI", anthropic: "Claude" };
 
-/**
- * Values copied from an example instead of a real secret ("your-key", "sk-...", "changeme"), or a key
- * with spaces inside it. Such a provider is still configured (the provider decides), but start-up
- * says why its requests will be refused. The key itself is never logged.
- */
-export function looksLikePlaceholder(key: string): boolean {
-  return /\s/.test(key) || /\.\.\.|^<|>$|your[-_ ]?(api[-_ ]?)?key|changeme|placeholder|^x{6,}$|^replace/i.test(key) || key.length < 16;
-}
+export { looksLikePlaceholder };
 
 export class ProviderRegistry {
   constructor(

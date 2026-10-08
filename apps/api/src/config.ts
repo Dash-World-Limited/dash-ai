@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { loadPolicy, PolicyError, type RouterPolicy } from "./intelligence/policy.js";
+import { liveProviderCount, liveProviderProblems } from "./providers/credentials.js";
 import { FcmConfigError, parseServiceAccount, type FcmServiceAccount } from "./push/fcm.js";
 
 const emptyToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
@@ -216,6 +217,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     if (err instanceof PolicyError) throw new ConfigError(`Invalid configuration: ${err.message}`);
     throw err;
   }
+  // Production with real providers must be able to answer: a missing, half-set or example key is a
+  // deployment mistake, so the server refuses to start instead of failing every chat and automation.
+  // Development and tests keep starting (the registry warns). Variable names only, never values.
+  if (e.NODE_ENV === "production" && e.PROVIDER_MODE === "live") {
+    const problems = liveProviderProblems({
+      openai: { apiKey: e.OPENAI_API_KEY, model: e.OPENAI_MODEL },
+      anthropic: { apiKey: e.ANTHROPIC_API_KEY, model: e.ANTHROPIC_MODEL },
+    });
+    if (problems.length > 0) {
+      throw new ConfigError(
+        `Invalid configuration: PROVIDER_MODE=live needs real AI provider credentials in production. ${problems.join(" ")} ` +
+          "Set them in the server's secret store, or PROVIDER_MODE=fake for a demonstration server.",
+      );
+    }
+  }
   return {
     nodeEnv: e.NODE_ENV,
     host: e.HOST,
@@ -314,6 +330,9 @@ export function configWarnings(config: AppConfig): string[] {
   }
   if (config.providerMode === "fake") {
     warnings.push("PROVIDER_MODE=fake in production: every answer is a labelled demonstration, not a real model.");
+  }
+  if (config.providerMode === "live" && liveProviderCount(config) === 1) {
+    warnings.push("Only one AI provider is configured in production: if it fails, DASH AI has no second provider to fall back to. Configure both OPENAI_* and ANTHROPIC_* for failover.");
   }
   return warnings;
 }
