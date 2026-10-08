@@ -63,6 +63,19 @@ jobs:
           DASH_FIREBASE_API_KEY: ${{ vars.DASH_FIREBASE_API_KEY }}
           DASH_FIREBASE_SENDER_ID: ${{ vars.DASH_FIREBASE_SENDER_ID }}
         run: ./gradlew :app:assembleDebug --no-daemon
+      - name: "TEMPORARY verification (throwaway branch, not for merge): installability and Firebase config; values never printed"
+        run: |
+          set -euo pipefail
+          APK=apps/android/app/build/outputs/apk/debug/app-debug.apk
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          echo "== apksigner verify (exit code 0 means the signatures verify)"
+          "$BT/apksigner" verify --verbose "$APK" | grep -E "^(Verifies|Verified using|Number of signers)"
+          "$BT/apksigner" verify --print-certs "$APK" | grep -E "certificate DN"
+          echo "== aapt2 dump badging (selected lines)"
+          "$BT/aapt2" dump badging "$APK" | grep -E "^(package:|sdkVersion|targetSdkVersion|application-debuggable|uses-permission: name='android.permission.POST_NOTIFICATIONS'|launchable-activity)"
+          echo "== androguard inspection"
+          python3 -m pip install -q --disable-pip-version-check androguard
+          python3 -I .github/tmp-verify/inspect_apk.py "$APK"
       - name: Check the APK contains no provider keys or endpoints
         run: scripts/check-apk.sh apps/android/app/build/outputs/apk/debug/app-debug.apk
       - name: Record the APK checksum
