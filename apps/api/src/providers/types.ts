@@ -97,6 +97,17 @@ export class ProviderError extends Error {
   }
 }
 
+/**
+ * Whether the next provider in DASH AI's route may take over after this failure (only ever before any
+ * output or tool run). Retryable failures, and this provider refusing the server's own configuration:
+ * its credentials (401/403) or the configured model (404), which another provider does not share.
+ * Not a request the provider rejected as invalid, too long or against its policies (400/413/422):
+ * that is about the request itself, so the person gets a neutral error instead of the same request
+ * being shopped to another provider.
+ */
+export const failoverAllowed = (error: ProviderError): boolean =>
+  error.retryable || error.httpStatus === 401 || error.httpStatus === 403 || error.httpStatus === 404;
+
 const EMPTY_USAGE: Usage = { inputTokens: null, outputTokens: null };
 export const emptyUsage = (): Usage => ({ ...EMPTY_USAGE });
 

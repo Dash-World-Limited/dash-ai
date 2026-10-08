@@ -99,9 +99,38 @@ Nothing in the code or the repository changes. Keys live only in the deployment'
    (never in `.env.example`, the repository, a client app or a build). Set `OPENAI_MODEL` /
    `ANTHROPIC_MODEL` to current model ids from each provider's documentation.
 2. Set `PROVIDER_MODE=live` (the default when unset). Keep `PROVIDER_MODE=fake` for demos and CI.
-3. Start the API and read the start-up warnings: a missing model, a placeholder key, or no provider at
-   all is reported by variable name. `GET /v1/providers` must show `mode: "live"` for each provider.
+3. Start the API. In production (`NODE_ENV=production`) it **refuses to start** (exit 1, one line on
+   stderr naming variables, never values) when no provider has both a key and a model, when a provider
+   has only one of the two, or when a key looks copied from an example. Outside production the same
+   problems are start-up warnings. With only one provider configured, production warns that DASH AI has
+   nothing to fail over to. `GET /v1/providers` (operator token) must show `mode: "live"` for each
+   provider you configured.
 4. Run the live smoke (below) once per provider and model before inviting users.
+
+### Switching a running production server from `fake` to `live`
+
+The order keeps the server answering at every step and makes a mistake cheap to undo:
+
+1. **Deploy the code first, still in `fake` mode.** The new start-up check does not apply to `fake`, so
+   this deploy changes nothing visible. Confirm `/health`, `/ready`, sign-in, Automates and push.
+2. **Add the credentials to the server's secret store / environment file**, typed or pasted on the
+   server itself, never through chat, tickets, the repository or CI logs: `OPENAI_API_KEY`,
+   `OPENAI_MODEL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` (both providers, so DASH AI can fail over).
+   Keep `PROVIDER_MODE=fake` for now; keep `PROVIDER_DETAILS=hidden`.
+3. **Verify the credentials before switching**, from the built API on the server with the same
+   environment: `DASH_LIVE_SMOKE=1 node dist/smoke/main.js` in `apps/api` (with the environment file
+   loaded, e.g. `node --env-file=<file> dist/smoke/main.js`). It uses an in-memory store and never the
+   production database; it needs `PROVIDER_MODE=live` in its own environment
+   (`PROVIDER_MODE=live DASH_LIVE_SMOKE=1 node --env-file=<file> dist/smoke/main.js`, since a value set
+   on the command line wins over the file). With both providers it sends about 22 small real requests,
+   each capped in output tokens, and prints no key.
+4. **Switch:** set `PROVIDER_MODE=live` and restart the API. If a credential is missing or malformed it
+   exits at once with the variable named; the previous process is gone, so either fix the value or set
+   `PROVIDER_MODE=fake` again and restart.
+5. **Check:** start-up log `provider configuration` shows `openai:live` and `anthropic:live` and no
+   warning; `GET /v1/assistant` answers `available: true, demo: false`; one chat and one Run-now
+   automation from a real account answer; `dash_provider_failures_total` stays flat in `/metrics`.
+6. **Roll back** at any time with `PROVIDER_MODE=fake` and a restart: keys can stay in place.
 
 The clients need no change: both read `/v1/providers` and only offer what is configured; Demo Mode
 stays available in the apps and never calls a provider.

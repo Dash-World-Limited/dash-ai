@@ -8,7 +8,7 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `NODE_ENV` | `development` | `development`, `test` or `production`. |
 | `HOST` / `PORT` | `0.0.0.0` / `8787` | Listen address. |
 | `LOG_LEVEL` | `info` | Pino level (`silent` … `trace`). Logs never include prompts, documents or answers. `debug`/`trace` in production log a start-up warning. |
-| `PROVIDER_MODE` | `live` | `live` uses real providers that have **both** a key and a model; `fake` uses the demonstration adapters for both providers (no network, no cost; a start-up warning in production). |
+| `PROVIDER_MODE` | `live` | `live` uses real providers that have **both** a key and a model; `fake` uses the demonstration adapters for both providers (no network, no cost; a start-up warning in production). In production, `live` **refuses to start** unless at least one provider has a key and a model, no provider has only one of the two, and no key looks like an example placeholder (the message names variables, never values). |
 | `OPENAI_API_KEY` | — | OpenAI key (server only). |
 | `OPENAI_MODEL` | — | OpenAI model id, e.g. a current model from OpenAI's docs. Required with the key. |
 | `OPENAI_ENCRYPTED_REASONING` | `false` | Reasoning models only: request and replay encrypted reasoning items between tool rounds (`store` stays false). Enable only after the live smoke passes for your model. |
@@ -60,10 +60,13 @@ credential slot in it is empty).
 
 Production (`NODE_ENV=production`) **refuses to start** without `DATABASE_URL` (unless
 `ALLOW_MEMORY_STORE=true`), without a valid `DATA_ENCRYPTION_KEY`, with a key that does not match
-stored data, or with a schema that is not migrated. Its defaults are the safe ones (`DATABASE_SSL=require`,
+stored data, with a schema that is not migrated, or with `PROVIDER_MODE=live` (the default) and no
+usable provider credentials: no provider with both `*_API_KEY` and `*_MODEL`, a key without its model
+(or the reverse), or a key that looks copied from an example. Its defaults are the safe ones (`DATABASE_SSL=require`,
 `DATABASE_AUTO_MIGRATE=false`). It **warns** at start-up about deliberate opt-outs: `DATABASE_SSL=disable`
-or `no-verify`, `LOG_LEVEL=debug`/`trace`, `PROVIDER_MODE=fake`, `RATE_LIMIT_BACKEND=memory` (limits are
-per instance) and an unencrypted `redis://` `REDIS_URL`. A staging template with production-safe values is
+or `no-verify`, `LOG_LEVEL=debug`/`trace`, `PROVIDER_MODE=fake`, only one live provider
+(nothing to fail over to), `RATE_LIMIT_BACKEND=memory` (limits are per instance) and an unencrypted
+`redis://` `REDIS_URL`. A staging template with production-safe values is
 `deploy/staging/staging.env.example`; the procedure is [staging-runbook.md](staging-runbook.md). Set `NODE_ENV=production` in every
 deployment: without it the development defaults apply (no database TLS by default, migrations at
 start-up, in-memory store allowed).

@@ -81,7 +81,7 @@ export async function generateText(deps: GenerateDeps, request: GenerateRequest)
       const next = adapters[index + 1];
       if (next) {
         deps.metrics?.providerFallbacks.inc({ from: adapter.id, to: next.id, code: error.code });
-        deps.log.warn({ from: adapter.id, to: next.id, code: error.code, task: request.task }, "provider fallback");
+        deps.log.warn({ from: adapter.id, to: next.id, code: error.code, httpStatus: error.httpStatus, task: request.task }, "provider fallback");
       }
     }
   }

@@ -30,8 +30,10 @@ routes, Compare). It exists for the API test suite and the live provider smoke r
    names exactly one ("ask Claude", "like ChatGPT"); it moves that provider to the front if configured.
    Nothing is shown or promised. Unknown names (Gemini today) are ignored.
 3. **Retries.** Bounded retries of retryable errors before any output (unchanged from ADR 0011).
-4. **Failover.** If the provider still fails **before any text or tool run reached the person**, the same
-   message goes to the next provider in the route. After partial output or a tool run there is no
+4. **Failover.** If the provider still fails **before any text or tool run reached the person**, with a
+   retryable failure or by refusing this server's configuration (key rejected, 401/403; model not found,
+   404), the same message goes to the next provider in the route. A request rejected as invalid, too
+   long or against the provider's policies (400/413/422) is not sent elsewhere. After partial output or a tool run there is no
    failover: the answer fails neutrally and the partial text is kept.
 5. **Identity.** `IDENTITY_INSTRUCTIONS` (`apps/api/src/providers/instructions.ts`) tells every provider it
    is DASH AI, never Claude or ChatGPT, and how to answer "what are you?" honestly without naming the

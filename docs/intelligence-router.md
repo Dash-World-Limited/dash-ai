@@ -30,7 +30,10 @@ A request names a **task** (`chat`, `documents`, `research`, `graphics`, `report
    - *cost*: relative blended price when the operator configures prices (unknown is neutral).
 3. **Order.** Providers whose circuit is open (repeated retryable failures) go to the back but stay
    as a last resort; then the hint; then the score. The first serves the request; the rest are
-   internal fallbacks used only when the first fails **before any output or tool run** (ADR 0012).
+   internal fallbacks used only when the first fails **before any output or tool run** (ADR 0012),
+   with a retryable failure or by refusing this server's configuration (credentials rejected, HTTP
+   401/403; configured model not found, 404). A request the provider rejects as invalid, too long or
+   against its policies (400/413/422) is not sent to another provider.
 4. **Learn.** Every routed request reports success (with duration) or failure (with its normalized
    code) back to the router. Cancellations are ignored; non-retryable failures lower reliability but
    never open the circuit.

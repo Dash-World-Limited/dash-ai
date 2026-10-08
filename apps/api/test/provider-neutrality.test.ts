@@ -13,7 +13,7 @@ import { buildApp } from "../src/app.js";
 import { containsProviderName } from "../src/chat/publicSurface.js";
 import { IDENTITY_INSTRUCTIONS } from "../src/providers/instructions.js";
 import { ProviderRegistry } from "../src/providers/registry.js";
-import { ProviderError, type ProviderAdapter, type ProviderChunk, type ProviderRequest } from "../src/providers/types.js";
+import { ProviderError, toProviderError, type ProviderAdapter, type ProviderChunk, type ProviderRequest } from "../src/providers/types.js";
 import { builtinPlugin } from "../src/tools/builtin.js";
 import { PluginRegistry } from "../src/tools/registry.js";
 import { chatBody, register, sse, testConfig, USING_POSTGRES } from "./helpers.js";
@@ -22,7 +22,8 @@ import { createTestPgStore } from "./pgTestStore.js";
 // The production default: DASH AI is the product, providers are internal infrastructure. Nothing a
 // consumer receives names a provider or model; operators still see everything.
 
-type Behaviour = "answer" | "fail-before-output" | "fail-after-output" | "tool-then-fail";
+/** `http-401` etc.: the provider answers with that HTTP status before any output (real SDK error mapping). */
+type Behaviour = "answer" | "fail-before-output" | "fail-after-output" | "tool-then-fail" | "hang" | `http-${number}`;
 
 /** A controllable provider: records requests and system prompts, behaves as told. */
 class Scripted implements ProviderAdapter {
@@ -38,7 +39,12 @@ class Scripted implements ProviderAdapter {
   async *stream(request: ProviderRequest): AsyncIterable<ProviderChunk> {
     this.requests.push(request);
     const toolDone = request.messages.some((m) => m.role === "tool");
+    if (this.behaviour.startsWith("http-")) throw toProviderError(this.displayName, { name: "APIError", status: Number(this.behaviour.slice(5)) });
     switch (this.behaviour) {
+      case "hang":
+        // Never answers; ends only when DASH AI gives up on it (idle timeout) and aborts the request.
+        await new Promise<void>((resolve) => request.signal?.addEventListener("abort", () => resolve(), { once: true }));
+        throw new Error("aborted");
       case "fail-before-output":
         throw new ProviderError("provider_error", `${this.displayName} is temporarily unavailable. Try again.`, true, 503);
       case "fail-after-output":
@@ -234,6 +240,69 @@ describe("failures: DASH AI recovers internally where safe, and speaks for itsel
     const { events } = await chat(app, auth);
     expect(anthropic.requests).toHaveLength(0);
     expect(byEvent(events, "message.error")[0]!.data.error.message).toBe("DASH AI is very busy right now. Please try again in a moment.");
+  });
+
+  it("a provider that rejects the server's key or cannot find its model is replaced by the next one", async () => {
+    for (const status of [401, 403, 404]) {
+      const openai = new Scripted("openai", "OpenAI", "m1", `http-${status}`);
+      const anthropic = new Scripted("anthropic", "Claude", "m2");
+      const { app, context, auth } = await setup(openai, anthropic);
+      const { body, events } = await chat(app, auth);
+      expect(byEvent(events, "message.error"), String(status)).toHaveLength(0);
+      expect(byEvent(events, "message.delta").map((e) => e.data.text).join("")).toBe("Answer written by the second engine.");
+      expect(openai.requests).toHaveLength(1);
+      expect((await context.store.listMessages(body.conversationId as string)).at(-1)).toMatchObject({ origin: "anthropic", status: "complete" });
+      expect(context.metrics.render()).toMatch(/dash_provider_fallbacks_total\{from="openai",to="anthropic",code="provider_error"\} 1/);
+      expect(leaks(events.filter((e) => e.event !== "message.delta"))).toEqual([]);
+    }
+  });
+
+  it("a provider that stops responding times out and the next one answers; if both time out, DASH AI says so", async () => {
+    const env = { PROVIDER_IDLE_TIMEOUT_MS: "500" };
+    const hung = new Scripted("openai", "OpenAI", "m1", "hang");
+    const healthy = new Scripted("anthropic", "Claude", "m2");
+    const first = await setup(hung, healthy, env);
+    const recovered = await chat(first.app, first.auth);
+    expect(byEvent(recovered.events, "message.error")).toHaveLength(0);
+    expect(byEvent(recovered.events, "message.delta").map((e) => e.data.text).join("")).toBe("Answer written by the second engine.");
+    expect(first.context.metrics.render()).toMatch(/dash_provider_fallbacks_total\{from="openai",to="anthropic",code="provider_timeout"\} 1/);
+
+    const both = await setup(new Scripted("openai", "OpenAI", "m1", "hang"), new Scripted("anthropic", "Claude", "m2", "hang"), env);
+    const failed = await chat(both.app, both.auth);
+    expect(byEvent(failed.events, "message.error")[0]!.data.error).toEqual({ code: "provider_timeout", message: "DASH AI took too long to respond. Please try again.", retryable: true });
+    expect(containsProviderName(failed.raw)).toBe(false);
+  });
+
+  it("a request a provider rejects as invalid or too long is not sent to another provider", async () => {
+    for (const status of [400, 413, 422]) {
+      const openai = new Scripted("openai", "OpenAI", "m1", `http-${status}`);
+      const anthropic = new Scripted("anthropic", "Claude", "m2");
+      const { app, auth } = await setup(openai, anthropic);
+      const { events } = await chat(app, auth);
+      expect(anthropic.requests, String(status)).toHaveLength(0);
+      expect(byEvent(events, "message.error")[0]!.data.error).toEqual({ code: "provider_error", message: "DASH AI couldn't complete that response. Please try again.", retryable: false });
+      expect(leaks(events)).toEqual([]);
+    }
+  });
+
+  it("when every provider fails (rejected keys, outages, rate limits), the error is DASH AI's own", async () => {
+    for (const [first, second, message] of [
+      ["http-401", "http-403", "DASH AI couldn't complete that response. Please try again."],
+      ["http-503", "http-500", "DASH AI couldn't complete that response. Please try again."],
+      ["http-429", "http-429", "DASH AI is very busy right now. Please try again in a moment."],
+    ] as const) {
+      const openai = new Scripted("openai", "OpenAI", "m1", first);
+      const anthropic = new Scripted("anthropic", "Claude", "m2", second);
+      const { app, auth } = await setup(openai, anthropic);
+      const { raw, events } = await chat(app, auth);
+      expect(openai.requests.length + anthropic.requests.length, first).toBe(2);
+      const error = byEvent(events, "message.error")[0]!.data;
+      expect(error.error.message).toBe(message);
+      expect(error.recovery?.alternatives).toEqual([]);
+      // Nothing in the whole stream, including the provider's own error wording, names a provider.
+      expect(containsProviderName(raw), raw).toBe(false);
+      expect(raw).not.toMatch(/credentials|API key|server administrator/i);
+    }
   });
 
   it("with no AI infrastructure configured, the error is DASH AI's own", async () => {

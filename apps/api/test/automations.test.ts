@@ -13,7 +13,7 @@ import { newRun, previewOf } from "../src/automations/service.js";
 import { containsProviderName } from "../src/chat/publicSurface.js";
 import { FAKE_TRIGGERS } from "../src/providers/fake.js";
 import { ProviderRegistry } from "../src/providers/registry.js";
-import type { ProviderAdapter, ProviderChunk, ProviderRequest } from "../src/providers/types.js";
+import { toProviderError, type ProviderAdapter, type ProviderChunk, type ProviderRequest } from "../src/providers/types.js";
 import { MemoryStore } from "../src/store/memoryStore.js";
 import type { Store } from "../src/store/store.js";
 import { makeApp, register, testConfig, USING_POSTGRES } from "./helpers.js";
@@ -241,6 +241,101 @@ describe("DASH Automates API", () => {
     // A failed result cannot be edited.
     const runId = parsed.runs[0]!.id;
     expect((await app.inject({ method: "PATCH", url: `/v1/automations/${automation!.id}/runs/${runId}`, headers: user.auth, payload: { content: "x" } })).statusCode).toBe(404);
+  });
+});
+
+/** A live-like provider: fails with an HTTP status (real SDK error mapping), hangs until DASH AI gives up, or answers. */
+type Behaviour = number | "hang" | "answer";
+class FlakyAdapter implements ProviderAdapter {
+  readonly demo = false;
+  readonly displayName: string;
+  readonly model: string;
+  calls = 0;
+  behaviour: Behaviour = "answer";
+  constructor(readonly id: "openai" | "anthropic") {
+    this.displayName = id === "openai" ? "OpenAI" : "Claude";
+    this.model = `flaky-${id}`;
+  }
+  async *stream(request: ProviderRequest): AsyncIterable<ProviderChunk> {
+    this.calls += 1;
+    if (this.behaviour === "hang") {
+      await new Promise<void>((resolve) => request.signal?.addEventListener("abort", () => resolve(), { once: true }));
+      throw new Error("aborted");
+    }
+    if (typeof this.behaviour === "number") throw toProviderError(this.displayName, { name: "APIError", status: this.behaviour });
+    yield { type: "text", text: "# Morning brief\n\nWritten by the backup engine." };
+    yield { type: "finish", finishReason: "stop", usage: { inputTokens: 10, outputTokens: 8 } };
+  }
+}
+
+describe("provider failures during a run stay inside DASH AI", () => {
+  /** Runs one automation with DASH AI's first and second provider for it behaving as given. */
+  async function runWith(first: Behaviour, second: Behaviour, env: Record<string, string> = {}) {
+    const openai = new FlakyAdapter("openai");
+    const anthropic = new FlakyAdapter("anthropic");
+    const s = await setup({ providers: new ProviderRegistry({ openai, anthropic }), env: { PROVIDER_MAX_RETRIES: "0", ...env } });
+    const route = s.context.router.route({ task: "automation", mode: "business" });
+    if (!route.ok) throw new Error(`no route: ${route.reason}`);
+    const [primary, backup] = route.providers.map((id) => (id === "openai" ? openai : anthropic));
+    primary!.behaviour = first;
+    backup!.behaviour = second;
+    const { automation } = await create(s.app, s.user.auth);
+    await s.app.inject({ method: "POST", url: `/v1/automations/${automation!.id}/run`, headers: s.user.auth });
+    await s.context.automations.idle();
+    const detail = await s.app.inject({ method: "GET", url: `/v1/automations/${automation!.id}`, headers: s.user.auth });
+    const notes = await s.app.inject({ method: "GET", url: "/v1/notifications", headers: s.user.auth });
+    const parsed = AutomationDetailResponse.parse(detail.json());
+    const run = await s.app.inject({ method: "GET", url: `/v1/automations/${automation!.id}/runs/${parsed.runs[0]!.id}`, headers: s.user.auth });
+    return {
+      primary: primary!,
+      backup: backup!,
+      context: s.context,
+      lastRun: parsed.automation.lastRun!,
+      run: AutomationRunResponse.parse(run.json()).run,
+      notice: NotificationListResponse.parse(notes.json()).notifications[0]!,
+      bodies: [detail.body, notes.body, run.body],
+    };
+  }
+
+  const neutral = (bodies: string[]) => {
+    for (const body of bodies) {
+      expect(containsProviderName(body), body).toBe(false);
+      expect(body).not.toMatch(/"provider"|"model"|flaky-|credentials|API key|administrator/i);
+    }
+  };
+
+  it("a provider that rejects the server's key, is down or rate limited is replaced by the next one", async () => {
+    for (const status of [401, 403, 404, 429, 503]) {
+      const r = await runWith(status, "answer");
+      expect(r.lastRun, String(status)).toMatchObject({ status: "ready", error: null, demo: false });
+      expect(r.run.content).toContain("Written by the backup engine.");
+      expect([r.primary.calls, r.backup.calls]).toEqual([1, 1]);
+      expect(r.notice).toMatchObject({ kind: "automation.ready" });
+      expect(r.context.metrics.render()).toMatch(/dash_provider_fallbacks_total\{from="\w+",to="\w+",code="(provider_error|rate_limited)"\} 1/);
+      neutral(r.bodies);
+    }
+  });
+
+  it("a provider that stops responding times out and the next one finishes the run", async () => {
+    const r = await runWith("hang", "answer", { PROVIDER_IDLE_TIMEOUT_MS: "500" });
+    expect(r.lastRun).toMatchObject({ status: "ready", error: null });
+    expect(r.context.metrics.render()).toMatch(/dash_provider_fallbacks_total\{from="\w+",to="\w+",code="provider_timeout"\} 1/);
+    neutral(r.bodies);
+  });
+
+  it("when every provider fails, the run and its notice say so in DASH AI's words", async () => {
+    for (const [first, second, error] of [
+      [401, 401, "DASH AI couldn't complete this run."],
+      [503, 500, "DASH AI couldn't complete this run."],
+      [429, 429, "DASH AI was very busy when this ran."],
+      ["hang", "hang", "DASH AI took too long to finish this run."],
+    ] as const) {
+      const r = await runWith(first, second, { PROVIDER_IDLE_TIMEOUT_MS: "500" });
+      expect(r.lastRun, String(first)).toMatchObject({ status: "failed", error });
+      expect(r.notice).toMatchObject({ kind: "automation.failed", title: "Morning brief didn't finish" });
+      expect(r.notice.body).toBe(`${error} Open it to run it again.`);
+      neutral(r.bodies);
+    }
   });
 });
 

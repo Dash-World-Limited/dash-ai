@@ -14,6 +14,7 @@ import { buildProviderMessages } from "../providers/context.js";
 import { buildSystemPrompt } from "../providers/instructions.js";
 import type { ProviderRegistry } from "../providers/registry.js";
 import {
+  failoverAllowed,
   toProviderError,
   type ProviderAdapter,
   type ProviderToolResult,
@@ -388,9 +389,9 @@ async function runTarget(
         if (controller.signal.aborted) throw err;
         const next = candidates[c + 1];
         // Safe only while nothing reached the person and no tool ran: the next provider starts clean.
-        if (!next || content !== "" || seenCallIds.size > 0 || !error.retryable) throw err;
+        if (!next || content !== "" || seenCallIds.size > 0 || !failoverAllowed(error)) throw err;
         ctx.metrics?.providerFallbacks?.inc({ from: adapter.id, to: next.id, code: error.code });
-        ctx.log.warn({ from: adapter.id, to: next.id, code: error.code, attempts }, "provider fallback");
+        ctx.log.warn({ from: adapter.id, to: next.id, code: error.code, httpStatus: error.httpStatus, attempts }, "provider fallback");
       }
     }
     sink.send({ event: "message.end", data: { messageId, finishReason, usage } });
