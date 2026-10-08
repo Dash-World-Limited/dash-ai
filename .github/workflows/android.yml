@@ -95,10 +95,11 @@ jobs:
           "$BT/apksigner" verify --verbose "$APK" | grep -E "^(Verifies|Verified using|Number of signers)"
           "$BT/apksigner" verify --print-certs "$APK" | grep -E "certificate DN"
           echo "== aapt2 dump badging (selected lines)"
-          "$BT/aapt2" dump badging "$APK" | grep -E "^(package:|sdkVersion|targetSdkVersion|application-debuggable|uses-permission: name='android.permission.POST_NOTIFICATIONS'|launchable-activity)"
+          "$BT/aapt2" dump badging "$APK" | grep -E "^(package:|minSdkVersion|sdkVersion|targetSdkVersion|application-debuggable|uses-permission: name='android.permission.POST_NOTIFICATIONS'|launchable-activity)"
           echo "== androguard inspection"
-          python3 -m pip install -q --disable-pip-version-check androguard
-          python3 -I .github/tmp-verify/inspect_apk.py "$APK"
+          python3 -m venv "$RUNNER_TEMP/apkvenv"
+          "$RUNNER_TEMP/apkvenv/bin/pip" install -q --disable-pip-version-check androguard
+          "$RUNNER_TEMP/apkvenv/bin/python" -I .github/tmp-verify/inspect_apk.py "$APK"
           echo "=== TEMP-VERIFY END ==="
 
   jvm-ui:
