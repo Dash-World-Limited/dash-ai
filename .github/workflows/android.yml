@@ -54,6 +54,14 @@ jobs:
         run: ./gradlew :app:lintDebug --no-daemon
       - name: Build the debug APK
         working-directory: apps/android
+        # Firebase client configuration for push (FCM), from the repository's Actions variables; the
+        # Gradle build validates the formats and turns push off when they are empty. Only this step
+        # receives them, and nothing here prints them. No google-services.json, no service account.
+        env:
+          DASH_FIREBASE_PROJECT_ID: ${{ vars.DASH_FIREBASE_PROJECT_ID }}
+          DASH_FIREBASE_APP_ID: ${{ vars.DASH_FIREBASE_APP_ID }}
+          DASH_FIREBASE_API_KEY: ${{ vars.DASH_FIREBASE_API_KEY }}
+          DASH_FIREBASE_SENDER_ID: ${{ vars.DASH_FIREBASE_SENDER_ID }}
         run: ./gradlew :app:assembleDebug --no-daemon
       - name: Check the APK contains no provider keys or endpoints
         run: scripts/check-apk.sh apps/android/app/build/outputs/apk/debug/app-debug.apk
