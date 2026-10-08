@@ -100,8 +100,10 @@ delivery row only tracks sending.
 - **Setup without `google-services.json`.** Firebase is initialised from `BuildConfig` values set at build
   time: Gradle properties `dashFirebaseProjectId`, `dashFirebaseAppId`, `dashFirebaseApiKey`,
   `dashFirebaseSenderId`, or environment variables `DASH_FIREBASE_PROJECT_ID`, `DASH_FIREBASE_APP_ID`,
-  `DASH_FIREBASE_API_KEY`, `DASH_FIREBASE_SENDER_ID`. Without them (CI, local builds) push is simply
-  unavailable and everything else works. Messaging auto-init and Analytics collection are off.
+  `DASH_FIREBASE_API_KEY`, `DASH_FIREBASE_SENDER_ID`. CI's debug APK (`android.yml`) takes these four from
+  the repository's GitHub Actions variables of the same names; the other CI steps and local builds run
+  without them, where push is simply unavailable and everything else works. Messaging auto-init and
+  Analytics collection are off.
 - **Permission UX.** Nothing is asked at first launch. On Automates, a signed-in person who has not
   allowed notifications sees one card, "Know when results are ready", explaining what DASH AI notifies
   about. "Turn on notifications" shows Android's prompt (Android 13+) or opens DASH AI's notification
@@ -181,14 +183,16 @@ signing and payload encryption; VAPID secrets; tests on both stores; and docs.
 | `PUSH_RETRY_BASE_MS` | `30000` | First retry delay. |
 | `PUSH_TTL_SECONDS` | `86400` | A push older than this is not sent (also the FCM TTL). |
 
-What the Director supplies to turn pushes on (none of it is committed, and CI needs none of it):
+What the Director supplies to turn pushes on (none of it is committed; CI's tests need none of it):
 
 1. A Firebase project with an Android app for package `com.dashworldng.ai`.
 2. For the API: a service-account key allowed to send FCM messages, stored in the secret manager as
    `FCM_SERVICE_ACCOUNT`, plus `PUSH_TRANSPORT=fcm`.
 3. For release builds of the app: the Firebase project id, app id, API key and sender id as the Gradle
    properties or environment variables above (these identify the app; they are not server secrets, but
-   are kept out of the repository with the other build settings).
+   are kept out of the repository with the other build settings). For CI's debug APK they are the
+   repository's Actions variables `DASH_FIREBASE_PROJECT_ID`, `DASH_FIREBASE_APP_ID`,
+   `DASH_FIREBASE_API_KEY` and `DASH_FIREBASE_SENDER_ID`.
 
 ## Local development and tests
 
