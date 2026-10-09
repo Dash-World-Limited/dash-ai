@@ -1,12 +1,17 @@
-import type { ProviderId, ProviderStatus } from "@dash-ai/contracts";
+import { ProviderId, type ProviderStatus } from "@dash-ai/contracts";
 import type { AppConfig } from "../config.js";
 import { AnthropicAdapter } from "./anthropic.js";
-import { looksLikePlaceholder } from "./credentials.js";
+import { BedrockAdapter } from "./bedrock.js";
+import { bedrockConfigured, looksLikePlaceholder } from "./credentials.js";
 import { FakeAdapter } from "./fake.js";
 import { OpenAIAdapter } from "./openai.js";
 import type { ProviderAdapter } from "./types.js";
 
-const DISPLAY: Record<ProviderId, string> = { openai: "OpenAI", anthropic: "Claude" };
+const DISPLAY: Record<ProviderId, string> = {
+  openai: "OpenAI",
+  anthropic: "Claude",
+  bedrock: "Amazon Bedrock",
+};
 
 export { looksLikePlaceholder };
 
@@ -18,6 +23,8 @@ export class ProviderRegistry {
 
   static fromConfig(config: AppConfig): ProviderRegistry {
     if (config.providerMode === "fake") {
+      // Demo Mode intentionally stays the same two deterministic fake adapters. Bedrock is real
+      // infrastructure only and remains unconfigured while PROVIDER_MODE=fake.
       return new ProviderRegistry(
         {
           openai: new FakeAdapter("openai", config.fakeStreamDelayMs),
@@ -26,23 +33,54 @@ export class ProviderRegistry {
         ["PROVIDER_MODE=fake: fake demonstration adapters are active; no real provider will be called."],
       );
     }
+
     const adapters: Partial<Record<ProviderId, ProviderAdapter>> = {};
     const warnings: string[] = [];
-    const { openai, anthropic } = config;
+    const { openai, anthropic, bedrock } = config;
+
     if (openai.apiKey && openai.model) {
       // maxRetries 0: retries happen in one place, the orchestrator (bounded, cancellable, counted),
       // instead of multiplying SDK retries by orchestrator retries.
-      adapters.openai = new OpenAIAdapter(openai.apiKey, openai.model, { encryptedReasoning: openai.encryptedReasoning, maxRetries: 0 });
+      adapters.openai = new OpenAIAdapter(openai.apiKey, openai.model, {
+        encryptedReasoning: openai.encryptedReasoning,
+        maxRetries: 0,
+      });
     }
-    if (!(openai.apiKey && openai.model) && (openai.apiKey || openai.model)) warnings.push("OpenAI needs both OPENAI_API_KEY and OPENAI_MODEL.");
-    if (openai.apiKey && looksLikePlaceholder(openai.apiKey)) warnings.push("OPENAI_API_KEY looks like a placeholder, not a real key: OpenAI will refuse requests.");
-    if (anthropic.apiKey && looksLikePlaceholder(anthropic.apiKey)) warnings.push("ANTHROPIC_API_KEY looks like a placeholder, not a real key: Claude will refuse requests.");
+    if (!(openai.apiKey && openai.model) && (openai.apiKey || openai.model)) {
+      warnings.push("OpenAI needs both OPENAI_API_KEY and OPENAI_MODEL.");
+    }
+    if (openai.apiKey && looksLikePlaceholder(openai.apiKey)) {
+      warnings.push("OPENAI_API_KEY looks like a placeholder, not a real key: OpenAI will refuse requests.");
+    }
+
+    if (anthropic.apiKey && looksLikePlaceholder(anthropic.apiKey)) {
+      warnings.push("ANTHROPIC_API_KEY looks like a placeholder, not a real key: Claude will refuse requests.");
+    }
     if (anthropic.apiKey && anthropic.model) {
       adapters.anthropic = new AnthropicAdapter(anthropic.apiKey, anthropic.model, { maxRetries: 0 });
     } else if (anthropic.apiKey || anthropic.model) {
       warnings.push("Claude needs both ANTHROPIC_API_KEY and ANTHROPIC_MODEL.");
     }
-    if (!adapters.openai && !adapters.anthropic) {
+
+    if (bedrockConfigured(bedrock)) {
+      adapters.bedrock = new BedrockAdapter(bedrock.apiKey!, bedrock.region!, bedrock.models);
+    } else {
+      const anyBedrock = Boolean(
+        bedrock.apiKey || bedrock.region || bedrock.models.micro || bedrock.models.lite || bedrock.models.nova2Lite,
+      );
+      if (anyBedrock) {
+        if (!bedrock.apiKey) warnings.push("Amazon Bedrock needs BEDROCK_API_KEY.");
+        if (!bedrock.region) warnings.push("Amazon Bedrock needs BEDROCK_REGION.");
+        if (!bedrock.models.micro && !bedrock.models.lite && !bedrock.models.nova2Lite) {
+          warnings.push("Amazon Bedrock needs at least one BEDROCK_MODEL_* value.");
+        }
+      }
+    }
+    if (bedrock.apiKey && looksLikePlaceholder(bedrock.apiKey)) {
+      warnings.push("BEDROCK_API_KEY looks like a placeholder, not a real key: Amazon Bedrock will refuse requests.");
+    }
+
+    if (Object.keys(adapters).length === 0) {
       warnings.push("No AI provider is configured. Chat requests will fail until one is configured.");
     }
     return new ProviderRegistry(adapters, warnings);
@@ -57,7 +95,7 @@ export class ProviderRegistry {
   }
 
   status(): ProviderStatus[] {
-    return (["openai", "anthropic"] as const).map((id) => {
+    return ProviderId.options.map((id) => {
       const adapter = this.adapters[id];
       return {
         id,
