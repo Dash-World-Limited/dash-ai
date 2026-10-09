@@ -1,4 +1,4 @@
-import type { FinishReason, ProviderId, Usage } from "@dash-ai/contracts";
+import type { AssistantMode, FinishReason, ProviderId, Usage } from "@dash-ai/contracts";
 import type { ModelToolCall, NormalizedTool } from "../tools/types.js";
 
 export interface ProviderMessage {
@@ -36,13 +36,24 @@ export interface ProviderToolResultTurn {
 
 /**
  * Provider-neutral conversation. Each adapter translates this to its own wire format (OpenAI
- * Responses input items, Anthropic Messages content blocks), so tool state never leaks between
- * providers: one provider's tool turns are only ever replayed to that same provider.
+ * Responses input items, Anthropic Messages content blocks, Bedrock Converse blocks), so tool state
+ * never leaks between providers: one provider's tool turns are only ever replayed to that same provider.
  */
 export type ProviderTurn = ProviderMessage | ProviderToolCallTurn | ProviderToolResultTurn;
 
 export const isToolCallTurn = (t: ProviderTurn): t is ProviderToolCallTurn => t.role === "assistant" && "toolCalls" in t;
 export const isToolResultTurn = (t: ProviderTurn): t is ProviderToolResultTurn => t.role === "tool";
+
+/**
+ * Provider-neutral routing metadata. Providers may use it only to choose between models they own;
+ * the DASH Intelligence Router still decides which provider receives the request.
+ */
+export interface ProviderRoutingContext {
+  task: string;
+  mode?: AssistantMode;
+  preference?: "balanced" | "quality" | "speed" | "economy";
+  estimatedInputTokens?: number;
+}
 
 export interface ProviderRequest {
   system: string;
@@ -58,6 +69,8 @@ export interface ProviderRequest {
   toolChoice?: "auto" | "none";
   maxOutputTokens: number;
   signal: AbortSignal;
+  /** Internal-only task hints used by adaptive provider adapters such as Bedrock. */
+  routing?: ProviderRoutingContext;
 }
 
 export type ProviderChunk =
