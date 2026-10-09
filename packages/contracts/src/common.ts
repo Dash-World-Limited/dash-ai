@@ -10,7 +10,7 @@ export const IsoDateTime = z.iso.datetime({ offset: true });
  * The AI infrastructure providers the backend can talk to. INTERNAL: consumer clients never show
  * them. Production servers omit provider identity from consumer responses (PROVIDER_DETAILS=hidden).
  */
-export const ProviderId = z.enum(["openai", "anthropic"]);
+export const ProviderId = z.enum(["openai", "anthropic", "bedrock"]);
 export type ProviderId = z.infer<typeof ProviderId>;
 
 /**
