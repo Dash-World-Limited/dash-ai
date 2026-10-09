@@ -17,8 +17,8 @@ const EnvSchema = z.object({
     z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
   ),
   /**
-   * live — use real providers for which both a key and a model are configured.
-   * fake — use the fake demonstration adapters for both providers (no network, no cost).
+   * live — use real providers whose required settings are complete.
+   * fake — use demonstration adapters only (no external inference, no cost).
    */
   PROVIDER_MODE: z.preprocess(emptyToUndefined, z.enum(["live", "fake"]).default("live")),
   // hidden (default): consumer responses never name the AI provider or model; explicit provider
@@ -30,6 +30,15 @@ const EnvSchema = z.object({
   OPENAI_ENCRYPTED_REASONING: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("false")),
   ANTHROPIC_API_KEY: optionalString,
   ANTHROPIC_MODEL: optionalString,
+  /**
+   * Amazon Bedrock native Converse adapter. The bearer key is server-side only. For production AWS
+   * recommends short-term credentials/keys; long-term Bedrock API keys are for exploration.
+   */
+  BEDROCK_API_KEY: optionalString,
+  BEDROCK_REGION: optionalString,
+  BEDROCK_MODEL_MICRO: optionalString,
+  BEDROCK_MODEL_LITE: optionalString,
+  BEDROCK_MODEL_NOVA2_LITE: optionalString,
   PROVIDER_TIMEOUT_MS: int(120_000, 1_000, 600_000),
   PROVIDER_IDLE_TIMEOUT_MS: int(45_000, 500, 300_000),
   /** Extra attempts after a retryable provider failure that happened before any output (0 = none). */
@@ -139,6 +148,11 @@ export interface AppConfig {
   providerDetails: Env["PROVIDER_DETAILS"];
   openai: ProviderConfig & { encryptedReasoning: boolean };
   anthropic: ProviderConfig;
+  bedrock: {
+    apiKey: string | undefined;
+    region: string | undefined;
+    models: { micro: string | undefined; lite: string | undefined; nova2Lite: string | undefined };
+  };
   providerTimeoutMs: number;
   providerIdleTimeoutMs: number;
   providerRetry: { maxRetries: number; baseMs: number };
@@ -224,6 +238,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     const problems = liveProviderProblems({
       openai: { apiKey: e.OPENAI_API_KEY, model: e.OPENAI_MODEL },
       anthropic: { apiKey: e.ANTHROPIC_API_KEY, model: e.ANTHROPIC_MODEL },
+      bedrock: {
+        apiKey: e.BEDROCK_API_KEY,
+        region: e.BEDROCK_REGION,
+        models: { micro: e.BEDROCK_MODEL_MICRO, lite: e.BEDROCK_MODEL_LITE, nova2Lite: e.BEDROCK_MODEL_NOVA2_LITE },
+      },
     });
     if (problems.length > 0) {
       throw new ConfigError(
@@ -241,6 +260,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     providerDetails: e.PROVIDER_DETAILS,
     openai: { apiKey: e.OPENAI_API_KEY, model: e.OPENAI_MODEL, encryptedReasoning: e.OPENAI_ENCRYPTED_REASONING === "true" },
     anthropic: { apiKey: e.ANTHROPIC_API_KEY, model: e.ANTHROPIC_MODEL },
+    bedrock: {
+      apiKey: e.BEDROCK_API_KEY,
+      region: e.BEDROCK_REGION,
+      models: { micro: e.BEDROCK_MODEL_MICRO, lite: e.BEDROCK_MODEL_LITE, nova2Lite: e.BEDROCK_MODEL_NOVA2_LITE },
+    },
     providerTimeoutMs: e.PROVIDER_TIMEOUT_MS,
     providerIdleTimeoutMs: e.PROVIDER_IDLE_TIMEOUT_MS,
     providerRetry: { maxRetries: e.PROVIDER_MAX_RETRIES, baseMs: e.PROVIDER_RETRY_BASE_MS },
@@ -332,7 +356,7 @@ export function configWarnings(config: AppConfig): string[] {
     warnings.push("PROVIDER_MODE=fake in production: every answer is a labelled demonstration, not a real model.");
   }
   if (config.providerMode === "live" && liveProviderCount(config) === 1) {
-    warnings.push("Only one AI provider is configured in production: if it fails, DASH AI has no second provider to fall back to. Configure both OPENAI_* and ANTHROPIC_* for failover.");
+    warnings.push("Only one AI provider is configured in production: if it fails, DASH AI has no second provider to fall back to. Configure another live provider for failover.");
   }
   return warnings;
 }
