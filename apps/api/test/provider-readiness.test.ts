@@ -61,15 +61,21 @@ describe("provider configuration comes from the environment only", () => {
 
   it("a half-configured provider stays off with warnings that name variables, never values", () => {
     const registry = ProviderRegistry.fromConfig(
-      liveEnv({ OPENAI_API_KEY: OPENAI_KEY, ANTHROPIC_MODEL: "claude-model", BEDROCK_REGION: "eu-west-1" }),
+      liveEnv({ OPENAI_API_KEY: OPENAI_KEY, ANTHROPIC_MODEL: "claude-model", BEDROCK_MODEL_LITE: "eu.amazon.nova-lite-v1:0" }),
     );
     expect([...registry.configured()]).toEqual([]);
     expect(registry.warnings).toContain("OpenAI needs both OPENAI_API_KEY and OPENAI_MODEL.");
     expect(registry.warnings).toContain("Claude needs both ANTHROPIC_API_KEY and ANTHROPIC_MODEL.");
-    expect(registry.warnings).toContain("Amazon Bedrock needs BEDROCK_API_KEY.");
-    expect(registry.warnings).toContain("Amazon Bedrock needs at least one BEDROCK_MODEL_* value.");
+    expect(registry.warnings).toContain("Amazon Bedrock: BEDROCK_API_KEY is required when Bedrock is configured with BEDROCK_AUTH=api_key.");
+    expect(registry.warnings).toContain("Amazon Bedrock: BEDROCK_REGION is required when Bedrock is configured.");
     expect(registry.warnings).toContain("No AI provider is configured. Chat requests will fail until one is configured.");
-    expect(registry.warnings.join(" ")).not.toContain("TESTONLY");
+    expect(registry.warnings.join(" ")).not.toMatch(/TESTONLY|nova-lite/);
+  });
+
+  it("a Region on its own (as templates preset it) is not a half-configured Bedrock", () => {
+    const registry = ProviderRegistry.fromConfig(liveEnv({ ANTHROPIC_API_KEY: ANTHROPIC_KEY, ANTHROPIC_MODEL: "claude-model", BEDROCK_REGION: "eu-west-1" }));
+    expect([...registry.configured()]).toEqual(["anthropic"]);
+    expect(registry.warnings).toEqual([]);
   });
 
   it("one provider is enough to run; the others are reported as not configured", () => {

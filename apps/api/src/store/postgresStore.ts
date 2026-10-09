@@ -1192,20 +1192,21 @@ export class PostgresStore implements Store {
 
   async recordUsage(u: UsageRow): Promise<void> {
     await this.pool.query(
-      `INSERT INTO usage_records (user_id, conversation_id, message_id, provider, model, demo, input_tokens, output_tokens, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [u.userId, u.conversationId, u.messageId, u.provider, u.model, u.demo, u.inputTokens, u.outputTokens, u.createdAt],
+      `INSERT INTO usage_records (user_id, conversation_id, message_id, provider, model, demo, input_tokens, output_tokens, estimated_cost_usd, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [u.userId, u.conversationId, u.messageId, u.provider, u.model, u.demo, u.inputTokens, u.outputTokens, u.estimatedCostUsd ?? null, u.createdAt],
     );
   }
 
   async listUsage(userId: string): Promise<UsageRow[]> {
     const { rows } = await this.pool.query<{
       user_id: string; conversation_id: string; message_id: string; provider: string; model: string; demo: boolean;
-      input_tokens: string | null; output_tokens: string | null; created_at: Date;
+      input_tokens: string | null; output_tokens: string | null; estimated_cost_usd: number | null; created_at: Date;
     }>("SELECT * FROM usage_records WHERE user_id = $1 ORDER BY id", [userId]);
     return rows.map((r) => ({
       userId: r.user_id, conversationId: r.conversation_id, messageId: r.message_id, provider: r.provider as ProviderId,
-      model: r.model, demo: r.demo, inputTokens: num(r.input_tokens), outputTokens: num(r.output_tokens), createdAt: iso(r.created_at),
+      model: r.model, demo: r.demo, inputTokens: num(r.input_tokens), outputTokens: num(r.output_tokens),
+      estimatedCostUsd: r.estimated_cost_usd, createdAt: iso(r.created_at),
     }));
   }
 }

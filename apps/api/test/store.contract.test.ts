@@ -285,9 +285,12 @@ function storeContract(name: string, make: () => Promise<Store>, teardown?: () =
       };
       await store.recordUsage(row);
       await store.recordUsage({ ...row, provider: "anthropic", inputTokens: 1, outputTokens: 2 });
+      await store.recordUsage({ ...row, provider: "bedrock", model: "eu.amazon.nova-lite-v1:0", inputTokens: 1_000, outputTokens: 500, estimatedCostUsd: 0.00018 });
       const rows = await store.listUsage(u.id);
-      expect(rows.map((r) => r.provider)).toEqual(["openai", "anthropic"]);
-      expect(rows[0]).toEqual(row);
+      expect(rows.map((r) => r.provider)).toEqual(["openai", "anthropic", "bedrock"]);
+      // A row written without a cost estimate reads back as unknown, never as zero.
+      expect(rows[0]).toEqual({ ...row, estimatedCostUsd: null });
+      expect(rows[2]).toMatchObject({ provider: "bedrock", model: "eu.amazon.nova-lite-v1:0", estimatedCostUsd: 0.00018 });
     });
 
     it("tracks a title revision that changes only when the title changes", async () => {

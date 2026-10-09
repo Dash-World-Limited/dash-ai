@@ -2,7 +2,7 @@ import { ProviderId, type ProviderStatus } from "@dash-ai/contracts";
 import type { AppConfig } from "../config.js";
 import { AnthropicAdapter } from "./anthropic.js";
 import { BedrockAdapter } from "./bedrock.js";
-import { bedrockConfigured, looksLikePlaceholder } from "./credentials.js";
+import { bedrockConfigured, bedrockProblems, looksLikePlaceholder } from "./credentials.js";
 import { FakeAdapter } from "./fake.js";
 import { OpenAIAdapter } from "./openai.js";
 import type { ProviderAdapter } from "./types.js";
@@ -62,22 +62,15 @@ export class ProviderRegistry {
       warnings.push("Claude needs both ANTHROPIC_API_KEY and ANTHROPIC_MODEL.");
     }
 
-    if (bedrockConfigured(bedrock)) {
-      adapters.bedrock = new BedrockAdapter(bedrock.apiKey!, bedrock.region!, bedrock.models);
-    } else {
-      const anyBedrock = Boolean(
-        bedrock.apiKey || bedrock.region || bedrock.models.micro || bedrock.models.lite || bedrock.models.nova2Lite,
+    // Development and tests start anyway and report what is missing; production refuses to start
+    // with the same problems (config.ts).
+    for (const problem of bedrockProblems(bedrock)) warnings.push(`Amazon Bedrock: ${problem}`);
+    if (bedrockConfigured(bedrock) && bedrockProblems(bedrock).length === 0) {
+      adapters.bedrock = new BedrockAdapter(
+        bedrock.auth === "iam" ? { kind: "iam" } : { kind: "api_key", apiKey: bedrock.apiKey! },
+        bedrock.region!,
+        bedrock.models,
       );
-      if (anyBedrock) {
-        if (!bedrock.apiKey) warnings.push("Amazon Bedrock needs BEDROCK_API_KEY.");
-        if (!bedrock.region) warnings.push("Amazon Bedrock needs BEDROCK_REGION.");
-        if (!bedrock.models.micro && !bedrock.models.lite && !bedrock.models.nova2Lite) {
-          warnings.push("Amazon Bedrock needs at least one BEDROCK_MODEL_* value.");
-        }
-      }
-    }
-    if (bedrock.apiKey && looksLikePlaceholder(bedrock.apiKey)) {
-      warnings.push("BEDROCK_API_KEY looks like a placeholder, not a real key: Amazon Bedrock will refuse requests.");
     }
 
     if (Object.keys(adapters).length === 0) {

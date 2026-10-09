@@ -1,3 +1,4 @@
+import { ProviderId } from "@dash-ai/contracts";
 import { loadConfig, type AppConfig } from "../config.js";
 import { ProviderRegistry } from "../providers/registry.js";
 import { SMOKE_MAX_OUTPUT_TOKENS, runAdapterChecks } from "./adapterChecks.js";
@@ -15,9 +16,9 @@ export interface SmokeDeps {
 
 export const SMOKE_ENABLE_HINT =
   "Live provider smoke tests are opt-in because they call the real APIs and may cost money.\n" +
-  "To run them, put OPENAI_API_KEY/OPENAI_MODEL and/or ANTHROPIC_API_KEY/ANTHROPIC_MODEL in apps/api/.env\n" +
-  "(never commit it), then run:  DASH_LIVE_SMOKE=1 PROVIDER_MODE=live pnpm smoke:live\n" +
-  "Options: --provider openai|anthropic   --skip-tools\n";
+  "To run them, put OPENAI_API_KEY/OPENAI_MODEL, ANTHROPIC_API_KEY/ANTHROPIC_MODEL and/or the BEDROCK_* settings\n" +
+  "in apps/api/.env (never commit it), then run:  DASH_LIVE_SMOKE=1 PROVIDER_MODE=live pnpm smoke:live\n" +
+  "Options: --provider openai|anthropic|bedrock   --skip-tools\n";
 
 /**
  * Exit codes: 0 all checks passed (or the run was not enabled), 1 a check failed, 2 the run could
@@ -29,7 +30,7 @@ export async function runSmokeCli(
   io: SmokeIo,
   deps: SmokeDeps = {},
 ): Promise<number> {
-  const redact = makeRedactor([env.OPENAI_API_KEY, env.ANTHROPIC_API_KEY, env.DATA_ENCRYPTION_KEY, env.DATABASE_URL]);
+  const redact = makeRedactor([env.OPENAI_API_KEY, env.ANTHROPIC_API_KEY, env.BEDROCK_API_KEY, env.AWS_SECRET_ACCESS_KEY, env.AWS_SESSION_TOKEN, env.DATA_ENCRYPTION_KEY, env.DATABASE_URL]);
   const out = (text: string) => io.write(redact(text));
 
   if (env.DASH_LIVE_SMOKE !== "1") {
@@ -37,8 +38,8 @@ export async function runSmokeCli(
     return 0;
   }
   const only = argv.includes("--provider") ? argv[argv.indexOf("--provider") + 1] : undefined;
-  if (only !== undefined && only !== "openai" && only !== "anthropic") {
-    out("--provider must be openai or anthropic.\n");
+  if (only !== undefined && !ProviderId.options.some((p) => p === only)) {
+    out("--provider must be openai, anthropic or bedrock.\n");
     return 2;
   }
 
@@ -56,7 +57,7 @@ export async function runSmokeCli(
 
   const registry = (deps.registryFactory ?? ProviderRegistry.fromConfig)(config);
   for (const warning of registry.warnings) out(`warning: ${warning}\n`);
-  const adapters = (["openai", "anthropic"] as const).filter((p) => (only ? p === only : true)).flatMap((p) => {
+  const adapters = ProviderId.options.filter((p) => (only ? p === only : true)).flatMap((p) => {
     const adapter = registry.get(p);
     return adapter ? [adapter] : [];
   });
@@ -67,7 +68,7 @@ export async function runSmokeCli(
 
   out(
     `Running live smoke checks against ${adapters.map((a) => `${a.displayName} (${a.model})`).join(" and ")}.\n` +
-      `This sends roughly ${adapters.length * 8 + 6} small requests (each limited to ≤ ${SMOKE_MAX_OUTPUT_TOKENS} output tokens,\n` +
+      `This sends roughly ${adapters.length * 8 + 6 + (adapters.some((a) => a.id === "bedrock") ? 3 : 0)} small requests (each limited to ≤ ${SMOKE_MAX_OUTPUT_TOKENS} output tokens,\n` +
       `thinking/reasoning included; most use far fewer).\n\n`,
   );
 

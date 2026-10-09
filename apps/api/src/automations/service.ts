@@ -9,6 +9,7 @@ import {
 } from "@dash-ai/contracts";
 import type { FastifyBaseLogger } from "fastify";
 import type { AppConfig } from "../config.js";
+import { estimateCostUsd } from "../intelligence/cost.js";
 import { GenerationError, generateText } from "../intelligence/generate.js";
 import type { IntelligenceRouter } from "../intelligence/router.js";
 import type { Metrics } from "../observability/metrics.js";
@@ -260,6 +261,8 @@ export class AutomationService {
         },
       );
       const content = result.content.slice(0, AUTOMATION_LIMITS.maxResultChars);
+      const estimatedCostUsd = estimateCostUsd(this.deps.config.modelPrices, result);
+      if (estimatedCostUsd) metrics.estimatedCostUsd.inc({ provider: result.provider }, estimatedCostUsd);
       await this.finish(run, { status: "ready", content, provider: result.provider, model: result.model, demo: result.demo });
       await store
         .recordUsage({
@@ -271,6 +274,7 @@ export class AutomationService {
           demo: result.demo,
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
+          estimatedCostUsd,
           createdAt: this.deps.now().toISOString(),
         })
         .catch((err: unknown) => log.warn({ err }, "could not record automation usage"));

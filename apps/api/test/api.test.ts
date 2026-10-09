@@ -54,9 +54,11 @@ describe("system endpoints", () => {
 
     const providers = await app.inject({ method: "GET", url: "/v1/providers" });
     const body = ProvidersResponse.parse(providers.json());
+    // Demo Mode keeps the two deterministic fake adapters; Bedrock has no fake twin and stays off.
     expect(body.providers.map((p) => [p.id, p.mode])).toEqual([
       ["openai", "fake"],
       ["anthropic", "fake"],
+      ["bedrock", "unconfigured"],
     ]);
     expect(body.compareAvailable).toBe(true);
     expect(body.research.liveSearchAvailable).toBe(false);

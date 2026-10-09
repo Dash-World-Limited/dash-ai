@@ -97,15 +97,41 @@ Nothing in the code or the repository changes. Keys live only in the deployment'
 
 1. Put `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` in the secret manager of the host running the API
    (never in `.env.example`, the repository, a client app or a build). Set `OPENAI_MODEL` /
-   `ANTHROPIC_MODEL` to current model ids from each provider's documentation.
+   `ANTHROPIC_MODEL` to current model ids from each provider's documentation. For Amazon Bedrock see
+   [below](#amazon-bedrock-amazon-nova).
 2. Set `PROVIDER_MODE=live` (the default when unset). Keep `PROVIDER_MODE=fake` for demos and CI.
 3. Start the API. In production (`NODE_ENV=production`) it **refuses to start** (exit 1, one line on
-   stderr naming variables, never values) when no provider has both a key and a model, when a provider
-   has only one of the two, or when a key looks copied from an example. Outside production the same
+   stderr naming variables, never values) when no provider is complete, when a provider is
+   half-configured, when a key looks copied from an example, or when the Bedrock settings are
+   incomplete or name the wrong Nova tier. Outside production the same
    problems are start-up warnings. With only one provider configured, production warns that DASH AI has
    nothing to fail over to. `GET /v1/providers` (operator token) must show `mode: "live"` for each
    provider you configured.
 4. Run the live smoke (below) once per provider and model before inviting users.
+
+### Amazon Bedrock (Amazon Nova)
+
+What the AWS account needs before DASH can use Bedrock (all in the Region set as `BEDROCK_REGION`,
+`eu-west-1` for the DASH stack):
+
+1. **Model access** to the Nova tiers you will configure (Amazon Nova Micro, Nova Lite, Nova 2 Lite).
+2. **Model or inference-profile ids**: in Regions where Nova is served through cross-Region inference,
+   use the inference-profile id (for example `eu.amazon.nova-lite-v1:0`) rather than the bare model id;
+   a bare id that the Region cannot serve on demand is treated as a configuration failure.
+3. **Credentials**, either:
+   - `BEDROCK_AUTH=iam` (recommended): an IAM user (or role) whose policy allows only
+     `bedrock:InvokeModelWithResponseStream` (and `bedrock:InvokeModel`) on those foundation models and
+     inference profiles; its `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` go into the server's secret
+     store, where the AWS SDK reads them; or
+   - `BEDROCK_AUTH=api_key`: a Bedrock API key in `BEDROCK_API_KEY` (long-term keys suit trials; AWS
+     recommends short-term credentials for production).
+4. **Prices** for the cost ledger: confirm the Nova prices for the Region and set `MODEL_PRICES` where
+   they differ from the built-in estimates (`apps/api/src/intelligence/cost.ts`).
+
+Then verify from the server, with the same environment, before switching (about 3 extra requests for
+the tier check): `PROVIDER_MODE=live DASH_LIVE_SMOKE=1 node --env-file=<file> dist/smoke/main.js --provider bedrock`.
+It checks a normal answer, streaming, cancellation, a tool round trip and one answer from each configured
+Nova tier, and prints no key.
 
 ### Switching a running production server from `fake` to `live`
 

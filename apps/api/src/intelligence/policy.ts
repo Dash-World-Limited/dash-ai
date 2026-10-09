@@ -201,7 +201,11 @@ export function loadPolicy(json: string | undefined): RouterPolicy {
       if (!full.success) throw new PolicyError(`ROUTER_POLICY providers.${id} needs capabilities and contextTokens.`);
       providers[id] = full.data;
     } else {
-      providers[id] = { ...base, ...patch, quality: { ...base.quality, ...patch.quality } };
+      // Only the fields the operator wrote: parsing fills schema defaults (enabled, null prices) that
+      // must not overwrite the base profile (Bedrock ships with prices).
+      const written = Object.keys(((raw as { providers?: Record<string, object> }).providers ?? {})[id] ?? {});
+      const supplied = Object.fromEntries(Object.entries(patch).filter(([key]) => written.includes(key)));
+      providers[id] = { ...base, ...supplied, quality: { ...base.quality, ...(patch.quality ?? {}) } };
     }
   }
   const tasks = { ...DEFAULT_POLICY.tasks };

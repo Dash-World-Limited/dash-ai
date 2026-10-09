@@ -8,12 +8,17 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `NODE_ENV` | `development` | `development`, `test` or `production`. |
 | `HOST` / `PORT` | `0.0.0.0` / `8787` | Listen address. |
 | `LOG_LEVEL` | `info` | Pino level (`silent` … `trace`). Logs never include prompts, documents or answers. `debug`/`trace` in production log a start-up warning. |
-| `PROVIDER_MODE` | `live` | `live` uses real providers that have **both** a key and a model; `fake` uses the demonstration adapters for both providers (no network, no cost; a start-up warning in production). In production, `live` **refuses to start** unless at least one provider has a key and a model, no provider has only one of the two, and no key looks like an example placeholder (the message names variables, never values). |
+| `PROVIDER_MODE` | `live` | `live` uses real providers whose settings are complete (OpenAI/Anthropic: key and model; Bedrock: Region, at least one Nova model and credentials); `fake` uses the two demonstration adapters (no network, no cost; a start-up warning in production; Bedrock settings are ignored). In production, `live` **refuses to start** unless at least one provider is complete, none is half-configured, and no key looks like an example placeholder (the message names variables, never values). |
 | `OPENAI_API_KEY` | — | OpenAI key (server only). |
 | `OPENAI_MODEL` | — | OpenAI model id, e.g. a current model from OpenAI's docs. Required with the key. |
 | `OPENAI_ENCRYPTED_REASONING` | `false` | Reasoning models only: request and replay encrypted reasoning items between tool rounds (`store` stays false). Enable only after the live smoke passes for your model. |
 | `ANTHROPIC_API_KEY` | — | Anthropic key (server only). |
 | `ANTHROPIC_MODEL` | — | Claude model id from Anthropic's docs. Required with the key. |
+| `BEDROCK_AUTH` | `api_key` | How the server authenticates to Amazon Bedrock. `api_key`: `BEDROCK_API_KEY` is sent as a bearer token. `iam`: the AWS SDK default credential chain (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` of a least-privilege IAM user, a shared profile, or a role), signed with SigV4 — AWS's recommendation for production. On its own it does not switch Bedrock on. |
+| `BEDROCK_API_KEY` | — | Bedrock API key (server only, secret). Only with `BEDROCK_AUTH=api_key`; set with `iam` it is refused. |
+| `BEDROCK_REGION` | — | AWS Region of Bedrock Runtime, e.g. `eu-west-1`. Required once Bedrock is configured; on its own it does not switch Bedrock on. |
+| `BEDROCK_MODEL_MICRO` / `BEDROCK_MODEL_LITE` / `BEDROCK_MODEL_NOVA2_LITE` | — | Model or inference-profile id for each Amazon Nova tier, e.g. `eu.amazon.nova-lite-v1:0`. At least one; each must be an id of its own tier (production refuses a mismatch). DASH picks the tier per request inside the Bedrock adapter ([intelligence-router.md](intelligence-router.md)). |
+| `MODEL_PRICES` | — | Optional JSON of USD prices per million tokens for the internal cost estimate: `{"<provider>:<model id or prefix>": {"inputPerMillion": n, "outputPerMillion": n}}`. Overrides the built-in Amazon Nova estimates (longest prefix wins); OpenAI/Anthropic costs stay unknown (null) unless listed. Invalid JSON or entries stop start-up without echoing the content. |
 | `PROVIDER_TIMEOUT_MS` | `120000` | Maximum time for one provider answer. |
 | `PROVIDER_IDLE_TIMEOUT_MS` | `45000` | Maximum gap between streamed chunks. |
 | `PROVIDER_MAX_RETRIES` | `2` | Extra attempts after a retryable provider failure (429, 5xx, timeout, malformed stream) that happened **before any output**. 0 disables retries. See [ADR 0011](decisions/0011-provider-failures-retry-not-failover.md). |
@@ -61,8 +66,9 @@ credential slot in it is empty).
 Production (`NODE_ENV=production`) **refuses to start** without `DATABASE_URL` (unless
 `ALLOW_MEMORY_STORE=true`), without a valid `DATA_ENCRYPTION_KEY`, with a key that does not match
 stored data, with a schema that is not migrated, or with `PROVIDER_MODE=live` (the default) and no
-usable provider credentials: no provider with both `*_API_KEY` and `*_MODEL`, a key without its model
-(or the reverse), or a key that looks copied from an example. Its defaults are the safe ones (`DATABASE_SSL=require`,
+usable provider credentials: no complete provider, a key without its model (or the reverse), a key
+that looks copied from an example, or Bedrock settings that are incomplete, use the wrong tier id, an
+invalid Region, or both an API key and `BEDROCK_AUTH=iam`. Its defaults are the safe ones (`DATABASE_SSL=require`,
 `DATABASE_AUTO_MIGRATE=false`). It **warns** at start-up about deliberate opt-outs: `DATABASE_SSL=disable`
 or `no-verify`, `LOG_LEVEL=debug`/`trace`, `PROVIDER_MODE=fake`, only one live provider
 (nothing to fail over to), `RATE_LIMIT_BACKEND=memory` (limits are per instance) and an unencrypted

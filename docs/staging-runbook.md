@@ -9,7 +9,7 @@ repository: every `<…>` below is yours to choose.
 | Kind | Where | Examples |
 | --- | --- | --- |
 | **Safe to commit** | `deploy/staging/staging.env.example`, these docs | `NODE_ENV=production`, limits, timeouts, `DATABASE_SSL=require`, `RATE_LIMIT_BACKEND=redis`, `TRUST_PROXY=true`, model ids |
-| **Secrets: never committed, never pasted into tickets or chats** | your platform's secret manager | `DATABASE_URL`, `DATA_ENCRYPTION_KEY` (and `DATA_ENCRYPTION_PREVIOUS_KEYS`), `REDIS_URL`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `METRICS_TOKEN`, `OPERATOR_TOKEN` |
+| **Secrets: never committed, never pasted into tickets or chats** | your platform's secret manager | `DATABASE_URL`, `DATA_ENCRYPTION_KEY` (and `DATA_ENCRYPTION_PREVIOUS_KEYS`), `REDIS_URL`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `BEDROCK_API_KEY` or, with `BEDROCK_AUTH=iam`, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, `METRICS_TOKEN`, `OPERATOR_TOKEN` |
 | **Infrastructure prerequisites** | provisioned by you | managed PostgreSQL 14+ with TLS and backups; Redis 7 with TLS and a password; an HTTPS reverse proxy / load balancer; a secret manager; a Node 22 runtime (container or VM) |
 | **Manual steps (need you)** | §8 | creating accounts and infrastructure, generating and storing keys, provider billing, DNS/TLS certificates, approving the live smoke run, signing the Android build |
 

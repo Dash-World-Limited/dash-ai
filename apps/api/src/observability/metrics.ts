@@ -129,6 +129,7 @@ export class Metrics {
   readonly aiRequestSeconds = new Histogram("dash_ai_request_seconds", "Duration of one provider answer, from request to final status.", ["provider", "status"], SECONDS);
   readonly providerFailures = new Counter("dash_provider_failures_total", "Provider attempts that failed, by normalized error code.", ["provider", "code", "retryable"]);
   readonly providerRetries = new Counter("dash_provider_retries_total", "Provider requests retried after a retryable failure.", ["provider", "code"]);
+  readonly estimatedCostUsd = new Counter("dash_ai_estimated_cost_usd_total", "Estimated USD cost of real answers with a known price (see MODEL_PRICES).", ["provider"]);
   readonly providerFallbacks = new Counter("dash_provider_fallbacks_total", "Answers DASH AI routed to another provider after a failure before any output.", ["from", "to", "code"]);
   readonly routerDecisions = new Counter("dash_router_decisions_total", "Requests the DASH Intelligence Router routed, by task and first-choice provider.", ["task", "provider"]);
   readonly routerUnavailable = new Counter("dash_router_unavailable_total", "Requests the router could not route, by task and reason.", ["task", "reason"]);

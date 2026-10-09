@@ -1,3 +1,5 @@
+import { matchesTier, NOVA_TIER_VARIABLES, type NovaTier } from "./nova.js";
+
 /**
  * Checks on provider credentials, shared by start-up validation (config.ts) and the provider registry.
  * They look only at the shape of a value: a key is never logged, returned, or included in a message.
@@ -18,13 +20,11 @@ interface Credentials {
 }
 
 export interface BedrockCredentials {
+  /** api_key: Bedrock API key as a bearer token. iam: the AWS SDK default credential chain. */
+  auth: "api_key" | "iam";
   apiKey: string | undefined;
   region: string | undefined;
-  models: {
-    micro: string | undefined;
-    lite: string | undefined;
-    nova2Lite: string | undefined;
-  };
+  models: Record<NovaTier, string | undefined>;
 }
 
 export interface LiveProviderConfig {
@@ -38,20 +38,57 @@ const PROVIDERS = [
   { name: "Anthropic", key: "ANTHROPIC_API_KEY", model: "ANTHROPIC_MODEL", config: "anthropic" },
 ] as const;
 
-const BEDROCK_MODELS = [
-  ["BEDROCK_MODEL_MICRO", "micro"],
-  ["BEDROCK_MODEL_LITE", "lite"],
-  ["BEDROCK_MODEL_NOVA2_LITE", "nova2Lite"],
-] as const;
+const TIERS = Object.keys(NOVA_TIER_VARIABLES) as NovaTier[];
+const TIER_NAMES: Record<NovaTier, string> = { micro: "Amazon Nova Micro", lite: "Amazon Nova Lite", nova2Lite: "Amazon Nova 2 Lite" };
+const QUOTED = /^["']|["']$/;
+const quoted = (name: string) => `${name} is wrapped in quotes: remove them (this environment file keeps quotes as part of the value).`;
 
-export function bedrockConfigured(config: BedrockCredentials): boolean {
-  return Boolean(config.apiKey && config.region && BEDROCK_MODELS.some(([, key]) => config.models[key]));
+/**
+ * Whether Bedrock was meant to be used: a key or a model id is set. A Region or BEDROCK_AUTH on its
+ * own is not an intent (templates preset them), so it never makes an otherwise empty setup "incomplete".
+ */
+const bedrockIntended = (b: BedrockCredentials): boolean => Boolean(b.apiKey || TIERS.some((t) => b.models[t]));
+
+export function bedrockConfigured(b: BedrockCredentials): boolean {
+  return Boolean(b.region && TIERS.some((t) => b.models[t]) && (b.auth === "iam" || b.apiKey));
+}
+
+/**
+ * Why the Bedrock settings could not work, by variable name only (never a value). Empty when
+ * Bedrock is not configured at all, or configured completely and plausibly.
+ */
+export function bedrockProblems(b: BedrockCredentials): string[] {
+  if (!bedrockIntended(b)) return [];
+  const problems: string[] = [];
+  if (!b.region) problems.push("BEDROCK_REGION is required when Bedrock is configured.");
+  else if (!/^[a-z]{2}(-gov)?-[a-z]+-\d$/.test(b.region)) problems.push("BEDROCK_REGION is not an AWS Region code (for example eu-west-1).");
+  if (!TIERS.some((t) => b.models[t])) {
+    problems.push("Bedrock needs at least one of BEDROCK_MODEL_MICRO, BEDROCK_MODEL_LITE or BEDROCK_MODEL_NOVA2_LITE.");
+  }
+  if (b.auth === "api_key") {
+    if (!b.apiKey) problems.push("BEDROCK_API_KEY is required when Bedrock is configured with BEDROCK_AUTH=api_key.");
+    else if (looksLikePlaceholder(b.apiKey)) problems.push("BEDROCK_API_KEY looks like a placeholder, not a real key.");
+  } else if (b.apiKey) {
+    problems.push("BEDROCK_API_KEY is set but BEDROCK_AUTH=iam uses AWS credentials instead: remove one of them.");
+  }
+  for (const tier of TIERS) {
+    const id = b.models[tier];
+    if (!id) continue;
+    if (QUOTED.test(id)) problems.push(quoted(NOVA_TIER_VARIABLES[tier]));
+    else if (!matchesTier(tier, id)) {
+      problems.push(`${NOVA_TIER_VARIABLES[tier]} is not an ${TIER_NAMES[tier]} model or inference profile id.`);
+    }
+  }
+  if (b.apiKey && QUOTED.test(b.apiKey)) problems.push(quoted("BEDROCK_API_KEY"));
+  if (b.region && QUOTED.test(b.region)) problems.push(quoted("BEDROCK_REGION"));
+  return problems;
 }
 
 /**
  * Why PROVIDER_MODE=live could not give real answers with these settings, by variable name only.
- * OpenAI/Anthropic need a key + model. Bedrock needs a bearer API key, Region and at least one Nova
- * model id. Empty when at least one provider is complete and none is half-configured.
+ * OpenAI/Anthropic need a key + model. Bedrock needs a Region, at least one Nova model id and its
+ * credentials (see bedrockProblems). Empty when at least one provider is complete and none is
+ * half-configured.
  */
 export function liveProviderProblems(config: LiveProviderConfig): string[] {
   const problems: string[] = [];
@@ -64,29 +101,12 @@ export function liveProviderProblems(config: LiveProviderConfig): string[] {
     if (apiKey && looksLikePlaceholder(apiKey)) problems.push(`${p.key} looks like a placeholder, not a real key.`);
     // Some environment-file loaders (docker --env-file, for one) keep quotes as part of the value.
     for (const [name, value] of [[p.key, apiKey], [p.model, model]] as const) {
-      if (value && /^["']|["']$/.test(value)) problems.push(`${name} is wrapped in quotes: remove them (this environment file keeps quotes as part of the value).`);
+      if (value && QUOTED.test(value)) problems.push(quoted(name));
     }
   }
 
-  const b = config.bedrock;
-  const bedrockValues = [b.apiKey, b.region, ...BEDROCK_MODELS.map(([, key]) => b.models[key])];
-  const anyBedrock = bedrockValues.some(Boolean);
-  const anyBedrockModel = BEDROCK_MODELS.some(([, key]) => Boolean(b.models[key]));
-  if (bedrockConfigured(b)) complete += 1;
-  else if (anyBedrock) {
-    if (!b.apiKey) problems.push("BEDROCK_API_KEY is required when Bedrock is configured.");
-    if (!b.region) problems.push("BEDROCK_REGION is required when Bedrock is configured.");
-    if (!anyBedrockModel) problems.push("Bedrock needs at least one of BEDROCK_MODEL_MICRO, BEDROCK_MODEL_LITE or BEDROCK_MODEL_NOVA2_LITE.");
-  }
-  if (b.apiKey && looksLikePlaceholder(b.apiKey)) problems.push("BEDROCK_API_KEY looks like a placeholder, not a real key.");
-  const namedBedrockValues: Array<[string, string | undefined]> = [
-    ["BEDROCK_API_KEY", b.apiKey],
-    ["BEDROCK_REGION", b.region],
-    ...BEDROCK_MODELS.map(([name, key]) => [name, b.models[key]] as [string, string | undefined]),
-  ];
-  for (const [name, value] of namedBedrockValues) {
-    if (value && /^["']|["']$/.test(value)) problems.push(`${name} is wrapped in quotes: remove them (this environment file keeps quotes as part of the value).`);
-  }
+  if (bedrockConfigured(config.bedrock)) complete += 1;
+  problems.push(...bedrockProblems(config.bedrock));
 
   if (complete === 0 && problems.length === 0) {
     problems.push(

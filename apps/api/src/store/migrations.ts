@@ -303,4 +303,14 @@ CREATE INDEX push_deliveries_due_idx ON push_deliveries (next_attempt_at) WHERE 
 CREATE INDEX push_deliveries_sending_idx ON push_deliveries (lease_until) WHERE status = 'sending';
 `,
   },
+  {
+    id: 9,
+    name: "usage_estimated_cost",
+    sql: `
+-- Estimated USD cost of each real answer (internal cost ledger; never in consumer responses).
+-- NULL = unknown (no price for the model, or the provider did not report token counts); 0 = demo.
+-- Rows written before this migration stay NULL.
+ALTER TABLE usage_records ADD COLUMN estimated_cost_usd double precision;
+`,
+  },
 ];

@@ -34,7 +34,7 @@ the ciphertext bound to its row so it cannot be moved to another row or user.
 | `users.display_name` | Personal data | Plaintext | Control characters rejected at registration. |
 | `users.password_hash` | Secret | scrypt hash | |
 | `sessions.token_hash` | Secret | SHA-256 of a 256-bit token | Raw tokens are never stored. |
-| `usage_records` | No — provider, model, token counts | Plaintext | |
+| `usage_records` | No — provider, served model, token counts, estimated USD cost (`estimated_cost_usd`: internal cost ledger, null when the price is unknown, 0 for demonstrations; never in consumer responses) | Plaintext | |
 | `plugin_settings` | No — plugin ids and scope ids | Plaintext | |
 | `tool_invocations` | No — plugin/tool labels (sanitised), status, sizes, a bounded call id | Plaintext | **Never** arguments or results. Model-supplied names are reduced to safe labels; provider call ids to `[A-Za-z0-9_.:-]{1,64}`. |
 | `tool_executions` | No — a SHA-256 key, user id, status, timestamps | Plaintext | At-most-once ledger for side-effecting tools. The key hashes user, conversation, user message, tool and arguments; nothing can be read back from it. Deleted with the account. |

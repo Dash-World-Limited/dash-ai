@@ -1,6 +1,7 @@
 import { z } from "zod";
+import { ModelPrices } from "./intelligence/cost.js";
 import { loadPolicy, PolicyError, type RouterPolicy } from "./intelligence/policy.js";
-import { liveProviderCount, liveProviderProblems } from "./providers/credentials.js";
+import { liveProviderCount, liveProviderProblems, type BedrockCredentials } from "./providers/credentials.js";
 import { FcmConfigError, parseServiceAccount, type FcmServiceAccount } from "./push/fcm.js";
 
 const emptyToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
@@ -31,14 +32,23 @@ const EnvSchema = z.object({
   ANTHROPIC_API_KEY: optionalString,
   ANTHROPIC_MODEL: optionalString,
   /**
-   * Amazon Bedrock native Converse adapter. The bearer key is server-side only. For production AWS
-   * recommends short-term credentials/keys; long-term Bedrock API keys are for exploration.
+   * Amazon Bedrock (Converse streaming API, Amazon Nova models). Server-side only.
+   * api_key (default): BEDROCK_API_KEY is a Bedrock API key sent as a bearer token.
+   * iam: credentials come from the AWS SDK default chain (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY,
+   * a shared profile, or a container or instance role); AWS recommends this for production.
    */
+  BEDROCK_AUTH: z.preprocess(emptyToUndefined, z.enum(["api_key", "iam"]).default("api_key")),
   BEDROCK_API_KEY: optionalString,
   BEDROCK_REGION: optionalString,
   BEDROCK_MODEL_MICRO: optionalString,
   BEDROCK_MODEL_LITE: optionalString,
   BEDROCK_MODEL_NOVA2_LITE: optionalString,
+  /**
+   * Optional USD prices per million tokens for the cost estimate in usage records, as JSON:
+   * {"<provider>:<model id or prefix>": {"inputPerMillion": n, "outputPerMillion": n}}. Overrides the
+   * built-in Amazon Nova estimates; OpenAI/Anthropic costs stay unknown unless listed here.
+   */
+  MODEL_PRICES: optionalString,
   PROVIDER_TIMEOUT_MS: int(120_000, 1_000, 600_000),
   PROVIDER_IDLE_TIMEOUT_MS: int(45_000, 500, 300_000),
   /** Extra attempts after a retryable provider failure that happened before any output (0 = none). */
@@ -148,11 +158,9 @@ export interface AppConfig {
   providerDetails: Env["PROVIDER_DETAILS"];
   openai: ProviderConfig & { encryptedReasoning: boolean };
   anthropic: ProviderConfig;
-  bedrock: {
-    apiKey: string | undefined;
-    region: string | undefined;
-    models: { micro: string | undefined; lite: string | undefined; nova2Lite: string | undefined };
-  };
+  bedrock: BedrockCredentials;
+  /** Operator prices for estimated USD cost (MODEL_PRICES); built-in estimates fill the gaps. */
+  modelPrices: ModelPrices;
   providerTimeoutMs: number;
   providerIdleTimeoutMs: number;
   providerRetry: { maxRetries: number; baseMs: number };
@@ -224,6 +232,31 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       throw err;
     }
   }
+  let modelPrices: ModelPrices = {};
+  if (e.MODEL_PRICES) {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(e.MODEL_PRICES);
+    } catch {
+      throw new ConfigError("Invalid configuration: MODEL_PRICES is not valid JSON.");
+    }
+    const parsedPrices = ModelPrices.safeParse(raw);
+    if (!parsedPrices.success) {
+      // Field names only: the keys are operator text and are not echoed.
+      const where = parsedPrices.error.issues
+        .slice(0, 3)
+        .map((i) =>
+          i.code === "invalid_key"
+            ? `has an invalid key: ${i.issues[0]?.message ?? i.message}`
+            : i.path.length > 1
+              ? `an entry's ${String(i.path.at(-1))}: ${i.message}`
+              : i.message,
+        )
+        .join("; ");
+      throw new ConfigError(`Invalid configuration: MODEL_PRICES ${where}`);
+    }
+    modelPrices = parsedPrices.data;
+  }
   let routerPolicy: RouterPolicy;
   try {
     routerPolicy = loadPolicy(e.ROUTER_POLICY);
@@ -234,15 +267,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // Production with real providers must be able to answer: a missing, half-set or example key is a
   // deployment mistake, so the server refuses to start instead of failing every chat and automation.
   // Development and tests keep starting (the registry warns). Variable names only, never values.
+  const bedrock: BedrockCredentials = {
+    auth: e.BEDROCK_AUTH,
+    apiKey: e.BEDROCK_API_KEY,
+    region: e.BEDROCK_REGION,
+    models: { micro: e.BEDROCK_MODEL_MICRO, lite: e.BEDROCK_MODEL_LITE, nova2Lite: e.BEDROCK_MODEL_NOVA2_LITE },
+  };
   if (e.NODE_ENV === "production" && e.PROVIDER_MODE === "live") {
     const problems = liveProviderProblems({
       openai: { apiKey: e.OPENAI_API_KEY, model: e.OPENAI_MODEL },
       anthropic: { apiKey: e.ANTHROPIC_API_KEY, model: e.ANTHROPIC_MODEL },
-      bedrock: {
-        apiKey: e.BEDROCK_API_KEY,
-        region: e.BEDROCK_REGION,
-        models: { micro: e.BEDROCK_MODEL_MICRO, lite: e.BEDROCK_MODEL_LITE, nova2Lite: e.BEDROCK_MODEL_NOVA2_LITE },
-      },
+      bedrock,
     });
     if (problems.length > 0) {
       throw new ConfigError(
@@ -260,11 +295,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     providerDetails: e.PROVIDER_DETAILS,
     openai: { apiKey: e.OPENAI_API_KEY, model: e.OPENAI_MODEL, encryptedReasoning: e.OPENAI_ENCRYPTED_REASONING === "true" },
     anthropic: { apiKey: e.ANTHROPIC_API_KEY, model: e.ANTHROPIC_MODEL },
-    bedrock: {
-      apiKey: e.BEDROCK_API_KEY,
-      region: e.BEDROCK_REGION,
-      models: { micro: e.BEDROCK_MODEL_MICRO, lite: e.BEDROCK_MODEL_LITE, nova2Lite: e.BEDROCK_MODEL_NOVA2_LITE },
-    },
+    bedrock,
+    modelPrices,
     providerTimeoutMs: e.PROVIDER_TIMEOUT_MS,
     providerIdleTimeoutMs: e.PROVIDER_IDLE_TIMEOUT_MS,
     providerRetry: { maxRetries: e.PROVIDER_MAX_RETRIES, baseMs: e.PROVIDER_RETRY_BASE_MS },

@@ -58,6 +58,34 @@ values stop start-up with a message naming the path (never the value). Examples:
 Adding a capability to a provider (for example `image_generation` once an image adapter exists) is
 what makes a task like Graphics routable; no router code changes.
 
+A provider override changes only the fields it names: an override that sets Bedrock's quality keeps
+Bedrock's default prices.
+
+## Amazon Bedrock (Amazon Nova)
+
+Bedrock is one more provider behind the same router ([ADR 0013](decisions/0013-amazon-bedrock-and-cost-ledger.md)).
+Its default profile: capabilities `text`, `long_context`, `tool_use`; a context the router may rely on of
+128k tokens (the smallest Nova tier); quality 0.8 on every route (below the OpenAI/Anthropic starting
+values, so with them configured Bedrock is an internal fallback until an operator raises it, for
+example `{"providers": {"bedrock": {"quality": {"chat:general": 0.95, "automation": 0.95}}}}`); relative
+prices 0.33 / 2.75 per million tokens for scoring. With Bedrock as the only live provider it serves
+everything it is capable of.
+
+The router chooses the **provider**; the Bedrock adapter then chooses the **Nova tier** among those the
+operator configured, from internal routing hints (task, mode, preference, estimated input):
+
+| Tier | Used for | Context / max output sent |
+| --- | --- | --- |
+| Nova Micro | economy preference; background Automates (unless quality is preferred or the input is large) | 128k / 5,000 |
+| Nova Lite | everything else (the default) | 300k / 5,000 |
+| Nova 2 Lite | quality preference; Documents, Research and Reports work; requests that offer tools; input over 100k tokens | 1M / 64,000 (capped by `MAX_OUTPUT_TOKENS`) |
+
+A tier that is not configured, or too small for the input, falls through to the next configured one.
+The output ceilings are conservative on purpose: asking for more than a model allows is a request
+error, while a lower ceiling only ends a long answer with finish reason `length` (Continue). Each
+answer records the tier that served it, and usage records carry an estimated USD cost
+([environment.md](environment.md), `MODEL_PRICES`).
+
 ## Observability (internal only)
 
 - `GET /v1/router` with `Authorization: Bearer $OPERATOR_TOKEN` (404 for everyone else): the active

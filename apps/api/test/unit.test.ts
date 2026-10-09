@@ -195,7 +195,7 @@ describe("config", () => {
 
   it("fake mode activates clearly-labelled fake adapters for both providers", () => {
     const registry = ProviderRegistry.fromConfig(loadConfig({ PROVIDER_MODE: "fake" }));
-    expect(registry.status().map((s) => s.mode)).toEqual(["fake", "fake"]);
+    expect(registry.status().map((s) => s.mode)).toEqual(["fake", "fake", "unconfigured"]);
     expect(registry.get("openai")?.demo).toBe(true);
     expect(registry.warnings[0]).toMatch(/fake/);
   });

@@ -27,6 +27,7 @@ import { DUPLICATE_TEXT } from "../tools/executor.js";
 import type { ToolRuntime } from "../tools/runtime.js";
 import type { ModelToolCall } from "../tools/types.js";
 import type { Metrics } from "../observability/metrics.js";
+import { estimateCostUsd } from "../intelligence/cost.js";
 import { estimateTokens, type IntelligenceRouter } from "../intelligence/router.js";
 import { hideProviders, neutralErrorMessage, NEUTRAL_ROUTING_REASON, NEUTRAL_UNAVAILABLE } from "./publicSurface.js";
 import { withIdleTimeout } from "./timeouts.js";
@@ -267,10 +268,23 @@ async function runTarget(
   let content = "";
   let status: MessageStatus = "complete";
   let usage: Usage = { inputTokens: null, outputTokens: null };
+  /** The model id the provider reports for the answer kept (an adaptive provider picks one per request). */
+  let served: string | undefined;
+  // Internal hints for adapters that choose between models they own; the router already chose the provider.
+  const routing = {
+    task: "chat",
+    mode: prepared.request.mode,
+    estimatedInputTokens: estimateTokens(
+      prepared.request.history.reduce((n, m) => n + m.content.length, 0) +
+        prepared.request.message.content.length +
+        prepared.documents.reduce((n, d) => n + d.extractedText.length, 0),
+    ),
+  };
 
   /** One complete answer from `provider`; throws on failure. Text and tool calls stream as they come. */
   const generate = async (provider: ProviderAdapter): Promise<"stop" | "length" | "refusal"> => {
     const adapter = provider;
+    served = undefined;
     const turns: ProviderTurn[] = buildProviderMessages(
       adapter.id,
       prepared.request.history,
@@ -312,6 +326,7 @@ async function runTarget(
             ...(tools ? { tools, toolChoice: toolUse ? ("auto" as const) : ("none" as const) } : {}),
             maxOutputTokens: ctx.config.maxOutputTokens,
             signal: attemptController.signal,
+            routing,
           });
           for await (const chunk of withIdleTimeout(source, ctx.config.providerIdleTimeoutMs, () =>
             attemptController.abort("timeout"),
@@ -370,6 +385,7 @@ async function runTarget(
     if (servedModel && servedModel !== adapter.model) {
       ctx.log.info({ provider: adapter.id, configuredModel: adapter.model, servedModel }, "provider served a different model id");
     }
+    served = servedModel ?? undefined;
     return finishReason;
   };
 
@@ -430,13 +446,16 @@ async function runTarget(
 
   ctx.metrics?.aiRequestSeconds.observe({ provider: adapter.id, status }, (Date.now() - started) / 1000);
   const now = ctx.now().toISOString();
+  const model = served ?? adapter.model;
+  const estimatedCostUsd = estimateCostUsd(ctx.config.modelPrices, { provider: adapter.id, model, demo: adapter.demo, usage });
+  if (estimatedCostUsd) ctx.metrics?.estimatedCostUsd.inc({ provider: adapter.id }, estimatedCostUsd);
   await ctx.store.saveMessage({
     id: messageId,
     conversationId: prepared.conversation.id,
     role: "assistant",
     content,
     origin: adapter.id,
-    model: adapter.model,
+    model,
     demo: adapter.demo,
     status,
     compareGroupId: prepared.compareGroupId,
@@ -448,10 +467,11 @@ async function runTarget(
     conversationId: prepared.conversation.id,
     messageId,
     provider: adapter.id,
-    model: adapter.model,
+    model,
     demo: adapter.demo,
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
+    estimatedCostUsd,
     createdAt: now,
   });
   return { provider: adapter.id, status, usage };

@@ -342,7 +342,7 @@ export class MemoryStore implements Store {
 
   async recordUsage(row: UsageRow): Promise<void> {
     if (!this.owned(row.userId)) return;
-    this.usage.push({ ...row });
+    this.usage.push({ ...row, estimatedCostUsd: row.estimatedCostUsd ?? null });
   }
 
   async listUsage(userId: string): Promise<UsageRow[]> {

@@ -89,6 +89,12 @@ export interface UsageRow {
   demo: boolean;
   inputTokens: number | null;
   outputTokens: number | null;
+  /**
+   * Estimated USD cost of the answer (INTERNAL: never in consumer responses). 0 for demonstrations,
+   * null when the model's price or a token count is unknown. Optional so rows written before this
+   * column existed read back as unknown.
+   */
+  estimatedCostUsd?: number | null;
   createdAt: string;
 }
 
