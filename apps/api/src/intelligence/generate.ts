@@ -56,11 +56,12 @@ export class GenerationError extends Error {
  * answer exists, falling over to another provider is always safe here, even after partial output.
  */
 export async function generateText(deps: GenerateDeps, request: GenerateRequest): Promise<GenerateResult> {
+  const estimatedInputTokens = estimateTokens(request.prompt.length + request.instructions.length + 4_000);
   const decision = deps.router.route({
     task: request.task,
     mode: request.mode,
     preference: request.preference,
-    estimatedInputTokens: estimateTokens(request.prompt.length + request.instructions.length + 4_000),
+    estimatedInputTokens,
   });
   if (!decision.ok) {
     deps.metrics?.routerUnavailable.inc({ task: request.task, reason: decision.reason });
@@ -73,7 +74,7 @@ export async function generateText(deps: GenerateDeps, request: GenerateRequest)
   let last: ProviderError | undefined;
   for (const [index, adapter] of adapters.entries()) {
     try {
-      return await generateWith(deps, adapter, request);
+      return await generateWith(deps, adapter, request, estimatedInputTokens);
     } catch (err) {
       const error = err instanceof ProviderError ? err : toProviderError(adapter.displayName, err, request.signal);
       if (error.code === "cancelled") throw new GenerationError("cancelled", false);
@@ -89,7 +90,12 @@ export async function generateText(deps: GenerateDeps, request: GenerateRequest)
   throw new GenerationError(code, last?.retryable ?? true);
 }
 
-async function generateWith(deps: GenerateDeps, adapter: ProviderAdapter, request: GenerateRequest): Promise<GenerateResult> {
+async function generateWith(
+  deps: GenerateDeps,
+  adapter: ProviderAdapter,
+  request: GenerateRequest,
+  estimatedInputTokens: number,
+): Promise<GenerateResult> {
   const { config } = deps;
   const system = [buildSystemPrompt(request.mode, adapter), request.instructions].join("\n\n");
   const started = Date.now();
@@ -102,24 +108,35 @@ async function generateWith(deps: GenerateDeps, adapter: ProviderAdapter, reques
     let content = "";
     let usage: Usage = { inputTokens: null, outputTokens: null };
     let finish: "stop" | "length" | "refusal" = "stop";
+    let servedModel = adapter.model;
     try {
       const source = adapter.stream({
         system,
         messages: [{ role: "user", content: request.prompt }],
         maxOutputTokens: config.maxOutputTokens,
         signal: controller.signal,
+        routing: {
+          task: request.task,
+          mode: request.mode,
+          preference: request.preference ?? "balanced",
+          estimatedInputTokens,
+        },
       });
       for await (const chunk of withIdleTimeout(source, config.providerIdleTimeoutMs, () => controller.abort("timeout"))) {
         if (chunk.type === "text") content += chunk.text;
         else if (chunk.type === "finish") {
           finish = chunk.finishReason;
           usage = chunk.usage;
+          servedModel = chunk.servedModel ?? servedModel;
         }
       }
       if (content.trim() === "") throw new ProviderError("provider_error", `${adapter.displayName} returned an empty answer.`, true);
       deps.router.recordSuccess(adapter.id, Date.now() - started);
       deps.metrics?.aiRequestSeconds.observe({ provider: adapter.id, status: "complete" }, (Date.now() - started) / 1000);
-      return { content, provider: adapter.id, model: adapter.model, demo: adapter.demo, usage, truncated: finish === "length" };
+      if (servedModel !== adapter.model) {
+        deps.log.info({ provider: adapter.id, configuredModel: adapter.model, servedModel, task: request.task }, "provider served a different model id");
+      }
+      return { content, provider: adapter.id, model: servedModel, demo: adapter.demo, usage, truncated: finish === "length" };
     } catch (err) {
       const error = toProviderError(adapter.displayName, err, controller.signal);
       deps.router.recordFailure(adapter.id, error.code, error.retryable);
