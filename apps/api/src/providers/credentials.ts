@@ -17,17 +17,43 @@ interface Credentials {
   model: string | undefined;
 }
 
+export interface BedrockCredentials {
+  apiKey: string | undefined;
+  region: string | undefined;
+  models: {
+    micro: string | undefined;
+    lite: string | undefined;
+    nova2Lite: string | undefined;
+  };
+}
+
+export interface LiveProviderConfig {
+  openai: Credentials;
+  anthropic: Credentials;
+  bedrock: BedrockCredentials;
+}
+
 const PROVIDERS = [
   { name: "OpenAI", key: "OPENAI_API_KEY", model: "OPENAI_MODEL", config: "openai" },
   { name: "Anthropic", key: "ANTHROPIC_API_KEY", model: "ANTHROPIC_MODEL", config: "anthropic" },
 ] as const;
 
+const BEDROCK_MODELS = [
+  ["BEDROCK_MODEL_MICRO", "micro"],
+  ["BEDROCK_MODEL_LITE", "lite"],
+  ["BEDROCK_MODEL_NOVA2_LITE", "nova2Lite"],
+] as const;
+
+export function bedrockConfigured(config: BedrockCredentials): boolean {
+  return Boolean(config.apiKey && config.region && BEDROCK_MODELS.some(([, key]) => config.models[key]));
+}
+
 /**
- * Why PROVIDER_MODE=live could not give real answers with these settings, by variable name only:
- * a key without its model (or the reverse), a key that looks copied from an example, or no provider
- * at all. Empty when at least one provider has a key and a model and none is half-configured.
+ * Why PROVIDER_MODE=live could not give real answers with these settings, by variable name only.
+ * OpenAI/Anthropic need a key + model. Bedrock needs a bearer API key, Region and at least one Nova
+ * model id. Empty when at least one provider is complete and none is half-configured.
  */
-export function liveProviderProblems(config: { openai: Credentials; anthropic: Credentials }): string[] {
+export function liveProviderProblems(config: LiveProviderConfig): string[] {
   const problems: string[] = [];
   let complete = 0;
   for (const p of PROVIDERS) {
@@ -41,12 +67,35 @@ export function liveProviderProblems(config: { openai: Credentials; anthropic: C
       if (value && /^["']|["']$/.test(value)) problems.push(`${name} is wrapped in quotes: remove them (this environment file keeps quotes as part of the value).`);
     }
   }
+
+  const b = config.bedrock;
+  const bedrockValues = [b.apiKey, b.region, ...BEDROCK_MODELS.map(([, key]) => b.models[key])];
+  const anyBedrock = bedrockValues.some(Boolean);
+  const anyBedrockModel = BEDROCK_MODELS.some(([, key]) => Boolean(b.models[key]));
+  if (bedrockConfigured(b)) complete += 1;
+  else if (anyBedrock) {
+    if (!b.apiKey) problems.push("BEDROCK_API_KEY is required when Bedrock is configured.");
+    if (!b.region) problems.push("BEDROCK_REGION is required when Bedrock is configured.");
+    if (!anyBedrockModel) problems.push("Bedrock needs at least one of BEDROCK_MODEL_MICRO, BEDROCK_MODEL_LITE or BEDROCK_MODEL_NOVA2_LITE.");
+  }
+  if (b.apiKey && looksLikePlaceholder(b.apiKey)) problems.push("BEDROCK_API_KEY looks like a placeholder, not a real key.");
+  const namedBedrockValues: Array<[string, string | undefined]> = [
+    ["BEDROCK_API_KEY", b.apiKey],
+    ["BEDROCK_REGION", b.region],
+    ...BEDROCK_MODELS.map(([name, key]) => [name, b.models[key]] as [string, string | undefined]),
+  ];
+  for (const [name, value] of namedBedrockValues) {
+    if (value && /^["']|["']$/.test(value)) problems.push(`${name} is wrapped in quotes: remove them (this environment file keeps quotes as part of the value).`);
+  }
+
   if (complete === 0 && problems.length === 0) {
-    problems.push("No AI provider is configured: set OPENAI_API_KEY and OPENAI_MODEL, and/or ANTHROPIC_API_KEY and ANTHROPIC_MODEL.");
+    problems.push(
+      "No AI provider is configured: set OPENAI_API_KEY + OPENAI_MODEL, ANTHROPIC_API_KEY + ANTHROPIC_MODEL, and/or the BEDROCK_* settings.",
+    );
   }
   return problems;
 }
 
-/** How many providers have both a key and a model (the ones PROVIDER_MODE=live will call). */
-export const liveProviderCount = (config: { openai: Credentials; anthropic: Credentials }): number =>
-  PROVIDERS.filter((p) => config[p.config].apiKey && config[p.config].model).length;
+/** How many live provider adapters are complete enough to be constructed. */
+export const liveProviderCount = (config: LiveProviderConfig): number =>
+  PROVIDERS.filter((p) => config[p.config].apiKey && config[p.config].model).length + (bedrockConfigured(config.bedrock) ? 1 : 0);
