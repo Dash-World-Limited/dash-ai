@@ -20,14 +20,16 @@ export const FAKE_TRIGGERS = {
 } as const;
 const FAKE_TOOL = /\[\[fake:tool ([^\s\]]+)(?: (\{.*?\}))?\]\]/s;
 
-const NAMES: Record<ProviderId, { display: string; company: string; keyVar: string; modelVar: string }> = {
+type FakeProviderId = Extract<ProviderId, "openai" | "anthropic">;
+const NAMES: Record<FakeProviderId, { display: string; company: string; keyVar: string; modelVar: string }> = {
   openai: { display: "OpenAI", company: "OpenAI", keyVar: "OPENAI_API_KEY", modelVar: "OPENAI_MODEL" },
   anthropic: { display: "Claude", company: "Anthropic", keyVar: "ANTHROPIC_API_KEY", modelVar: "ANTHROPIC_MODEL" },
 };
 
 /**
- * Deterministic stand-in for a provider. Used by tests, CI and server-side demo mode. Every answer
- * says plainly that it is a demonstration and that no AI provider received the prompt.
+ * Deterministic stand-in for the two legacy demo providers. Used by tests, CI and server-side demo
+ * mode. Bedrock deliberately has no fake twin: adding a real provider must not silently change the
+ * established deterministic Demo Mode routing table.
  */
 export class FakeAdapter implements ProviderAdapter {
   readonly demo = true;
@@ -35,7 +37,7 @@ export class FakeAdapter implements ProviderAdapter {
   readonly model: string;
 
   constructor(
-    readonly id: ProviderId,
+    readonly id: FakeProviderId,
     private readonly delayMs = 25,
   ) {
     this.displayName = NAMES[id].display;
