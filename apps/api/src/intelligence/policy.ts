@@ -89,11 +89,9 @@ export type RouterPolicy = z.infer<typeof RouterPolicy>;
 const BALANCED: Weights = { quality: 0.6, reliability: 0.3, latency: 0.07, cost: 0.03 };
 
 /**
- * Starting quality per route. The chat modes reproduce the shared preference table (SMART_ROUTING,
- * also used by Android Demo Mode), so with healthy providers chat routes exactly as before: the
- * preferred provider scores 0.9, the next 0.85. Health, latency and cost can then reorder them.
- * These are starting judgements, not permanent rules: an operator overrides any of them with
- * ROUTER_POLICY, and later milestones can feed measured quality back in.
+ * Starting quality per route. OpenAI/Anthropic retain the legacy Demo-Mode preference table.
+ * Providers absent from that old table (including Bedrock) start neutral at 0.8 and are then ordered
+ * by health, latency, cost and operator policy rather than being hard-wired to a task.
  */
 function defaultQuality(provider: ProviderId): Record<string, number> {
   const quality: Record<string, number> = { default: 0.8 };
@@ -128,6 +126,20 @@ export const DEFAULT_POLICY: RouterPolicy = {
       costPerMillionInput: null,
       costPerMillionOutput: null,
       quality: defaultQuality("anthropic"),
+    },
+    bedrock: {
+      enabled: true,
+      // The first Bedrock slice is text + long context + client-side tools through Amazon Nova.
+      // Structured output is deliberately not claimed until it is implemented and verified.
+      capabilities: ["text", "long_context", "tool_use"],
+      // Conservative common denominator for the adaptive Nova pool. The adapter can escalate to
+      // larger-context tiers, but the router never promises a context size that every valid setup has.
+      contextTokens: 128_000,
+      // Conservative geo/cross-region Nova 2 Lite ceiling. Per-model cost accounting is recorded
+      // separately; these numbers only influence route scoring when other providers also have prices.
+      costPerMillionInput: 0.33,
+      costPerMillionOutput: 2.75,
+      quality: defaultQuality("bedrock"),
     },
   },
   tasks: {
