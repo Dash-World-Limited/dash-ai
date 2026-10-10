@@ -1,7 +1,7 @@
 import type pg from "pg";
 import type { ProviderId } from "@dash-ai/contracts";
 import type { InferenceAttempt, UsageSource } from "./attemptLedger.js";
-import type { SpendWindow } from "./spendWindow.js";
+import { spendWindowBounds, type SpendWindow } from "./spendWindow.js";
 
 export type AttemptLedgerQueryable = Pick<pg.Pool | pg.PoolClient, "query">;
 
@@ -145,27 +145,25 @@ export class PostgresAttemptLedger {
 
   /**
    * Spend controls use settled/provider cost where present and otherwise the estimate. UTC boundaries
-   * are deliberate so every API instance agrees on the same day/month regardless of host timezone.
+   * are explicit so every API instance agrees regardless of PostgreSQL's session timezone.
    */
   async spendWindow(nowIso: string, userId: string | null): Promise<SpendWindow> {
+    const { dayStart, dayEnd, monthStart, monthEnd } = spendWindowBounds(nowIso);
     const { rows } = await this.db.query<{ user_daily: number | string; system_daily: number | string; system_monthly: number | string }>(
       `SELECT
          COALESCE(SUM(CASE
-           WHEN $2::text IS NOT NULL AND user_id = $2
-            AND finished_at >= date_trunc('day', $1::timestamptz)
-            AND finished_at < date_trunc('day', $1::timestamptz) + interval '1 day'
+           WHEN $1::text IS NOT NULL AND user_id = $1
+            AND finished_at >= $2::timestamptz AND finished_at < $3::timestamptz
            THEN COALESCE(actual_cost_usd, estimated_cost_usd, 0) ELSE 0 END), 0) AS user_daily,
          COALESCE(SUM(CASE
-           WHEN finished_at >= date_trunc('day', $1::timestamptz)
-            AND finished_at < date_trunc('day', $1::timestamptz) + interval '1 day'
+           WHEN finished_at >= $2::timestamptz AND finished_at < $3::timestamptz
            THEN COALESCE(actual_cost_usd, estimated_cost_usd, 0) ELSE 0 END), 0) AS system_daily,
          COALESCE(SUM(CASE
-           WHEN finished_at >= date_trunc('month', $1::timestamptz)
-            AND finished_at < date_trunc('month', $1::timestamptz) + interval '1 month'
+           WHEN finished_at >= $4::timestamptz AND finished_at < $5::timestamptz
            THEN COALESCE(actual_cost_usd, estimated_cost_usd, 0) ELSE 0 END), 0) AS system_monthly
        FROM inference_attempts
-       WHERE finished_at >= date_trunc('month', $1::timestamptz)`,
-      [nowIso, userId],
+       WHERE finished_at >= $4::timestamptz AND finished_at < $5::timestamptz`,
+      [userId, dayStart, dayEnd, monthStart, monthEnd],
     );
     const row = rows[0] ?? { user_daily: 0, system_daily: 0, system_monthly: 0 };
     return {
