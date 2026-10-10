@@ -6,6 +6,7 @@ import { StreamRegistry } from "./chat/streamRegistry.js";
 import type { AppConfig } from "./config.js";
 import { AppError } from "./errors.js";
 import { loggerOptions, type LogStream } from "./logging.js";
+import { attemptLedgerForStore, type AttemptLedger } from "./intelligence/attemptLedgerFactory.js";
 import { IntelligenceRouter } from "./intelligence/router.js";
 import { ProviderRegistry } from "./providers/registry.js";
 import { AutomationService } from "./automations/service.js";
@@ -44,6 +45,8 @@ export interface AppDependencies {
   metrics?: Metrics;
   /** Push transports. Defaults to what PUSH_TRANSPORT configures (tests pass a fake). */
   pushTransports?: PushTransport[];
+  /** Internal attempt accounting. Defaults to durable Postgres beside PostgresStore, memory otherwise. */
+  attemptLedger?: AttemptLedger;
 }
 
 /** The transports PUSH_TRANSPORT asks for: none, FCM for Android, or a recording fake. */
@@ -91,6 +94,7 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   const { config } = deps;
   const now = deps.now ?? (() => new Date());
   const store = deps.store ?? new MemoryStore();
+  const attemptLedger = deps.attemptLedger ?? attemptLedgerForStore(store);
   const providers = deps.providers ?? ProviderRegistry.fromConfig(config);
   const router = new IntelligenceRouter(config.routerPolicy, () => providers.configured());
 
@@ -130,12 +134,13 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
     });
 
   const push = new PushService({ store, transports: deps.pushTransports ?? pushTransportsFor(config), config, log: app.log, metrics, now });
-  const automations = new AutomationService({ store, providers, router, config, log: app.log, metrics, now, push });
+  const automations = new AutomationService({ store, providers, router, config, log: app.log, metrics, now, push, attemptLedger });
   const context: RouteContext = {
     config,
     store,
     providers,
     router,
+    attemptLedger,
     automations,
     push,
     tools: ToolRuntime.fromConfig(config, store, deps.plugins),
