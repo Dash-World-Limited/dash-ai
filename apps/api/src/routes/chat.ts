@@ -36,6 +36,17 @@ function createSink(res: ServerResponse): SseSink {
 
 export function chatRoutes(app: FastifyInstance, ctx: RouteContext): void {
   const chatLimit = ctx.rateLimit("chat", (r) => `chat:${r.authUser?.id ?? r.ip}`);
+  const chatContext = (log: FastifyRequest["log"]) => ({
+    store: ctx.store,
+    providers: ctx.providers,
+    router: ctx.router,
+    attemptLedger: ctx.attemptLedger,
+    tools: ctx.tools,
+    config: ctx.config,
+    log,
+    now: ctx.now,
+    metrics: ctx.metrics,
+  });
 
   app.post(
     "/v1/chat/stream",
@@ -49,11 +60,7 @@ export function chatRoutes(app: FastifyInstance, ctx: RouteContext): void {
       if (ctx.streams.countForUser(user.id) >= ctx.config.maxConcurrentStreamsPerUser) {
         throw new AppError("too_many_streams", "Too many responses are generating at once. Wait for one to finish.");
       }
-      const prepared = await prepareChat(
-        { store: ctx.store, providers: ctx.providers, router: ctx.router, tools: ctx.tools, config: ctx.config, log: request.log, now: ctx.now, metrics: ctx.metrics },
-        user.id,
-        body,
-      );
+      const prepared = await prepareChat(chatContext(request.log), user.id, body);
 
       const streamId = newId();
       const controller = new AbortController();
@@ -82,13 +89,7 @@ export function chatRoutes(app: FastifyInstance, ctx: RouteContext): void {
 
       let outcome = "ok";
       try {
-        const results = await runChat(
-          { store: ctx.store, providers: ctx.providers, router: ctx.router, tools: ctx.tools, config: ctx.config, log: request.log, now: ctx.now, metrics: ctx.metrics },
-          prepared,
-          streamId,
-          sink,
-          controller.signal,
-        );
+        const results = await runChat(chatContext(request.log), prepared, streamId, sink, controller.signal);
         outcome = results.map((r) => `${r.provider}:${r.status}`).join(",");
       } catch (err) {
         outcome = "error";
