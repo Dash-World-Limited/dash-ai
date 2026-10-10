@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { InferenceAttempt } from "../src/intelligence/attemptLedger.js";
-import { aggregateSpendWindow } from "../src/intelligence/spendWindow.js";
+import { aggregateSpendWindow, spendWindowBounds } from "../src/intelligence/spendWindow.js";
 
 const row = (id: string, finishedAt: string, cost: number, userId = "user_a"): InferenceAttempt => ({
   id,
@@ -44,5 +44,24 @@ describe("aggregateSpendWindow", () => {
   it("uses actual cost when available", () => {
     const attempts = [{ ...row("a", "2026-10-10T01:00:00.000Z", 1), actualCostUsd: 0.75 }];
     expect(aggregateSpendWindow(attempts, "2026-10-10T12:00:00.000Z", "user_a").systemDailyUsd).toBe(0.75);
+  });
+
+  it("uses UTC day/month boundaries even when now carries a non-UTC offset", () => {
+    expect(spendWindowBounds("2026-11-01T00:30:00+01:00")).toEqual({
+      dayStart: "2026-10-31T00:00:00.000Z",
+      dayEnd: "2026-11-01T00:00:00.000Z",
+      monthStart: "2026-10-01T00:00:00.000Z",
+      monthEnd: "2026-11-01T00:00:00.000Z",
+    });
+    const attempts = [
+      row("before", "2026-10-30T23:59:59.999Z", 100),
+      row("start", "2026-10-31T00:00:00.000Z", 1),
+      row("end", "2026-11-01T00:00:00.000Z", 10),
+    ];
+    expect(aggregateSpendWindow(attempts, "2026-11-01T00:30:00+01:00", "user_a")).toEqual({
+      userDailyUsd: 1,
+      systemDailyUsd: 1,
+      systemMonthlyUsd: 101,
+    });
   });
 });
