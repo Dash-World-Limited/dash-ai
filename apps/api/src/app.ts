@@ -106,7 +106,7 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
     logger: loggerOptions(config.logLevel, deps.logStream),
     trustProxy: config.trustProxy,
     bodyLimit: 256 * 1024,
-    requestTimeout: 0, // chat streams are long-lived; provider timeouts are enforced per stream
+    requestTimeout: 0,
     return503OnClosing: true,
     genReqId: () => crypto.randomUUID(),
   });
@@ -138,7 +138,7 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
     });
 
   const push = new PushService({ store, transports: deps.pushTransports ?? pushTransportsFor(config), config, log: app.log, metrics, now });
-  const automations = new AutomationService({ store, providers, router, config, log: app.log, metrics, now, push, attemptLedger, spendSettings });
+  const automations = new AutomationService({ store, providers, router, config, log: app.log, metrics, now, push, attemptLedger });
   const context: RouteContext = {
     config,
     store,
@@ -161,15 +161,12 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
     startedAt: Date.now(),
   };
 
-  // Broad abuse protection for every route, keyed by client IP.
   app.addHook("onRequest", async (request) => {
-    // Load-balancer probes are not rate limited (they come from one address, very often).
     if (request.url === "/health" || request.url === "/ready") return;
     const decision = await rateLimits.consume("api", `api:${request.ip}`);
     if (!decision.allowed) throw tooMany(decision.retryAfterMs);
   });
 
-  // Sync outcomes by operation and status class only (never bodies, ids or user data).
   app.addHook("onResponse", async (request, reply) => {
     const route = request.routeOptions.url;
     const operation = route === "/v1/sync/conversations" ? "pull" : route === "/v1/sync/push" ? "push" : undefined;
@@ -216,7 +213,6 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
     await automations.stop();
     await push.stop();
   });
-  // The caller that created the store (index.ts / tests) owns closing it.
 
   return { app, context };
 }
