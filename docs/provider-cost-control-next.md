@@ -1,0 +1,1 @@
+Next: immutable per-attempt inference ledger, durable PostgreSQL spend aggregation/reservation, extensible provider catalog/compatible adapter, then plan entitlements. No live rollout before those controls are reviewed.
