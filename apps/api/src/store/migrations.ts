@@ -313,4 +313,44 @@ CREATE INDEX push_deliveries_sending_idx ON push_deliveries (lease_until) WHERE 
 ALTER TABLE usage_records ADD COLUMN estimated_cost_usd double precision;
 `,
   },
+  {
+    id: 10,
+    name: "inference_attempt_ledger",
+    sql: `
+-- Internal, append-only provider-attempt accounting. No prompt/response content is stored here.
+-- Failed retries and fallbacks remain billable and therefore remain separate rows.
+CREATE TABLE inference_attempts (
+  id                 text PRIMARY KEY,
+  inference_id       text NOT NULL,
+  user_id            text REFERENCES users (id) ON DELETE CASCADE,
+  task               text NOT NULL,
+  provider           text NOT NULL,
+  configured_model   text NOT NULL,
+  served_model       text,
+  attempt_index      integer NOT NULL CHECK (attempt_index >= 0),
+  fallback_index     integer NOT NULL CHECK (fallback_index >= 0),
+  started_at         timestamptz NOT NULL,
+  finished_at        timestamptz NOT NULL,
+  latency_ms         integer NOT NULL CHECK (latency_ms >= 0),
+  status             text NOT NULL CHECK (status IN ('success', 'failure', 'cancelled')),
+  error_code         text,
+  input_tokens       bigint,
+  output_tokens      bigint,
+  cached_tokens      bigint,
+  usage_source       text NOT NULL CHECK (usage_source IN ('provider_reported', 'estimated', 'unknown')),
+  estimated_cost_usd double precision,
+  actual_cost_usd    double precision,
+  currency           text NOT NULL DEFAULT 'USD' CHECK (currency = 'USD'),
+  CHECK (input_tokens IS NULL OR input_tokens >= 0),
+  CHECK (output_tokens IS NULL OR output_tokens >= 0),
+  CHECK (cached_tokens IS NULL OR cached_tokens >= 0),
+  CHECK (estimated_cost_usd IS NULL OR estimated_cost_usd >= 0),
+  CHECK (actual_cost_usd IS NULL OR actual_cost_usd >= 0),
+  CHECK (finished_at >= started_at)
+);
+CREATE INDEX inference_attempts_inference_idx ON inference_attempts (inference_id, fallback_index, attempt_index, started_at);
+CREATE INDEX inference_attempts_finished_idx ON inference_attempts (finished_at);
+CREATE INDEX inference_attempts_user_finished_idx ON inference_attempts (user_id, finished_at) WHERE user_id IS NOT NULL;
+`,
+  },
 ];
