@@ -8,6 +8,7 @@ import { AppError } from "./errors.js";
 import { loggerOptions, type LogStream } from "./logging.js";
 import { attemptLedgerForStore, type AttemptLedger } from "./intelligence/attemptLedgerFactory.js";
 import { IntelligenceRouter } from "./intelligence/router.js";
+import { DEFAULT_SPEND_SETTINGS, type SpendSettings } from "./intelligence/spendAdmission.js";
 import { ProviderRegistry } from "./providers/registry.js";
 import { AutomationService } from "./automations/service.js";
 import { FakePushTransport } from "./push/fake.js";
@@ -47,6 +48,8 @@ export interface AppDependencies {
   pushTransports?: PushTransport[];
   /** Internal attempt accounting. Defaults to durable Postgres beside PostgresStore, memory otherwise. */
   attemptLedger?: AttemptLedger;
+  /** Provider kill switches and cost ceilings. Defaults preserve existing behavior until env wiring lands. */
+  spendSettings?: SpendSettings;
 }
 
 /** The transports PUSH_TRANSPORT asks for: none, FCM for Android, or a recording fake. */
@@ -95,6 +98,7 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   const now = deps.now ?? (() => new Date());
   const store = deps.store ?? new MemoryStore();
   const attemptLedger = deps.attemptLedger ?? attemptLedgerForStore(store);
+  const spendSettings = deps.spendSettings ?? DEFAULT_SPEND_SETTINGS;
   const providers = deps.providers ?? ProviderRegistry.fromConfig(config);
   const router = new IntelligenceRouter(config.routerPolicy, () => providers.configured());
 
@@ -134,13 +138,14 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
     });
 
   const push = new PushService({ store, transports: deps.pushTransports ?? pushTransportsFor(config), config, log: app.log, metrics, now });
-  const automations = new AutomationService({ store, providers, router, config, log: app.log, metrics, now, push, attemptLedger });
+  const automations = new AutomationService({ store, providers, router, config, log: app.log, metrics, now, push, attemptLedger, spendSettings });
   const context: RouteContext = {
     config,
     store,
     providers,
     router,
     attemptLedger,
+    spendSettings,
     automations,
     push,
     tools: ToolRuntime.fromConfig(config, store, deps.plugins),
