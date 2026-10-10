@@ -5,6 +5,7 @@ import type { AutomationService } from "../automations/service.js";
 import type { PushService } from "../push/service.js";
 import type { AttemptLedger } from "../intelligence/attemptLedgerFactory.js";
 import type { IntelligenceRouter } from "../intelligence/router.js";
+import type { SpendSettings } from "../intelligence/spendAdmission.js";
 import type { ProviderRegistry } from "../providers/registry.js";
 import type { Metrics } from "../observability/metrics.js";
 import type { RateLimitName, RateLimitService } from "../security/rateLimit.js";
@@ -20,6 +21,8 @@ export interface RouteContext {
   router: IntelligenceRouter;
   /** Internal append-only provider-attempt accounting. Never exposed to consumer responses. */
   attemptLedger: AttemptLedger;
+  /** Internal AI/provider kill switches and spend ceilings. */
+  spendSettings: SpendSettings;
   /** DASH Automates: scheduler and executor (started by index.ts, not by buildApp). */
   automations: AutomationService;
   /** Automates push delivery (started by index.ts, not by buildApp). */
