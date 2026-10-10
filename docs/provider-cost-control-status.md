@@ -1,29 +1,36 @@
-# Provider/cost-control milestone status
+# Provider & Cost Control Foundation — status
 
-## Implemented on this branch
+This branch remains a backend-only foundation. No production provider activation is part of this milestone.
 
-- Amazon Bedrock runtime adapter and Nova tier selection inherited from the Bedrock foundation.
-- Internal model cost estimation and usage recording inherited from the Bedrock foundation.
-- Normalized provider quota tracker with soft/hard exhaustion.
-- Explicit provider privacy classification; sensitive traffic fails closed unless approved.
-- Internal billing classification metadata for routing policy.
-- Router filtering/deprioritization based on privacy and quota state.
-- Operator-only quota diagnostics in `/v1/router`.
-- Pure spend circuit-breaker decision primitive and boundary tests.
-- Guardrail tests for privacy and quota routing.
+## Completed on this branch
 
-## Deliberately not live yet
+- Amazon Bedrock adapter and Nova model routing support.
+- Provider-neutral routing extensions for capability, cost and health.
+- Normalized quota policy and privacy eligibility metadata.
+- Operator-only provider diagnostics.
+- Usage cost estimates in the existing answer-level usage ledger.
+- Pure spend-circuit-breaker decision primitives and boundary tests.
 
-- No provider has been activated by these changes.
-- No production configuration has been changed.
-- No free third-party provider has been approved or configured.
-- Spend decisions are not yet wired to live traffic because durable multi-instance spend aggregation and immutable per-attempt accounting still need to be completed.
+## Next implementation slice
 
-## Next engineering slices
+Before wiring spend limits into live inference, persist **every provider attempt** (including failed/retried/fallback attempts), then aggregate spend from that attempt ledger. This prevents undercounting when a request tries more than one paid provider.
 
-1. Durable per-attempt inference ledger (success/failure/retry/fallback/latency/token-source/cost).
-2. PostgreSQL-backed daily/monthly spend aggregation and atomic budget reservation/circuit breaking.
-3. Extensible provider catalog plus reusable compatible-provider adapter for approved APIs.
-4. Provider-specific quota/config ingestion.
-5. Entitlements and plan budgets.
-6. Controlled live-provider smoke/rollout after explicit approval.
+Required attempt ledger fields:
+
+- inference/request id
+- user id where applicable
+- task/category
+- provider + served/configured model
+- attempt index and fallback index
+- started/finished timestamps and latency
+- success/failure + normalized error code
+- provider-reported input/output/cached token counts when available
+- estimated usage only when reported usage is unavailable, with an explicit source flag
+- estimated/actual cost fields where available
+- currency
+
+The ledger must not store prompt or response content.
+
+## Rollout rule
+
+Do not enable spend enforcement against the answer-level usage table. The enforcement path should only become active after per-attempt accounting is persisted and PostgreSQL daily/monthly aggregation is covered by tests.
