@@ -1,10 +1,13 @@
 import { MemoryStore } from "../store/memoryStore.js";
 import { PostgresStore } from "../store/postgresStore.js";
 import type { Store } from "../store/store.js";
+import type { AttemptRecorder, InferenceAttempt } from "./attemptLedger.js";
 import { InMemoryAttemptLedger } from "./attemptLedgerMemory.js";
 import { PostgresAttemptLedger } from "./attemptLedgerPersistence.js";
+import type { SpendLedger } from "./spendAdmission.js";
 
-export type AttemptLedger = InMemoryAttemptLedger | PostgresAttemptLedger;
+/** Common boundary used by inference: append attempts and read the current spend window. */
+export interface AttemptLedger extends AttemptRecorder, SpendLedger {}
 
 /**
  * Chooses the attempt ledger beside the app's primary store. Production Postgres shares the same pool;
@@ -12,7 +15,16 @@ export type AttemptLedger = InMemoryAttemptLedger | PostgresAttemptLedger;
  * back to memory rather than guessing how to persist.
  */
 export function attemptLedgerForStore(store: Store): AttemptLedger {
-  if (store instanceof PostgresStore) return new PostgresAttemptLedger(store.pool);
-  if (store instanceof MemoryStore) return new InMemoryAttemptLedger();
-  return new InMemoryAttemptLedger();
+  if (store instanceof PostgresStore) {
+    const ledger = new PostgresAttemptLedger(store.pool);
+    return {
+      record: (attempt: InferenceAttempt) => ledger.record(attempt),
+      spend: (nowIso: string, userId: string | null) => ledger.spendWindow(nowIso, userId),
+    };
+  }
+  const ledger = new InMemoryAttemptLedger();
+  return {
+    record: (attempt: InferenceAttempt) => ledger.record(attempt),
+    spend: (nowIso: string, userId: string | null) => ledger.spend(nowIso, userId),
+  };
 }
