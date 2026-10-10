@@ -80,20 +80,31 @@ export function systemRoutes(app: FastifyInstance, ctx: RouteContext): void {
 
   /**
    * OPERATOR VIEW of the DASH Intelligence Router: the active policy, what this instance has observed
-   * about each provider (reliability, latency, circuit), and the route each task would take right now.
-   * Same protection as /v1/providers. Counts and codes only; never content.
+   * about each provider (reliability, latency, circuit and quota), and the route each task would take
+   * right now. Same protection as /v1/providers. Counts/codes/limits only; never prompts or content.
    */
   app.get("/v1/router", async (request: FastifyRequest) => {
     if (hideProviders(ctx.config) && !bearerMatches(request, ctx.config.operatorToken)) throw new AppError("not_found", "Not found.");
+    const configured = [...ctx.providers.configured()];
     const routes = Object.fromEntries(
       TaskType.options.map((task) => {
         const d = ctx.router.route({ task });
         return [task, d.ok ? { providers: d.providers, candidates: d.candidates } : { unavailable: d.reason, rejected: d.rejected }];
       }),
     );
+    const quota = Object.fromEntries(
+      configured.map((provider) => [
+        provider,
+        {
+          state: ctx.router.quotas.status(provider),
+          snapshot: ctx.router.quotas.snapshot(provider) ?? null,
+        },
+      ]),
+    );
     return {
       policy: ctx.router.policy,
-      health: ctx.router.health.snapshot([...ctx.providers.configured()]),
+      health: ctx.router.health.snapshot(configured),
+      quota,
       routes,
     };
   });
