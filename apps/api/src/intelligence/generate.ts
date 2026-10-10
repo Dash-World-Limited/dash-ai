@@ -8,10 +8,11 @@ import { buildSystemPrompt } from "../providers/instructions.js";
 import type { ProviderRegistry } from "../providers/registry.js";
 import { ProviderError, toProviderError, type ProviderAdapter } from "../providers/types.js";
 import { newId } from "../security/crypto.js";
-import type { InferenceAttempt } from "./attemptLedger.js";
+import type { AttemptRecorder, InferenceAttempt } from "./attemptLedger.js";
 import { estimateCostUsd } from "./cost.js";
 import type { RoutePreference, TaskType } from "./policy.js";
 import { estimateTokens, type IntelligenceRouter } from "./router.js";
+import { admitBySpend, type SpendLedger, type SpendSettings } from "./spendAdmission.js";
 
 export interface GenerateDeps {
   providers: ProviderRegistry;
@@ -20,7 +21,9 @@ export interface GenerateDeps {
   log: FastifyBaseLogger;
   metrics?: Metrics;
   /** Internal append-only attempt accounting. Persistence failure must never break a user request. */
-  attemptLedger?: { record(attempt: InferenceAttempt): Promise<void> | void };
+  attemptLedger?: AttemptRecorder & SpendLedger;
+  /** Internal kill switches and spend ceilings. Omitted keeps legacy/test callers unchanged. */
+  spendSettings?: SpendSettings;
 }
 
 export interface GenerateRequest {
@@ -75,8 +78,36 @@ export async function generateText(deps: GenerateDeps, request: GenerateRequest)
     deps.metrics?.routerUnavailable.inc({ task: request.task, reason: decision.reason });
     throw new GenerationError("unavailable", decision.reason === "no_provider");
   }
-  const adapters = decision.providers.map((p) => deps.providers.get(p)).filter((a): a is ProviderAdapter => a !== undefined);
+  let adapters = decision.providers.map((p) => deps.providers.get(p)).filter((a): a is ProviderAdapter => a !== undefined);
   if (adapters.length === 0) throw new GenerationError("unavailable", true);
+
+  if (deps.spendSettings) {
+    if (!deps.attemptLedger) {
+      deps.log.error({ task: request.task }, "spend settings configured without attempt ledger");
+      throw new GenerationError("unavailable", false);
+    }
+    const admitted = await admitBySpend({
+      ordered: adapters.map((a) => ({ provider: a.id, model: a.model, demo: a.demo })),
+      settings: deps.spendSettings,
+      ledger: deps.attemptLedger,
+      policy: deps.config.routerPolicy,
+      prices: deps.config.modelPrices,
+      estimatedInputTokens,
+      maxOutputTokens: deps.config.maxOutputTokens,
+      userId: request.userId ?? null,
+      nowIso: new Date().toISOString(),
+    });
+    if (admitted.rejected.length > 0) {
+      deps.log.info({ task: request.task, rejected: admitted.rejected }, "spend admission filtered provider route");
+    }
+    const allowed = new Set(admitted.candidates.map((c) => c.provider));
+    adapters = adapters.filter((a) => allowed.has(a.id));
+    if (adapters.length === 0) {
+      deps.metrics?.routerUnavailable.inc({ task: request.task, reason: "spend_control" });
+      throw new GenerationError("unavailable", false);
+    }
+  }
+
   deps.metrics?.routerDecisions.inc({ task: request.task, provider: adapters[0]!.id });
 
   const inferenceId = request.inferenceId ?? newId();
@@ -105,7 +136,7 @@ async function recordAttempt(deps: GenerateDeps, attempt: InferenceAttempt): Pro
     await deps.attemptLedger.record(attempt);
   } catch (err) {
     // Accounting availability must not turn a valid AI answer into a failed user request. Spend
-    // enforcement will fail closed separately once durable accounting is required for admission.
+    // enforcement fails closed at admission when spend settings are enabled and no ledger exists.
     deps.log.warn(
       { err, inferenceId: attempt.inferenceId, provider: attempt.provider, attemptIndex: attempt.attemptIndex, fallbackIndex: attempt.fallbackIndex },
       "could not record provider attempt",
