@@ -10,6 +10,10 @@ import {
 import type { FastifyBaseLogger } from "fastify";
 import type { AppConfig } from "../config.js";
 import { AppError } from "../errors.js";
+import type { InferenceAttempt } from "../intelligence/attemptLedger.js";
+import { estimateCostUsd } from "../intelligence/cost.js";
+import { estimateTokens, type IntelligenceRouter } from "../intelligence/router.js";
+import type { Metrics } from "../observability/metrics.js";
 import { buildProviderMessages } from "../providers/context.js";
 import { buildSystemPrompt } from "../providers/instructions.js";
 import type { ProviderRegistry } from "../providers/registry.js";
@@ -22,13 +26,10 @@ import {
 } from "../providers/types.js";
 import { newId } from "../security/crypto.js";
 import type { ConversationRecord, DocumentRecord, Store } from "../store/store.js";
-import { OfferedTools } from "../tools/registry.js";
 import { DUPLICATE_TEXT } from "../tools/executor.js";
+import { OfferedTools } from "../tools/registry.js";
 import type { ToolRuntime } from "../tools/runtime.js";
 import type { ModelToolCall } from "../tools/types.js";
-import type { Metrics } from "../observability/metrics.js";
-import { estimateCostUsd } from "../intelligence/cost.js";
-import { estimateTokens, type IntelligenceRouter } from "../intelligence/router.js";
 import { hideProviders, neutralErrorMessage, NEUTRAL_ROUTING_REASON, NEUTRAL_UNAVAILABLE } from "./publicSurface.js";
 import { withIdleTimeout } from "./timeouts.js";
 import { DEFAULT_TITLE, generateTitle } from "./titles.js";
@@ -43,6 +44,8 @@ export interface ChatContext {
   store: Store;
   providers: ProviderRegistry;
   router: IntelligenceRouter;
+  /** Internal append-only provider-attempt accounting; never returned to consumers. */
+  attemptLedger: { record(attempt: InferenceAttempt): Promise<void> | void };
   tools: ToolRuntime;
   config: AppConfig;
   log: FastifyBaseLogger;
@@ -245,6 +248,17 @@ export async function runChat(
   return outcomes;
 }
 
+async function recordChatAttempt(ctx: ChatContext, attempt: InferenceAttempt): Promise<void> {
+  try {
+    await ctx.attemptLedger.record(attempt);
+  } catch (err) {
+    ctx.log.warn(
+      { err, inferenceId: attempt.inferenceId, provider: attempt.provider, attemptIndex: attempt.attemptIndex, fallbackIndex: attempt.fallbackIndex },
+      "could not record chat provider attempt",
+    );
+  }
+}
+
 async function runTarget(
   ctx: ChatContext,
   prepared: PreparedChat,
@@ -282,7 +296,7 @@ async function runTarget(
   };
 
   /** One complete answer from `provider`; throws on failure. Text and tool calls stream as they come. */
-  const generate = async (provider: ProviderAdapter): Promise<"stop" | "length" | "refusal"> => {
+  const generate = async (provider: ProviderAdapter, fallbackIndex: number): Promise<"stop" | "length" | "refusal"> => {
     const adapter = provider;
     served = undefined;
     const turns: ProviderTurn[] = buildProviderMessages(
@@ -313,12 +327,15 @@ async function runTarget(
       // Tools from earlier rounds already ran and their results are in `turns`, so a retried
       // request never runs them again.
       for (let attempt = 0; ; attempt++) {
-        attempts += 1;
+        const accountingAttemptIndex = attempts++;
+        const attemptStarted = Date.now();
         const attemptController = new AbortController();
         const onTargetAbort = () => attemptController.abort(controller.signal.reason);
         if (controller.signal.aborted) onTargetAbort();
         else controller.signal.addEventListener("abort", onTargetAbort, { once: true });
         let produced = false;
+        let attemptUsage: Usage = { inputTokens: null, outputTokens: null };
+        let attemptServedModel = adapter.model;
         try {
           const source = adapter.stream({
             system,
@@ -345,15 +362,75 @@ async function runTarget(
               continuation = chunk.continuation;
             } else {
               roundFinish = chunk.finishReason;
+              attemptUsage = chunk.usage;
               usage = addUsage(usage, chunk.usage);
+              attemptServedModel = chunk.servedModel ?? attemptServedModel;
               servedModel = chunk.servedModel ?? servedModel;
             }
           }
+          const finished = Date.now();
+          await recordChatAttempt(ctx, {
+            id: newId(),
+            inferenceId: messageId,
+            userId: prepared.userId,
+            task: "chat",
+            provider: adapter.id,
+            configuredModel: adapter.model,
+            servedModel: attemptServedModel,
+            attemptIndex: accountingAttemptIndex,
+            fallbackIndex,
+            startedAt: new Date(attemptStarted).toISOString(),
+            finishedAt: new Date(finished).toISOString(),
+            latencyMs: Math.max(0, finished - attemptStarted),
+            status: "success",
+            errorCode: null,
+            inputTokens: attemptUsage.inputTokens,
+            outputTokens: attemptUsage.outputTokens,
+            cachedTokens: null,
+            usageSource: attemptUsage.inputTokens !== null || attemptUsage.outputTokens !== null ? "provider_reported" : "unknown",
+            estimatedCostUsd: estimateCostUsd(ctx.config.modelPrices, {
+              provider: adapter.id,
+              model: attemptServedModel,
+              demo: adapter.demo,
+              usage: attemptUsage,
+            }),
+            actualCostUsd: null,
+            currency: "USD",
+          });
           break;
         } catch (err) {
+          const error = toProviderError(adapter.displayName, err, attemptController.signal);
+          const finished = Date.now();
+          await recordChatAttempt(ctx, {
+            id: newId(),
+            inferenceId: messageId,
+            userId: prepared.userId,
+            task: "chat",
+            provider: adapter.id,
+            configuredModel: adapter.model,
+            servedModel: attemptServedModel,
+            attemptIndex: accountingAttemptIndex,
+            fallbackIndex,
+            startedAt: new Date(attemptStarted).toISOString(),
+            finishedAt: new Date(finished).toISOString(),
+            latencyMs: Math.max(0, finished - attemptStarted),
+            status: error.code === "cancelled" ? "cancelled" : "failure",
+            errorCode: error.code,
+            inputTokens: attemptUsage.inputTokens,
+            outputTokens: attemptUsage.outputTokens,
+            cachedTokens: null,
+            usageSource: attemptUsage.inputTokens !== null || attemptUsage.outputTokens !== null ? "provider_reported" : "unknown",
+            estimatedCostUsd: estimateCostUsd(ctx.config.modelPrices, {
+              provider: adapter.id,
+              model: attemptServedModel,
+              demo: adapter.demo,
+              usage: attemptUsage,
+            }),
+            actualCostUsd: null,
+            currency: "USD",
+          });
           // The target's own abort (user cancel, overall timeout) is never retried.
           if (controller.signal.aborted) throw err;
-          const error = toProviderError(adapter.displayName, err, attemptController.signal);
           ctx.metrics?.providerFailures.inc({ provider: adapter.id, code: error.code, retryable: error.retryable });
           const delay = retryDelayMs(ctx.config.providerRetry, attempt, error);
           const remaining = ctx.config.providerTimeoutMs - (Date.now() - started);
@@ -395,7 +472,7 @@ async function runTarget(
       adapter = candidates[c]!;
       const attemptStarted = Date.now();
       try {
-        finishReason = await generate(adapter);
+        finishReason = await generate(adapter, c);
         ctx.router.recordSuccess(adapter.id, Date.now() - attemptStarted);
         break;
       } catch (err) {
