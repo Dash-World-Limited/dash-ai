@@ -27,6 +27,11 @@ export interface InferenceAttempt {
   currency: "USD";
 }
 
+/** Append-only boundary used by inference without coupling callers to a storage implementation. */
+export interface AttemptRecorder {
+  record(attempt: InferenceAttempt): void | Promise<void>;
+}
+
 export interface InferenceAttemptTotals {
   estimatedCostUsd: number;
   actualCostUsd: number;
