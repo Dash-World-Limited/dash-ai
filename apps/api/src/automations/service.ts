@@ -9,6 +9,7 @@ import {
 } from "@dash-ai/contracts";
 import type { FastifyBaseLogger } from "fastify";
 import type { AppConfig } from "../config.js";
+import type { InferenceAttempt } from "../intelligence/attemptLedger.js";
 import { estimateCostUsd } from "../intelligence/cost.js";
 import { GenerationError, generateText } from "../intelligence/generate.js";
 import type { IntelligenceRouter } from "../intelligence/router.js";
@@ -26,6 +27,8 @@ export interface AutomationDeps {
   log: FastifyBaseLogger;
   metrics: Metrics;
   now: () => Date;
+  /** Internal append-only provider-attempt accounting. */
+  attemptLedger: { record(attempt: InferenceAttempt): Promise<void> | void };
   /** Push delivery (absent or unavailable: notices stay in-app only). Never awaited by a run. */
   push?: { readonly available: boolean; poke(): void };
 }
@@ -251,13 +254,22 @@ export class AutomationService {
     const budget = AbortSignal.any([signal, AbortSignal.timeout(Math.max(1_000, this.leaseMs() - 30_000))]);
     try {
       const result = await generateText(
-        { providers: this.deps.providers, router: this.deps.router, config: this.deps.config, log, metrics },
+        {
+          providers: this.deps.providers,
+          router: this.deps.router,
+          config: this.deps.config,
+          log,
+          metrics,
+          attemptLedger: this.deps.attemptLedger,
+        },
         {
           task: "automation",
           mode: automation.mode,
           instructions: automationInstructions(automation.timeZone, this.deps.now()),
           prompt: automation.prompt,
           signal: budget,
+          inferenceId: run.id,
+          userId: run.userId,
         },
       );
       const content = result.content.slice(0, AUTOMATION_LIMITS.maxResultChars);
