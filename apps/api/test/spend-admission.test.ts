@@ -10,7 +10,8 @@ import type { SpendWindow } from "../src/intelligence/spendWindow.js";
 
 const ZERO: SpendWindow = { userDailyUsd: 0, systemDailyUsd: 0, systemMonthlyUsd: 0 };
 const ledger = (window: SpendWindow = ZERO) => ({ spend: async () => window });
-const settings = (patch: Partial<SpendSettings> = {}): SpendSettings => ({
+type SpendSettingsPatch = Omit<Partial<SpendSettings>, "limits"> & { limits?: Partial<SpendSettings["limits"]> };
+const settings = (patch: SpendSettingsPatch = {}): SpendSettings => ({
   ...DEFAULT_SPEND_SETTINGS,
   ...patch,
   limits: { ...DEFAULT_SPEND_SETTINGS.limits, ...(patch.limits ?? {}) },
