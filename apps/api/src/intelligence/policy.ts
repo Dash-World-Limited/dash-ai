@@ -38,6 +38,18 @@ export type Capability = z.infer<typeof Capability>;
 export const RoutePreference = z.enum(["balanced", "quality", "speed", "economy"]);
 export type RoutePreference = z.infer<typeof RoutePreference>;
 
+/**
+ * Privacy eligibility is an operator assertion, not a guess based on provider brand. "unapproved" is
+ * deliberately conservative: private/sensitive requests cannot use that provider until the operator
+ * has reviewed the current provider terms and deployment configuration.
+ */
+export const PrivacyClass = z.enum(["sensitive_allowed", "non_sensitive_only", "unapproved"]);
+export type PrivacyClass = z.infer<typeof PrivacyClass>;
+
+/** Commercial shape of a configured route. Used internally for policy/telemetry, never shown to users. */
+export const BillingClass = z.enum(["demo", "free", "promotional", "paid"]);
+export type BillingClass = z.infer<typeof BillingClass>;
+
 const Score = z.number().min(0).max(1);
 
 /**
@@ -51,6 +63,10 @@ export const ProviderProfile = z.object({
   contextTokens: z.number().int().positive(),
   costPerMillionInput: z.number().nonnegative().nullable().default(null),
   costPerMillionOutput: z.number().nonnegative().nullable().default(null),
+  /** Whether private/sensitive content is eligible for this configured provider. */
+  privacy: PrivacyClass.default("unapproved"),
+  /** Free/promotional/paid is metadata only; actual price/quota controls still decide routing. */
+  billing: BillingClass.default("paid"),
   quality: z.record(z.string(), Score).default({}),
 });
 export type ProviderProfile = z.infer<typeof ProviderProfile>;
@@ -117,6 +133,8 @@ export const DEFAULT_POLICY: RouterPolicy = {
       contextTokens: 128_000,
       costPerMillionInput: null,
       costPerMillionOutput: null,
+      privacy: "unapproved",
+      billing: "paid",
       quality: defaultQuality("openai"),
     },
     anthropic: {
@@ -125,6 +143,8 @@ export const DEFAULT_POLICY: RouterPolicy = {
       contextTokens: 200_000,
       costPerMillionInput: null,
       costPerMillionOutput: null,
+      privacy: "unapproved",
+      billing: "paid",
       quality: defaultQuality("anthropic"),
     },
     bedrock: {
@@ -139,6 +159,8 @@ export const DEFAULT_POLICY: RouterPolicy = {
       // separately; these numbers only influence route scoring when other providers also have prices.
       costPerMillionInput: 0.33,
       costPerMillionOutput: 2.75,
+      privacy: "unapproved",
+      billing: "paid",
       quality: defaultQuality("bedrock"),
     },
   },
@@ -201,8 +223,8 @@ export function loadPolicy(json: string | undefined): RouterPolicy {
       if (!full.success) throw new PolicyError(`ROUTER_POLICY providers.${id} needs capabilities and contextTokens.`);
       providers[id] = full.data;
     } else {
-      // Only the fields the operator wrote: parsing fills schema defaults (enabled, null prices) that
-      // must not overwrite the base profile (Bedrock ships with prices).
+      // Only the fields the operator wrote: parsing fills schema defaults (enabled, prices/privacy)
+      // that must not overwrite the base profile when those keys were absent from the override.
       const written = Object.keys(((raw as { providers?: Record<string, object> }).providers ?? {})[id] ?? {});
       const supplied = Object.fromEntries(Object.entries(patch).filter(([key]) => written.includes(key)));
       providers[id] = { ...base, ...supplied, quality: { ...base.quality, ...(patch.quality ?? {}) } };
