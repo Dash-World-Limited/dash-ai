@@ -7,6 +7,9 @@ import type { Metrics } from "../observability/metrics.js";
 import { buildSystemPrompt } from "../providers/instructions.js";
 import type { ProviderRegistry } from "../providers/registry.js";
 import { ProviderError, toProviderError, type ProviderAdapter } from "../providers/types.js";
+import { newId } from "../security/crypto.js";
+import type { InferenceAttempt } from "./attemptLedger.js";
+import { estimateCostUsd } from "./cost.js";
 import type { RoutePreference, TaskType } from "./policy.js";
 import { estimateTokens, type IntelligenceRouter } from "./router.js";
 
@@ -16,6 +19,8 @@ export interface GenerateDeps {
   config: AppConfig;
   log: FastifyBaseLogger;
   metrics?: Metrics;
+  /** Internal append-only attempt accounting. Persistence failure must never break a user request. */
+  attemptLedger?: { record(attempt: InferenceAttempt): Promise<void> | void };
 }
 
 export interface GenerateRequest {
@@ -26,6 +31,9 @@ export interface GenerateRequest {
   prompt: string;
   preference?: RoutePreference;
   signal?: AbortSignal;
+  /** Internal accounting identity. Omitted callers get a fresh id and no user attribution. */
+  inferenceId?: string;
+  userId?: string | null;
 }
 
 export interface GenerateResult {
@@ -71,15 +79,16 @@ export async function generateText(deps: GenerateDeps, request: GenerateRequest)
   if (adapters.length === 0) throw new GenerationError("unavailable", true);
   deps.metrics?.routerDecisions.inc({ task: request.task, provider: adapters[0]!.id });
 
+  const inferenceId = request.inferenceId ?? newId();
   let last: ProviderError | undefined;
-  for (const [index, adapter] of adapters.entries()) {
+  for (const [fallbackIndex, adapter] of adapters.entries()) {
     try {
-      return await generateWith(deps, adapter, request, estimatedInputTokens);
+      return await generateWith(deps, adapter, request, estimatedInputTokens, inferenceId, fallbackIndex);
     } catch (err) {
       const error = err instanceof ProviderError ? err : toProviderError(adapter.displayName, err, request.signal);
       if (error.code === "cancelled") throw new GenerationError("cancelled", false);
       last = error;
-      const next = adapters[index + 1];
+      const next = adapters[fallbackIndex + 1];
       if (next) {
         deps.metrics?.providerFallbacks.inc({ from: adapter.id, to: next.id, code: error.code });
         deps.log.warn({ from: adapter.id, to: next.id, code: error.code, httpStatus: error.httpStatus, task: request.task }, "provider fallback");
@@ -90,16 +99,33 @@ export async function generateText(deps: GenerateDeps, request: GenerateRequest)
   throw new GenerationError(code, last?.retryable ?? true);
 }
 
+async function recordAttempt(deps: GenerateDeps, attempt: InferenceAttempt): Promise<void> {
+  if (!deps.attemptLedger) return;
+  try {
+    await deps.attemptLedger.record(attempt);
+  } catch (err) {
+    // Accounting availability must not turn a valid AI answer into a failed user request. Spend
+    // enforcement will fail closed separately once durable accounting is required for admission.
+    deps.log.warn(
+      { err, inferenceId: attempt.inferenceId, provider: attempt.provider, attemptIndex: attempt.attemptIndex, fallbackIndex: attempt.fallbackIndex },
+      "could not record provider attempt",
+    );
+  }
+}
+
 async function generateWith(
   deps: GenerateDeps,
   adapter: ProviderAdapter,
   request: GenerateRequest,
   estimatedInputTokens: number,
+  inferenceId: string,
+  fallbackIndex: number,
 ): Promise<GenerateResult> {
   const { config } = deps;
   const system = [buildSystemPrompt(request.mode, adapter), request.instructions].join("\n\n");
-  const started = Date.now();
+  const providerStarted = Date.now();
   for (let attempt = 0; ; attempt++) {
+    const attemptStarted = Date.now();
     const controller = new AbortController();
     const onAbort = () => controller.abort(request.signal?.reason ?? "cancelled");
     if (request.signal?.aborted) onAbort();
@@ -131,14 +157,74 @@ async function generateWith(
         }
       }
       if (content.trim() === "") throw new ProviderError("provider_error", `${adapter.displayName} returned an empty answer.`, true);
-      deps.router.recordSuccess(adapter.id, Date.now() - started);
-      deps.metrics?.aiRequestSeconds.observe({ provider: adapter.id, status: "complete" }, (Date.now() - started) / 1000);
+      const finishedAt = new Date();
+      const estimatedCostUsd = estimateCostUsd(config.modelPrices, {
+        provider: adapter.id,
+        model: servedModel,
+        demo: adapter.demo,
+        usage,
+      });
+      await recordAttempt(deps, {
+        id: newId(),
+        inferenceId,
+        userId: request.userId ?? null,
+        task: request.task,
+        provider: adapter.id,
+        configuredModel: adapter.model,
+        servedModel,
+        attemptIndex: attempt,
+        fallbackIndex,
+        startedAt: new Date(attemptStarted).toISOString(),
+        finishedAt: finishedAt.toISOString(),
+        latencyMs: Math.max(0, finishedAt.getTime() - attemptStarted),
+        status: "success",
+        errorCode: null,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cachedTokens: null,
+        usageSource: usage.inputTokens !== null || usage.outputTokens !== null ? "provider_reported" : "unknown",
+        estimatedCostUsd,
+        actualCostUsd: null,
+        currency: "USD",
+      });
+      deps.router.recordSuccess(adapter.id, Date.now() - providerStarted);
+      deps.metrics?.aiRequestSeconds.observe({ provider: adapter.id, status: "complete" }, (Date.now() - providerStarted) / 1000);
       if (servedModel !== adapter.model) {
         deps.log.info({ provider: adapter.id, configuredModel: adapter.model, servedModel, task: request.task }, "provider served a different model id");
       }
       return { content, provider: adapter.id, model: servedModel, demo: adapter.demo, usage, truncated: finish === "length" };
     } catch (err) {
       const error = toProviderError(adapter.displayName, err, controller.signal);
+      const finishedAt = new Date();
+      const estimatedCostUsd = estimateCostUsd(config.modelPrices, {
+        provider: adapter.id,
+        model: servedModel,
+        demo: adapter.demo,
+        usage,
+      });
+      await recordAttempt(deps, {
+        id: newId(),
+        inferenceId,
+        userId: request.userId ?? null,
+        task: request.task,
+        provider: adapter.id,
+        configuredModel: adapter.model,
+        servedModel,
+        attemptIndex: attempt,
+        fallbackIndex,
+        startedAt: new Date(attemptStarted).toISOString(),
+        finishedAt: finishedAt.toISOString(),
+        latencyMs: Math.max(0, finishedAt.getTime() - attemptStarted),
+        status: error.code === "cancelled" ? "cancelled" : "failure",
+        errorCode: error.code,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cachedTokens: null,
+        usageSource: usage.inputTokens !== null || usage.outputTokens !== null ? "provider_reported" : "unknown",
+        estimatedCostUsd,
+        actualCostUsd: null,
+        currency: "USD",
+      });
       deps.router.recordFailure(adapter.id, error.code, error.retryable);
       if (error.code === "cancelled") throw error;
       deps.metrics?.providerFailures.inc({ provider: adapter.id, code: error.code, retryable: error.retryable });
