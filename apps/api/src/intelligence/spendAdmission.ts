@@ -22,7 +22,8 @@ export const DEFAULT_SPEND_SETTINGS: SpendSettings = {
 };
 
 export interface SpendLedger {
-  spend(nowIso: string, userId: string | null): Promise<SpendWindow> | SpendWindow;
+  /** Optional for legacy/background callers that only record attempts and do not enable spend ceilings. */
+  spend?(nowIso: string, userId: string | null): Promise<SpendWindow> | SpendWindow;
 }
 
 export interface SpendCandidate {
@@ -103,7 +104,8 @@ export async function admitBySpend(input: {
   }
 
   const hasCeiling = spendCeilingConfigured(input.settings.limits);
-  const window = hasCeiling ? await input.ledger.spend(input.nowIso, input.userId) : null;
+  const hasSpendReader = typeof input.ledger.spend === "function";
+  const window = hasCeiling && hasSpendReader ? await input.ledger.spend!(input.nowIso, input.userId) : null;
   const candidates: SpendCandidate[] = [];
 
   for (const [index, candidate] of input.ordered.entries()) {
@@ -123,6 +125,12 @@ export async function admitBySpend(input: {
 
     if (billing !== "paid" && billing !== "promotional") {
       candidates.push(candidate);
+      continue;
+    }
+
+    // A configured ceiling without a readable spend ledger must fail closed for paid inference.
+    if (hasCeiling && !hasSpendReader) {
+      rejected.push({ provider: candidate.provider, reason: "unknown_cost" });
       continue;
     }
 
