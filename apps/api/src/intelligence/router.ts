@@ -10,6 +10,9 @@ import {
   type Multipliers,
   type Weights,
 } from "./policy.js";
+import { ProviderQuotaTracker } from "./quota.js";
+
+export type RequestSensitivity = "public" | "private" | "sensitive";
 
 /** One request to route. Provider-neutral: nothing here names a provider except the internal hint. */
 export interface RouteRequest {
@@ -24,11 +27,16 @@ export interface RouteRequest {
   hint?: ProviderId | null;
   /** How to trade quality against speed and cost (future per-user signal; "balanced" by default). */
   preference?: RoutePreference;
+  /**
+   * Internal privacy classification for this request. Public is the compatibility default until each
+   * product surface adds its own classifier; private/sensitive may only use operator-approved routes.
+   */
+  sensitivity?: RequestSensitivity;
   /** Providers to leave out (for example ones that already failed this request). */
   exclude?: readonly ProviderId[];
 }
 
-export type RejectReason = "not_configured" | "disabled" | "capability" | "context" | "excluded";
+export type RejectReason = "not_configured" | "disabled" | "capability" | "context" | "excluded" | "privacy" | "quota";
 
 export interface ScoredCandidate {
   provider: ProviderId;
@@ -60,11 +68,12 @@ export type RouteDecision =
  * editing, graphics, tools workflows and voice).
  *
  * Decisions come from configuration and observation, never from a hard-coded "provider X does task
- * Y": hard requirements (configured, enabled, capabilities, context size) filter; a weighted score of
- * quality for the route, observed reliability, observed latency and relative cost orders what is
- * left; a provider whose circuit is open (repeated failures) moves to the back but stays as a last
- * resort. Weights come from the task's policy and the request's preference. Everything a person sees
- * stays "DASH AI"; decisions are internal (logs, metrics, the operator view).
+ * Y": hard requirements (configured, enabled, capabilities, privacy, quota, context size) filter; a
+ * weighted score of quality for the route, observed reliability, observed latency and relative cost
+ * orders what is left; a provider whose circuit is open moves to the back but stays as a last resort.
+ * A provider near a known quota limit is softly deprioritized so scarce free/promotional capacity is
+ * preserved without pretending unknown quotas are exhausted. Everything a person sees stays "DASH AI";
+ * decisions are internal (logs, metrics, the operator view).
  */
 export class IntelligenceRouter {
   readonly health: ProviderHealth;
@@ -74,6 +83,7 @@ export class IntelligenceRouter {
     /** Providers configured on this server (an adapter exists), in a stable order. */
     private readonly configured: () => ReadonlySet<ProviderId>,
     now: () => number = Date.now,
+    readonly quotas: ProviderQuotaTracker = new ProviderQuotaTracker(0.1, now),
   ) {
     this.health = new ProviderHealth(
       { smoothing: policy.smoothing, failureThreshold: policy.circuit.failureThreshold, cooldownMs: policy.circuit.cooldownMs },
@@ -89,12 +99,15 @@ export class IntelligenceRouter {
     const configured = this.configured();
     const rejected: Array<{ provider: ProviderId; reason: RejectReason }> = [];
     const eligible: ProviderId[] = [];
+    const sensitivity = request.sensitivity ?? "public";
 
     for (const provider of ProviderId.options) {
       const profile = this.policy.providers[provider];
       if (!configured.has(provider) || !profile) rejected.push({ provider, reason: "not_configured" });
       else if (!profile.enabled) rejected.push({ provider, reason: "disabled" });
       else if (request.exclude?.includes(provider)) rejected.push({ provider, reason: "excluded" });
+      else if (sensitivity !== "public" && profile.privacy !== "sensitive_allowed") rejected.push({ provider, reason: "privacy" });
+      else if (this.quotas.status(provider).hardExhausted) rejected.push({ provider, reason: "quota" });
       else if ([...required].some((c) => !profile.capabilities.includes(c))) rejected.push({ provider, reason: "capability" });
       else if ((request.estimatedInputTokens ?? 0) > profile.contextTokens) rejected.push({ provider, reason: "context" });
       else eligible.push(provider);
@@ -129,11 +142,13 @@ export class IntelligenceRouter {
         latency: latency === null || fastest === null ? 1 : (fastest + LATENCY_SLACK_MS) / (latency + LATENCY_SLACK_MS),
         cost: cost === null || cheapest === null || cost <= 0 ? 1 : cheapest / cost,
       };
+      const quotaPenalty = this.quotas.status(provider).softExhausted ? SOFT_QUOTA_SCORE_MULTIPLIER : 1;
       const score =
-        factors.quality * weights.quality +
-        factors.reliability * weights.reliability +
-        factors.latency * weights.latency +
-        factors.cost * weights.cost;
+        (factors.quality * weights.quality +
+          factors.reliability * weights.reliability +
+          factors.latency * weights.latency +
+          factors.cost * weights.cost) *
+        quotaPenalty;
       return { provider, score: Math.round(score * 10_000) / 10_000, circuitOpen: this.health.isOpen(provider), factors };
     });
 
@@ -160,6 +175,8 @@ export class IntelligenceRouter {
 }
 
 const LATENCY_SLACK_MS = 1_000;
+/** Preserve nearly-exhausted quota for requests that have fewer alternatives. */
+const SOFT_QUOTA_SCORE_MULTIPLIER = 0.85;
 
 function normalize(task: Weights, multiplier: Multipliers): Weights {
   const raw = {
