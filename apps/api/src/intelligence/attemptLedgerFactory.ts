@@ -1,4 +1,3 @@
-import { MemoryStore } from "../store/memoryStore.js";
 import { PostgresStore } from "../store/postgresStore.js";
 import type { Store } from "../store/store.js";
 import type { AttemptRecorder, InferenceAttempt } from "./attemptLedger.js";
