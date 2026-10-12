@@ -9,7 +9,7 @@ import { AttemptRecorder, estimateTokensForLedger } from "./ledger.js";
 import type { Sensitivity } from "./policy.js";
 import { QuotaTracker, type QuotaWindow } from "./quota.js";
 import type { IntelligenceRouter, RouteDecision, RouteRequest, RoutingControls } from "./router.js";
-import { dayStart, monthStart, SpendGuard, type SpendStatus } from "./spend.js";
+import { dayStart, monthStart, SpendGuard, type SpendScope, type SpendStatus } from "./spend.js";
 
 /** Why a request could not be served, in terms the consumer surface turns into a neutral message. */
 export type Refusal =
@@ -67,19 +67,34 @@ export class AiPlatform {
     return this.deps.config.ai.defaultSensitivity;
   }
 
-  /** Spend state for this account now (paid providers allowed or not). */
+  /** Spend state for this account now (paid providers allowed or not, and the allowance left). */
   async admit(userId: string | null): Promise<SpendStatus> {
-    const status = await this.spend.check({ userId, plan: this.plan });
-    if (status.blockedBy) this.deps.metrics?.spendBlocked.inc({ scope: status.blockedBy });
-    return status;
+    return this.spend.check({ userId, plan: this.plan });
+  }
+
+  /** The limit that kept paid providers out of this route: one already reached, or the one with too little left. */
+  private limitingScope(decision: RouteDecision, spend: SpendStatus | null): SpendScope | null {
+    if (!decision.rejected.some((r) => r.reason === "spend_limit")) return null;
+    return spend?.blockedBy ?? spend?.headroom?.scope ?? null;
+  }
+
+  /** Counts a routed request for which a spend limit kept at least one paid provider out. */
+  noteSpendLimit(decision: RouteDecision, spend: SpendStatus): void {
+    const scope = this.limitingScope(decision, spend);
+    if (scope) this.deps.metrics?.spendBlocked.inc({ scope });
   }
 
   /**
-   * The cost fields of a route request: whether paid providers may serve it, and a per-request
-   * ceiling on a paid provider's worst case (the dearest model it may use, the conservative input
-   * estimate and the full output allowance).
+   * The cost fields of a route request: whether paid providers may serve it, the spend allowance left,
+   * and a per-request ceiling, all compared with a paid provider's worst case (the dearest model it may
+   * use, the conservative input estimate and the full output allowance).
    */
-  costFields(spend: SpendStatus, inputChars: number): Pick<RouteRequest, "paidAllowed" | "maxCostUsd" | "worstCaseCostUsd"> {
+  costFields(
+    spend: SpendStatus,
+    inputChars: number,
+    /** Provider requests one answer may make (tool rounds); each is billed in full. */
+    rounds = 1,
+  ): Pick<RouteRequest, "paidAllowed" | "paidHeadroomUsd" | "maxCostUsd" | "worstCaseCostUsd"> {
     const { config, providers } = this.deps;
     const inputTokens = estimateTokensForLedger(inputChars);
     const worstCaseCostUsd = (provider: ProviderId): number | null => {
@@ -89,9 +104,9 @@ export class AiPlatform {
           estimateCostUsd(config.modelPrices, { provider, model, demo: false, usage: { inputTokens, outputTokens: config.maxOutputTokens } }),
         );
       if (costs.length === 0 || costs.some((c) => c === null)) return null;
-      return Math.max(...(costs as number[]));
+      return Math.max(...(costs as number[])) * rounds;
     };
-    return { paidAllowed: spend.paidAllowed, maxCostUsd: config.ai.limits.requestUsd, worstCaseCostUsd };
+    return { paidAllowed: spend.paidAllowed, paidHeadroomUsd: spend.headroom?.usd ?? null, maxCostUsd: config.ai.limits.requestUsd, worstCaseCostUsd };
   }
 
   /** A failed route decision → what the person is told (always DASH AI's own words). */
@@ -102,7 +117,7 @@ export class AiPlatform {
       case "quota_exhausted":
         return { kind: "busy" };
       case "limit_reached": {
-        const scope = spend?.blockedBy;
+        const scope = this.limitingScope(decision, spend);
         if (scope === "user_daily" || scope === "plan_daily") return { kind: "user_limit" };
         if (!scope && decision.rejected.some((r) => r.reason === "cost_limit")) return { kind: "too_large" };
         return { kind: "unavailable" };

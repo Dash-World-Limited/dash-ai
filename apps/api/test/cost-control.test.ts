@@ -23,6 +23,8 @@ class Engine implements ProviderAdapter {
   /** Steps for the next requests, in order; afterwards `otherwise`. */
   steps: Step[] = [];
   otherwise: Step = "answer";
+  /** The model id the provider reports for its answers (default: the configured one). */
+  served?: string;
   constructor(
     readonly id: ProviderId,
     readonly model: string,
@@ -54,7 +56,7 @@ class Engine implements ProviderAdapter {
           type: "finish",
           finishReason: "stop",
           usage: step === "answer-no-usage" ? { inputTokens: null, outputTokens: null } : { inputTokens: 1_000, outputTokens: 500 },
-          servedModel: this.model,
+          servedModel: this.served ?? this.model,
           ...(step === "answer-provider-cost" ? { providerCostUsd: 0.5 } : {}),
         };
     }
@@ -63,11 +65,13 @@ class Engine implements ProviderAdapter {
 
 const ANSWER = "Here is a plan for your week.";
 const PROMPT = "PROMPT-CANARY-7f3a plan my week";
+// Output-only prices keep the arithmetic exact: an answer's cost, and a request's worst case under
+// MAX_OUTPUT_TOKENS=500, do not depend on how long the system prompt is.
 const PRICES = {
-  "openai:paid-a-model": { inputPerMillion: 10, outputPerMillion: 30 },
-  "anthropic:paid-b-model": { inputPerMillion: 10, outputPerMillion: 30 },
+  "openai:paid-a-model": { inputPerMillion: 0, outputPerMillion: 50 },
+  "anthropic:paid-b-model": { inputPerMillion: 0, outputPerMillion: 50 },
 };
-/** One paid answer as the engines report it: 1,000 × $10/M + 500 × $30/M. */
+/** One paid answer as the engines report it (500 output tokens × $50/M), and also a request's worst case (MAX_OUTPUT_TOKENS=500). */
 const PAID_ANSWER_USD = 0.025;
 const FREEPOOL = {
   id: "freepool",
@@ -123,6 +127,7 @@ async function setup(o: Options = {}) {
     PROVIDER_DETAILS: "hidden",
     PROVIDER_RETRY_BASE_MS: "0",
     PROVIDER_MAX_RETRIES: "0",
+    MAX_OUTPUT_TOKENS: "500",
     OPERATOR_TOKEN: OPERATOR,
     MODEL_PRICES: JSON.stringify(PRICES),
     COMPATIBLE_PROVIDERS: JSON.stringify([FREEPOOL]),
@@ -175,6 +180,7 @@ function pastAttempt(over: Partial<InferenceAttemptRow>): InferenceAttemptRow {
     mode: "general",
     provider: "openai",
     model: "paid-a-model",
+    configuredModel: "paid-a-model",
     pricing: "paid",
     createdAt: new Date(START - HOUR).toISOString(),
     latencyMs: 100,
@@ -231,7 +237,7 @@ describe("the inference ledger", () => {
       currency: "USD",
     });
     expect(answered.estimatedInputTokens).toBeGreaterThan(PROMPT.length / 3);
-    expect(answered.estimatedCostUsd).toBeCloseTo((answered.estimatedInputTokens * 10 + answered.estimatedOutputTokens * 30) / 1e6, 10);
+    expect(answered.estimatedCostUsd).toBeCloseTo((answered.estimatedOutputTokens * 50) / 1e6, 10);
     expect(answered.route).toMatchObject({ routeKey: "chat:general", order: [s.primary.id, s.backup.id], sensitivity: "sensitive" });
 
     // Provider-reported usage is the accounting truth when present.
@@ -239,6 +245,17 @@ describe("the inference ledger", () => {
     const second = await chat(s.app, s.user.auth);
     const reported = (await rows(s.context.store, second.messageId)).find((x) => x.outcome === "success");
     expect(reported).toMatchObject({ tokenSource: "provider", inputTokens: 1_000, outputTokens: 500, estimatedCostUsd: PAID_ANSWER_USD, providerCostUsd: null });
+  });
+
+  it("a ledger write failure never breaks an answer, and is counted so operators can alert on it", async () => {
+    class FailingLedgerStore extends MemoryStore {
+      override async recordInferenceAttempt(): Promise<void> {
+        throw new Error("ledger unavailable");
+      }
+    }
+    const s = await setup({ store: new FailingLedgerStore() });
+    expect((await chat(s.app, s.user.auth)).text).toBe(ANSWER);
+    expect(s.context.metrics.render()).toMatch(/dash_ai_ledger_write_failures_total 1/);
   });
 
   it("stores no message content, prompts or answers", async () => {
@@ -441,13 +458,15 @@ describe("quotas and pauses", () => {
 
 describe("spend circuit breakers", () => {
   it("the system daily limit stops paid inference until the next UTC day; free providers carry on", async () => {
-    const s = await setup({ env: { MAX_DAILY_AI_SPEND: "0.04" } });
+    const s = await setup({ env: { MAX_DAILY_AI_SPEND: "0.06" } });
     expect((await chat(s.app, s.user.auth)).text).toBe(ANSWER);
     expect((await chat(s.app, s.user.auth)).text).toBe(ANSWER);
+    // $0.05 spent: $0.01 left cannot hold another request's $0.025 worst case.
     const blocked = await chat(s.app, s.user.auth);
     expect(blocked.res.statusCode).toBe(503);
     expect(blocked.res.json().error.message).toBe(NEUTRAL_UNAVAILABLE);
     expect(s.a.calls + s.b.calls).toBe(2);
+    expect(await paidSpend(s.context.store)).toBeLessThanOrEqual(0.06);
     expect(s.context.metrics.render()).toMatch(/dash_ai_spend_blocked_total\{scope="system_daily"\} 1/);
     s.clock.t = Date.parse("2026-10-13T00:00:01Z");
     expect((await chat(s.app, s.user.auth)).text).toBe(ANSWER);
@@ -477,7 +496,7 @@ describe("spend circuit breakers", () => {
   });
 
   it("a person's daily limit stops their requests only, with a message they can act on", async () => {
-    const s = await setup({ env: { MAX_USER_DAILY_AI_SPEND: "0.02" } });
+    const s = await setup({ env: { MAX_USER_DAILY_AI_SPEND: "0.03" } });
     expect((await chat(s.app, s.user.auth)).text).toBe(ANSWER);
     const limited = await chat(s.app, s.user.auth);
     expect(limited.res.statusCode).toBe(429);
@@ -489,7 +508,7 @@ describe("spend circuit breakers", () => {
   });
 
   it("a plan's daily limit covers every account on the plan", async () => {
-    const s = await setup({ env: { AI_PLAN_DAILY_SPEND: JSON.stringify({ standard: 0.02 }) } });
+    const s = await setup({ env: { AI_PLAN_DAILY_SPEND: JSON.stringify({ standard: 0.03 }) } });
     expect((await chat(s.app, s.user.auth)).text).toBe(ANSWER);
     const other = await register(s.app);
     expect((await chat(s.app, other.auth)).res.statusCode).toBe(429);
@@ -502,7 +521,7 @@ describe("spend circuit breakers", () => {
     expect(refused.res.json().error.message).toBe("This request is too large for DASH AI right now. Try a shorter message or fewer documents.");
     expect(tight.a.calls + tight.b.calls).toBe(0);
 
-    // 16,000 output tokens at $30/M is $0.48: a $1 ceiling allows it.
+    // 500 output tokens at $50/M is $0.025: a $1 ceiling allows it.
     const roomy = await setup({ env: { MAX_REQUEST_AI_COST: "1" } });
     expect((await chat(roomy.app, roomy.user.auth)).text).toBe(ANSWER);
 
@@ -510,6 +529,64 @@ describe("spend circuit breakers", () => {
     const unpriced = await setup({ env: { MAX_REQUEST_AI_COST: "1", MODEL_PRICES: "{}" } });
     expect((await chat(unpriced.app, unpriced.user.auth)).res.statusCode).toBe(413);
     expect(unpriced.a.calls + unpriced.b.calls).toBe(0);
+  });
+});
+
+describe("spend limits hold under adversarial conditions", () => {
+  it("an admitted request cannot take spend past a limit: its worst case must fit in what is left", async () => {
+    // Checking only the spend already recorded would serve a second $0.025 answer at $0.025 of a
+    // $0.03 limit and end the day at $0.05.
+    const s = await setup({ env: { MAX_DAILY_AI_SPEND: "0.03" } });
+    const answered = [];
+    for (let i = 0; i < 4; i++) answered.push((await chat(s.app, s.user.auth)).text === ANSWER);
+    expect(answered).toEqual([true, false, false, false]);
+    expect(await paidSpend(s.context.store)).toBeCloseTo(PAID_ANSWER_USD, 10);
+    expect(s.context.metrics.render()).toMatch(/dash_ai_spend_blocked_total\{scope="system_daily"\} 3/);
+  });
+
+  it("an answer whose served model id has no price is charged at its configured model's price", async () => {
+    // Providers often report a dated snapshot of the alias the operator priced. Priced at nothing,
+    // such answers would never trip a limit.
+    const s = await setup({ env: { MAX_DAILY_AI_SPEND: "0.06" } });
+    s.a.served = "snapshot-2026-01-01";
+    s.b.served = "snapshot-2026-01-01";
+    const first = await chat(s.app, s.user.auth);
+    expect((await rows(s.context.store, first.messageId))[0]).toMatchObject({
+      model: "snapshot-2026-01-01",
+      configuredModel: s.primary.model,
+      estimatedCostUsd: PAID_ANSWER_USD,
+    });
+    for (let i = 0; i < 3; i++) await chat(s.app, s.user.auth);
+    expect(s.a.calls + s.b.calls).toBe(2);
+    expect(await paidSpend(s.context.store)).toBeLessThanOrEqual(0.06);
+  });
+
+  it("under any spend limit a paid model with no price is never used (fails closed at runtime, not only at start-up)", async () => {
+    const limited = await setup({ env: { MAX_DAILY_AI_SPEND: "10", MODEL_PRICES: "{}" } });
+    expect((await chat(limited.app, limited.user.auth)).res.statusCode).toBe(503);
+    expect(limited.a.calls + limited.b.calls).toBe(0);
+    // Without any limit (development), an unpriced model still serves; production refuses to start that way.
+    const unlimited = await setup({ env: { MODEL_PRICES: "{}" } });
+    expect((await chat(unlimited.app, unlimited.user.auth)).text).toBe(ANSWER);
+  });
+
+  it("the worst case counts everything sent, the system prompt included, not only the person's words", async () => {
+    // Input-only prices: the system prompt (well over 300 tokens) alone exceeds the $0.10 ceiling at
+    // $1,000/M, while the short message alone (about 11 tokens) would cost about $0.01.
+    const inputOnly = JSON.stringify({ "openai:paid-a-model": { inputPerMillion: 1000, outputPerMillion: 0 }, "anthropic:paid-b-model": { inputPerMillion: 1000, outputPerMillion: 0 } });
+    const s = await setup({ env: { MAX_REQUEST_AI_COST: "0.1", MODEL_PRICES: inputOnly } });
+    expect((await chat(s.app, s.user.auth)).res.statusCode).toBe(413);
+    expect(s.a.calls + s.b.calls).toBe(0);
+  });
+
+  it("a request that offers tools counts every provider request its tool rounds may make", async () => {
+    const s = await setup({ env: { MAX_REQUEST_AI_COST: "0.05" } });
+    expect((await chat(s.app, s.user.auth)).text).toBe(ANSWER);
+    // With tools on, an answer may take TOOL_MAX_ROUNDS (4) tool rounds and a final answer: 5 × $0.025.
+    expect((await s.app.inject({ method: "PUT", url: "/v1/plugins/dash-demo", headers: s.user.auth, payload: { enabled: true } })).statusCode).toBe(200);
+    const refused = await chat(s.app, s.user.auth);
+    expect(refused.res.statusCode).toBe(413);
+    expect(s.a.calls + s.b.calls).toBe(1);
   });
 });
 
@@ -526,7 +603,7 @@ describe("Automates", () => {
   }
 
   it("each run's attempts go to the ledger, and a person's spend limit stops a run in DASH AI's words", async () => {
-    const s = await setup({ env: { MAX_USER_DAILY_AI_SPEND: "0.02" } });
+    const s = await setup({ env: { MAX_USER_DAILY_AI_SPEND: "0.03" } });
     const created = await s.app.inject({ method: "POST", url: "/v1/automations", headers: s.user.auth, payload: brief });
     const automation = Automation.parse(created.json());
     const first = await runOnce(s, automation.id);

@@ -354,4 +354,29 @@ CREATE INDEX inference_attempts_user_created_idx ON inference_attempts (user_id,
 CREATE INDEX inference_attempts_inference_idx ON inference_attempts (inference_id);
 `,
   },
+  {
+    id: 11,
+    name: "inference_ledger_integrity",
+    sql: `
+-- Integrity rules for the append-only inference ledger, which feeds the spend circuit breakers: a
+-- negative cost or an unknown pricing class would silently loosen a spend limit, so the database
+-- refuses impossible rows. Also records the configured model whose price is used when a provider
+-- reports a served model id that MODEL_PRICES does not list. Additive: no row is changed or deleted.
+ALTER TABLE inference_attempts ADD COLUMN configured_model text;
+ALTER TABLE inference_attempts
+  ADD CONSTRAINT inference_attempts_pricing_check CHECK (pricing IN ('free', 'promotional', 'paid', 'demo')),
+  ADD CONSTRAINT inference_attempts_outcome_check CHECK (outcome IN ('success', 'failure', 'cancelled')),
+  ADD CONSTRAINT inference_attempts_token_source_check CHECK (token_source IN ('provider', 'estimated')),
+  ADD CONSTRAINT inference_attempts_currency_check CHECK (currency = 'USD'),
+  ADD CONSTRAINT inference_attempts_counts_check CHECK (
+    latency_ms >= 0 AND retry >= 0 AND round >= 0 AND fallback_index >= 0
+    AND estimated_input_tokens >= 0 AND estimated_output_tokens >= 0
+    AND (input_tokens IS NULL OR input_tokens >= 0)
+    AND (output_tokens IS NULL OR output_tokens >= 0)
+    AND (cached_input_tokens IS NULL OR cached_input_tokens >= 0)),
+  ADD CONSTRAINT inference_attempts_cost_check CHECK (
+    (estimated_cost_usd IS NULL OR estimated_cost_usd >= 0)
+    AND (provider_cost_usd IS NULL OR provider_cost_usd >= 0));
+`,
+  },
 ];

@@ -30,7 +30,7 @@ import { DUPLICATE_TEXT } from "../tools/executor.js";
 import type { ToolRuntime } from "../tools/runtime.js";
 import type { ModelToolCall } from "../tools/types.js";
 import type { Metrics } from "../observability/metrics.js";
-import { estimateCostUsd } from "../intelligence/cost.js";
+import { estimateAnswerCostUsd } from "../intelligence/cost.js";
 import { estimateTokens, type IntelligenceRouter, type RouteDecision } from "../intelligence/router.js";
 import { requestChars, type InferenceContext } from "../intelligence/ledger.js";
 import type { AiPlatform, Refusal } from "../intelligence/platform.js";
@@ -156,8 +156,20 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
       sensitivity,
       plan,
       inputModalities: ["text"],
-      ...ctx.ai.costFields(spend, inputChars),
+      // Cost limits compare against everything sent (system prompt and tool schemas included), once
+      // per provider request a tool-using answer may make (its tool rounds, then a final answer).
+      ...ctx.ai.costFields(
+        spend,
+        inputChars +
+          requestChars({
+            system: buildSystemPrompt(request.mode, undefined, { toolsOffered: offered.size > 0 }),
+            messages: [],
+            ...(offered.size > 0 ? { tools: offered.list() } : {}),
+          }),
+        offered.size > 0 ? ctx.tools.maxRounds + 1 : 1,
+      ),
     });
+    ctx.ai.noteSpendLimit(decision, spend);
     if (!decision.ok) {
       ctx.metrics?.routerUnavailable.inc({ task: "chat", reason: decision.reason });
       ctx.log.info({ reason: decision.reason, rejected: decision.rejected, spend: spend.blockedBy }, "no provider for this request");
@@ -536,7 +548,7 @@ async function runTarget(
   ctx.metrics?.aiRequestSeconds.observe({ provider: adapter.id, status }, (Date.now() - started) / 1000);
   const now = ctx.now().toISOString();
   const model = served ?? adapter.model;
-  const estimatedCostUsd = estimateCostUsd(ctx.config.modelPrices, { provider: adapter.id, model, demo: adapter.demo, usage });
+  const estimatedCostUsd = estimateAnswerCostUsd(ctx.config.modelPrices, { provider: adapter.id, servedModel: model, configuredModel: adapter.model, demo: adapter.demo, usage });
   if (estimatedCostUsd) ctx.metrics?.estimatedCostUsd.inc({ provider: adapter.id }, estimatedCostUsd);
   await ctx.store.saveMessage({
     id: messageId,

@@ -23,10 +23,10 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `FREE_POOL_ENABLED` | `false` | Free and promotional providers (compatible providers with `pricing` `free`/`promotional`) may serve requests they are eligible for. |
 | `PAID_PROVIDERS_ENABLED` | `true` | Paid providers may serve requests. `false` stops all paid inference. |
 | `BEDROCK_FALLBACK_ENABLED` | `false` | Amazon Bedrock may serve requests. Without it a configured Bedrock receives nothing. |
-| `MAX_DAILY_AI_SPEND` / `MAX_MONTHLY_AI_SPEND` | — | System-wide paid spend limits in USD per UTC day / month (provider-reported cost, else the estimate). When reached, paid providers are excluded until the window resets. **Production with `PROVIDER_MODE=live` and a paid provider enabled refuses to start without both.** |
+| `MAX_DAILY_AI_SPEND` / `MAX_MONTHLY_AI_SPEND` | — | System-wide paid spend limits in USD per UTC day / month (provider-reported cost, else the estimate). A paid provider serves a request only if its worst-case cost (dearest model, everything sent, full `MAX_OUTPUT_TOKENS`, each tool round) fits in what is left of every limit, and a paid model with no price is never used under a limit; free providers are not affected. **Production with `PROVIDER_MODE=live` and a paid provider enabled refuses to start without both.** |
 | `MAX_USER_DAILY_AI_SPEND` | — | Paid spend per account per UTC day (USD). |
 | `AI_PLAN_DAILY_SPEND` | — | JSON `{"<plan>": usd}`: paid spend per plan per UTC day. |
-| `MAX_REQUEST_AI_COST` | — | Ceiling (USD) on a paid provider's worst-case cost for one request; an unpriced paid model is not used under a ceiling. |
+| `MAX_REQUEST_AI_COST` | — | Ceiling (USD) on a paid provider's worst-case cost for one request (tool rounds included); an unpriced paid model is not used under a ceiling. |
 | `AI_DEFAULT_PLAN` | `standard` | The plan every account is on (lowercase). |
 | `AI_DEFAULT_SENSITIVITY` | `sensitive` | `sensitive`: every request only goes to providers approved for sensitive content. `standard`: ordinary requests may also go to `non_sensitive_only` providers; requests with documents or tools stay sensitive. |
 | `COMPATIBLE_PROVIDERS` | — | JSON array of approved OpenAI-compatible providers. Each entry names the variable holding its key (`apiKeyEnv`, ending in `_API_KEY`); that variable is a **secret** set separately. Unapproved by default. Format in [provider-platform.md](provider-platform.md). |

@@ -42,6 +42,11 @@ export interface RouteRequest {
   inputModalities?: readonly Modality[];
   /** Whether paid providers may serve this request now (from the spend limits; absent: allowed). */
   paidAllowed?: boolean;
+  /**
+   * The tightest remaining spend allowance in USD (absent or null: no spend limit). A paid provider
+   * whose worst case does not fit, or whose price is unknown, is not used: spend limits fail closed.
+   */
+  paidHeadroomUsd?: number | null;
   /** Per-request ceiling on a paid provider's worst-case cost, in USD (absent: no ceiling). */
   maxCostUsd?: number | null;
   /** A paid provider's worst-case USD cost for this request, or null when its price is unknown. */
@@ -186,6 +191,7 @@ export class IntelligenceRouter {
       else if (profile.plans && (plan === null || !profile.plans.includes(plan))) reject("plan");
       else if (!demo && !privacyAllows(profile.privacy, sensitivity)) reject("privacy");
       else if (!demo && profile.pricing === "paid" && request.paidAllowed === false) reject("spend_limit");
+      else if (!demo && profile.pricing === "paid" && exceedsHeadroom(request, provider)) reject("spend_limit");
       else if (!demo && profile.pricing === "paid" && exceedsCeiling(request, provider)) reject("cost_limit");
       else if (!demo && quota === "paused") reject("paused");
       else if (!demo && quota === "exhausted") reject("quota");
@@ -276,6 +282,13 @@ export function privacyAllows(privacy: PrivacyClass, sensitivity: Sensitivity): 
   if (privacy === "approved_sensitive") return true;
   if (privacy === "non_sensitive_only") return sensitivity === "standard";
   return false;
+}
+
+/** Under a spend limit, a paid provider must fit its worst case in what is left; an unknown price never fits. */
+function exceedsHeadroom(request: RouteRequest, provider: ProviderId): boolean {
+  if (request.paidHeadroomUsd === undefined || request.paidHeadroomUsd === null) return false;
+  const worst = request.worstCaseCostUsd?.(provider) ?? null;
+  return worst === null || worst > request.paidHeadroomUsd;
 }
 
 function exceedsCeiling(request: RouteRequest, provider: ProviderId): boolean {

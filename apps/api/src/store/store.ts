@@ -112,7 +112,10 @@ export interface InferenceAttemptRow {
   task: string;
   mode: string | null;
   provider: ProviderId;
+  /** The model that served the attempt (as the provider reported it), else the configured one. */
   model: string;
+  /** The model the adapter was configured with; its price is used when the served id has none. Null on rows written before migration 11. */
+  configuredModel: string | null;
   /** free / promotional / paid, or demo for demonstration adapters. Spend limits count paid rows only. */
   pricing: "free" | "promotional" | "paid" | "demo";
   createdAt: string;

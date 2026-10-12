@@ -8,6 +8,12 @@ export interface SpendStatus {
   /** False when a spend limit stops paid providers for this request (free providers may still serve it). */
   paidAllowed: boolean;
   blockedBy: SpendScope | null;
+  /**
+   * The tightest remaining allowance across the configured limits (limit minus paid spend), and which
+   * limit it is; null when no limit is configured. A paid provider is admitted only when its
+   * worst-case cost for the request fits in it (see RouteRequest.paidHeadroomUsd).
+   */
+  headroom: { usd: number; scope: SpendScope } | null;
   totals: { systemDailyUsd: number; systemMonthlyUsd: number; planDailyUsd: number | null; userDailyUsd: number | null };
 }
 
@@ -24,8 +30,10 @@ export const monthStart = (now: number): string => {
 /**
  * The global spend circuit breaker. Paid spend comes from the inference ledger (shared by every API
  * instance through the database), so limits hold across restarts and instances. Limits are checked
- * before a request is routed; a request already running is never cut off, so concurrent requests can
- * overshoot a limit by at most their own cost (bounded by MAX_REQUEST_AI_COST when set).
+ * before a request is routed, against the spend already recorded plus the request's own worst case,
+ * so a request that is admitted cannot by itself take spend past a limit. Requests running at the
+ * same time are each admitted against the same recorded spend, so together they can overshoot a
+ * limit by at most their combined worst cases.
  * Only paid traffic counts: free and promotional providers cost DASH nothing.
  */
 export class SpendGuard {
@@ -81,6 +89,15 @@ export class SpendGuard {
           : reached(totals.userDailyUsd, limits.userDailyUsd)
             ? "user_daily"
             : null;
-    return { paidAllowed: blockedBy === null, blockedBy, totals };
+    const remaining: Array<{ usd: number; scope: SpendScope }> = [];
+    const allow = (scope: SpendScope, spent: number | null, limit: number | null) => {
+      if (limit !== null && spent !== null) remaining.push({ usd: limit - spent, scope });
+    };
+    allow("system_monthly", totals.systemMonthlyUsd, limits.systemMonthlyUsd);
+    allow("system_daily", totals.systemDailyUsd, limits.systemDailyUsd);
+    allow("plan_daily", totals.planDailyUsd, planLimit);
+    allow("user_daily", totals.userDailyUsd, limits.userDailyUsd);
+    const headroom = remaining.reduce<{ usd: number; scope: SpendScope } | null>((min, r) => (min === null || r.usd < min.usd ? r : min), null);
+    return { paidAllowed: blockedBy === null, blockedBy, headroom, totals };
   }
 }

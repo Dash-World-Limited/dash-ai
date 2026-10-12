@@ -65,3 +65,18 @@ export function estimateCostUsd(
   const usd = (inputTokens * price.inputPerMillion + outputTokens * price.outputPerMillion) / 1_000_000;
   return Math.round(usd * 1e10) / 1e10;
 }
+
+/**
+ * Estimated cost of one answer, priced by the model that served it and, when that id has no price,
+ * by the configured model. Providers often report a dated snapshot of the alias the operator priced
+ * (for example `<model>-latest` served as `<model>-20260101`); such an answer must never count as free
+ * against the spend limits just because its served id is unlisted.
+ */
+export function estimateAnswerCostUsd(
+  prices: ModelPrices,
+  answer: { provider: ProviderId; servedModel: string; configuredModel: string; demo: boolean; usage: Usage },
+): number | null {
+  const served = estimateCostUsd(prices, { ...answer, model: answer.servedModel });
+  if (served !== null || answer.servedModel === answer.configuredModel) return served;
+  return estimateCostUsd(prices, { ...answer, model: answer.configuredModel });
+}

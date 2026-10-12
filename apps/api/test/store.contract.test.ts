@@ -29,7 +29,7 @@ const document = (userId: string, over: Partial<DocumentRecord> = {}): DocumentR
 
 const attempt = (over: Partial<InferenceAttemptRow> = {}): InferenceAttemptRow => ({
   id: uid("att"), inferenceId: uid("inf"), userId: null, plan: "standard", task: "chat", mode: "general", provider: "openai",
-  model: "m-1", pricing: "paid", createdAt: t(), latencyMs: 120, outcome: "success", errorCode: null, httpStatus: null,
+  model: "m-1", configuredModel: "m-1", pricing: "paid", createdAt: t(), latencyMs: 120, outcome: "success", errorCode: null, httpStatus: null,
   retry: 0, round: 0, fallbackIndex: 0, inputTokens: 1_000, outputTokens: 500, cachedInputTokens: 200,
   estimatedInputTokens: 900, estimatedOutputTokens: 450, tokenSource: "provider", estimatedCostUsd: 0.025,
   providerCostUsd: null, currency: "USD", route: { routeKey: "chat:general", order: ["openai"] }, ...over,
@@ -444,6 +444,21 @@ function storeContract(name: string, make: () => Promise<Store>, teardown?: () =
       expect((await store.listInferenceAttempts(inferenceId)).map((r) => r.userId)).toEqual([null, null]);
       expect((await store.sumInferenceSpend({ since, provider })).costUsd).toBeCloseTo(0.51, 10);
       expect((await store.sumInferenceSpend({ since, provider, userId: u.id })).attempts).toBe(0);
+    });
+
+    it.runIf(name === "postgres")("the database refuses ledger rows that would corrupt spend totals (migration 11)", async () => {
+      for (const bad of [
+        attempt({ estimatedCostUsd: -1 }),
+        attempt({ providerCostUsd: -0.5 }),
+        attempt({ inputTokens: -10 }),
+        attempt({ pricing: "gratis" as never }),
+        attempt({ outcome: "maybe" as never }),
+        attempt({ tokenSource: "guessed" as never }),
+        attempt({ currency: "EUR" as never }),
+        attempt({ latencyMs: -1 }),
+      ]) {
+        await expect(store.recordInferenceAttempt(bad), JSON.stringify(bad)).rejects.toThrow(/check constraint/);
+      }
     });
 
     it("deletes everything a user owns and nothing else", async () => {

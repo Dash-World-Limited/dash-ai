@@ -224,10 +224,19 @@ Rules:
 | `AI_DEFAULT_SENSITIVITY` | `sensitive` | See privacy classes. |
 
 **The spend circuit breaker.** Before routing, DASH sums paid spend from the ledger (provider charge,
-else estimate). When a limit is reached, paid providers are excluded: free providers still serve
-requests they are eligible for; otherwise the request is refused neutrally. Limits are checked in this
-order: monthly, daily, plan, person. Free, promotional and demonstration usage never counts against the
-paid limits. System totals are cached for at most five seconds and refreshed after every paid attempt.
+else estimate) and works out the tightest allowance left across the configured limits (monthly, daily,
+plan, person). A paid provider may serve the request only if its **worst case** fits in that allowance:
+the dearest model it may use, everything sent (system prompt, tool schemas, history, documents and the
+message, at about three characters per token) and the full `MAX_OUTPUT_TOKENS`, once for each provider
+request the answer may make (a request that offers tools may take `TOOL_MAX_ROUNDS` tool rounds and a
+final answer). A paid model with **no price** never fits: under any configured limit it is not used, at
+run time as well as at start-up. Excluded paid providers leave free providers to serve the requests
+they are eligible for; otherwise the request is refused neutrally. Free, promotional and demonstration
+usage never counts against the paid limits. System totals are cached for at most five seconds and
+refreshed after every paid attempt on the same instance.
+
+An answer whose served model id has no price (providers often report a dated snapshot of the alias the
+operator priced) is charged at the configured model's price, so it can never count as free.
 
 **Safe defaults.** With none of the new variables set, a server behaves as before for OpenAI and
 Anthropic, Bedrock stays off, no compatible provider exists, and the free pool is off. Production with
@@ -236,14 +245,20 @@ Anthropic, Bedrock stays off, no compatible provider exists, and the free pool i
 configured Nova tier when Bedrock is enabled, each paid compatible provider), so spend limits can never
 silently count nothing. `PROVIDER_MODE=fake` is unaffected.
 
-**Limits are guards, not exact meters.** Requests already running when a limit is reached finish, and
-concurrent requests on several instances can overshoot a limit by roughly one answer each. Set limits
-with that margin.
+**What a limit guarantees.** A request admitted on its own cannot take spend past a limit: it was let
+in only because its worst case fitted. Requests running at the same time are each admitted against the
+same recorded spend, so together they can pass a limit by at most the sum of their worst cases (and,
+across instances, by what was spent in the last five seconds of cached totals). An attempt that a
+timeout or cancellation cut short is estimated as possibly billed; a provider retry of such an attempt
+is not part of the worst case. Because admission reserves the worst case, a limit stops new paid
+requests slightly before it is reached: lower `MAX_OUTPUT_TOKENS` to leave more of a small limit usable.
 
 ## Metrics (internal)
 
 `dash_ai_inference_attempts_total{provider,pricing,outcome}`, `dash_ai_attempt_cost_usd_total{pricing}`,
-`dash_ai_provider_pauses_total{provider,reason}`, `dash_ai_spend_blocked_total{scope}`, plus the existing
+`dash_ai_provider_pauses_total{provider,reason}`, `dash_ai_spend_blocked_total{scope}` (requests for which a
+limit kept paid providers out), `dash_ai_ledger_write_failures_total` (alert on any increase: spend limits
+under-count while ledger writes fail), plus the existing
 router, failure, retry, fallback and estimated-cost counters.
 
 ## Safe production rollout
@@ -251,24 +266,36 @@ router, failure, retry, fallback and estimated-cost counters.
 Nothing here is deployed by merging. When the operator decides to roll it out:
 
 1. **Back up the database** (snapshot) before upgrading.
-2. **Migrations.** This release adds two additive migrations (no data is changed or deleted):
+2. **Migrations.** This release adds three additive migrations (no existing data is changed or deleted):
    - `9 usage_estimated_cost`: `ALTER TABLE usage_records ADD COLUMN estimated_cost_usd double precision` (nullable).
    - `10 inference_ledger`: `CREATE TABLE inference_attempts (…)` with indexes on `created_at`,
      `(user_id, created_at)` and `inference_id`; `user_id` references `users` with `ON DELETE SET NULL`.
+   - `11 inference_ledger_integrity`: adds the nullable `configured_model` column and CHECK constraints
+     (known pricing, outcome, token source and currency values; no negative tokens, counts, latency or
+     costs) so the database refuses ledger rows that would corrupt spend totals.
    Production has `DATABASE_AUTO_MIGRATE=false`: run `pnpm --filter @dash-ai/api migrate` (or
    `node apps/api/dist/migrate-cli.js`) against the production database before starting the new
    version. **Rollback:** the previous server version refuses to start on a database that has
    migrations it does not know, so going back after migrating means restoring the snapshot from step 1
-   (or an operator reverting migrations 10 and 9 by hand, which discards the ledger and the cost column).
+   (or an operator reverting migrations 11, 10 and 9 by hand, which discards the ledger and the cost column).
 3. **Deploy with the current mode first.** With `PROVIDER_MODE=fake` nothing changes for people;
    check `/health`, `/ready` and that demonstration answers appear in `inference_attempts` with
    pricing `demo` and cost 0.
-4. **Before any live provider:** set `MAX_DAILY_AI_SPEND`, `MAX_MONTHLY_AI_SPEND` (and optionally the
-   per-person, per-plan and per-request limits) and `MODEL_PRICES` for every paid model, confirmed
-   against the provider's current price list for the deployed Region. Keep `FREE_POOL_ENABLED=false`
-   and `BEDROCK_FALLBACK_ENABLED=false` unless that provider is part of the plan.
-5. **Switch one provider on in staging** first ([staging-runbook.md](staging-runbook.md)), watch the
-   ledger, `/metrics` and the operator view, then repeat in production.
+4. **Before any live provider:**
+   - CI is green on the exact commit being deployed.
+   - Set `MAX_DAILY_AI_SPEND`, `MAX_MONTHLY_AI_SPEND` (and optionally the per-person, per-plan and
+     per-request limits) and `MODEL_PRICES` for every paid model, confirmed against the provider's
+     current official price list for the deployed Region (the built-in Amazon Nova prices are estimates).
+   - Configure the provider's own budget alerts or hard limits where it offers them (AWS Budgets, the
+     provider console's usage limits): DASH's limits are the first line, not the only one.
+   - Review the provider's current privacy and data-use terms for the traffic it will receive, and
+     record the decision in its privacy class (`ROUTER_POLICY` or `COMPATIBLE_PROVIDERS`).
+   - Keep provider credentials in the server's secret store only, never in app bundles or the repository.
+   - Keep `FREE_POOL_ENABLED=false` and `BEDROCK_FALLBACK_ENABLED=false` unless that provider is part of the plan.
+5. **Switch one provider on in staging** first ([staging-runbook.md](staging-runbook.md)) with an
+   explicitly approved, tiny and bounded smoke test; watch the ledger, `/metrics` (alert on
+   `dash_ai_ledger_write_failures_total`) and the operator view, then repeat in production with one
+   provider and a rollback path to the previous provider mode.
 6. **Emergency stops:** `AI_ENABLED=false` stops all AI; `PAID_PROVIDERS_ENABLED=false` stops paid
    inference; a lower spend limit stops paid inference once spend reaches it. Each needs only an
    environment change and a restart, and applies from the first request after it.
@@ -278,5 +305,10 @@ Nothing here is deployed by merging. When the operator decides to roll it out:
 - Quota counters and health are per instance (seeded from the ledger at start-up).
 - Plans: every account is on `AI_DEFAULT_PLAN`; assigning plans per account is future work.
 - Spend sums read the ledger; at very high volume they should move to pre-aggregated totals.
+- Retention: ledger rows hold no content, but they are kept indefinitely until a retention period is
+  decided (accounting usually needs at least the current and previous financial year); a purge would
+  then delete rows older than the period, which only lowers sums for windows already closed.
+- Concurrent requests can together pass a limit by the sum of their worst cases (see *What a limit
+  guarantees*); with several API instances, add up to five seconds of cached system totals.
 - Sensitivity is classified from structure (documents, tools) and the operator default, not from
   content; content classification is future work.

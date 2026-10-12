@@ -41,11 +41,21 @@ than the business has decided to spend. Production currently runs with demonstra
 - **Router stays synchronous and single.** Spend status is computed before routing and passed in;
   quota state is read from an in-process tracker seeded from the ledger at start-up.
 
+**Consolidation (branch `claude/provider-cost-control-consolidation`).** An independent implementation of
+the same milestone (`feature/provider-cost-control-foundation`) was compared with this one. This design was
+kept, and three of that branch's ideas were adopted because the comparison showed they are stricter:
+spend limits admit a paid request only when its worst case fits in what is left (instead of only checking
+spend already recorded); an unknown price fails closed at run time under any limit, not only at start-up;
+and the ledger table carries CHECK constraints (migration 11). The comparison also found that answers
+whose served model id was unpriced counted as free; they are now charged at the configured model's price.
+
 **Consequences.**
 - New providers need configuration and an explicit privacy approval, not code (unless their protocol
   is new).
 - Spend limits are guards with a small overshoot under concurrency, and quota counters are per instance
   between restarts; both are documented operator expectations.
-- Deploying requires migrations 9 and 10 (additive) after a database snapshot; an older server refuses
+- Deploying requires migrations 9, 10 and 11 (additive) after a database snapshot; an older server refuses
   to start on the migrated schema, so rollback is by snapshot.
+- Because admission reserves a request's worst case, a limit stops new paid requests slightly before it is
+  reached; small limits need a smaller `MAX_OUTPUT_TOKENS`.
 - Plans per account and content-based sensitivity classification remain future work.

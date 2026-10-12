@@ -278,6 +278,7 @@ describe("spend circuit breaker", () => {
     mode: "general",
     provider: "paidco",
     model: "m",
+    configuredModel: "m",
     pricing: "paid",
     createdAt: "2026-10-10T10:00:00.000Z",
     latencyMs: 10,

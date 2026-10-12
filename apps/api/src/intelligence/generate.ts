@@ -39,6 +39,8 @@ export interface GenerateResult {
   /** Internal only (diagnostics, usage, cost); never shown to people. */
   provider: ProviderId;
   model: string;
+  /** The model the adapter was configured with (the served `model` may be a dated snapshot of it). */
+  configuredModel: string;
   demo: boolean;
   usage: Usage;
   truncated: boolean;
@@ -78,6 +80,7 @@ export async function generateText(deps: GenerateDeps, request: GenerateRequest)
     inputModalities: ["text"],
     ...deps.ai.costFields(spend, inputChars),
   });
+  deps.ai.noteSpendLimit(decision, spend);
   if (!decision.ok) {
     deps.metrics?.routerUnavailable.inc({ task: request.task, reason: decision.reason });
     const refusal = deps.ai.refusal(decision, spend);
@@ -188,7 +191,7 @@ async function generateWith(
       if (servedModel !== adapter.model) {
         deps.log.info({ provider: adapter.id, configuredModel: adapter.model, servedModel, task: request.task }, "provider served a different model id");
       }
-      return { content, provider: adapter.id, model: servedModel, demo: adapter.demo, usage, truncated: finish === "length" };
+      return { content, provider: adapter.id, model: servedModel, configuredModel: adapter.model, demo: adapter.demo, usage, truncated: finish === "length" };
     } catch (err) {
       const error = toProviderError(adapter.displayName, err, controller.signal);
       await report(error);

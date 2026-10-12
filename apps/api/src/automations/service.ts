@@ -9,7 +9,7 @@ import {
 } from "@dash-ai/contracts";
 import type { FastifyBaseLogger } from "fastify";
 import type { AppConfig } from "../config.js";
-import { estimateCostUsd } from "../intelligence/cost.js";
+import { estimateAnswerCostUsd } from "../intelligence/cost.js";
 import { GenerationError, generateText } from "../intelligence/generate.js";
 import type { AiPlatform } from "../intelligence/platform.js";
 import type { IntelligenceRouter } from "../intelligence/router.js";
@@ -268,7 +268,7 @@ export class AutomationService {
         },
       );
       const content = result.content.slice(0, AUTOMATION_LIMITS.maxResultChars);
-      const estimatedCostUsd = estimateCostUsd(this.deps.config.modelPrices, result);
+      const estimatedCostUsd = estimateAnswerCostUsd(this.deps.config.modelPrices, { ...result, servedModel: result.model });
       if (estimatedCostUsd) metrics.estimatedCostUsd.inc({ provider: result.provider }, estimatedCostUsd);
       await this.finish(run, { status: "ready", content, provider: result.provider, model: result.model, demo: result.demo });
       await store

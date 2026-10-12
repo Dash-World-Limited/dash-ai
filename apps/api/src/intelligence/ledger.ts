@@ -3,7 +3,7 @@ import type { Metrics } from "../observability/metrics.js";
 import { isToolCallTurn, isToolResultTurn, type ProviderAdapter, type ProviderChunk, type ProviderError, type ProviderRequest } from "../providers/types.js";
 import { newId } from "../security/crypto.js";
 import type { InferenceAttemptRow, Store } from "../store/store.js";
-import { estimateCostUsd, type ModelPrices } from "./cost.js";
+import { estimateAnswerCostUsd, type ModelPrices } from "./cost.js";
 import type { RouterPolicy } from "./policy.js";
 import type { QuotaTracker } from "./quota.js";
 import type { SpendGuard } from "./spend.js";
@@ -92,7 +92,13 @@ export class AttemptRecorder {
     const inputTokens = providerTokens ? reported.inputTokens! : estimatedInputTokens;
     const outputTokens = providerTokens ? reported.outputTokens! : estimatedOutputTokens;
     const model = a.finish?.servedModel ?? a.adapter.model;
-    const estimatedCostUsd = estimateCostUsd(prices, { provider, model, demo: a.adapter.demo, usage: { inputTokens, outputTokens } });
+    const estimatedCostUsd = estimateAnswerCostUsd(prices, {
+      provider,
+      servedModel: model,
+      configuredModel: a.adapter.model,
+      demo: a.adapter.demo,
+      usage: { inputTokens, outputTokens },
+    });
     const providerCostUsd = a.finish?.providerCostUsd ?? null;
     const e = a.error;
     const outcome: InferenceAttemptRow["outcome"] = !e ? "success" : e.code === "cancelled" ? "cancelled" : "failure";
@@ -106,6 +112,7 @@ export class AttemptRecorder {
       mode: ctx.mode,
       provider,
       model,
+      configuredModel: a.adapter.model,
       pricing,
       // When the attempt started, on the application clock (the one spend limits and quotas read).
       createdAt: new Date((this.deps.now ?? Date.now)() - latencyMs).toISOString(),
@@ -149,6 +156,7 @@ export class AttemptRecorder {
       await store.recordInferenceAttempt(row);
       return row;
     } catch (err) {
+      metrics?.ledgerWriteFailures.inc();
       log.warn({ err, provider, inferenceId: ctx.inferenceId }, "could not record an inference attempt");
       return undefined;
     }

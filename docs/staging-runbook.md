@@ -130,7 +130,7 @@ conversations decrypt.
   with a fix, or restore the pre-deployment backup (losing writes made since). Take a snapshot
   immediately before every migrating deployment for this reason. Migrations are append-only and
   additive so far (migration 5 adds one table; migration 9 adds a nullable column to `usage_records`;
-  migration 10 adds the `inference_attempts` table).
+  migration 10 adds the `inference_attempts` table; migration 11 adds a column and CHECK constraints to it).
 
 ## 8. Android staging build
 
