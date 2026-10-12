@@ -1,13 +1,14 @@
-import { ProviderId, type ProviderStatus } from "@dash-ai/contracts";
+import { BUILTIN_PROVIDER_IDS, type ProviderId, type ProviderStatus } from "@dash-ai/contracts";
 import type { AppConfig } from "../config.js";
 import { AnthropicAdapter } from "./anthropic.js";
 import { BedrockAdapter } from "./bedrock.js";
+import { OpenAICompatibleAdapter } from "./compatible.js";
 import { bedrockConfigured, bedrockProblems, looksLikePlaceholder } from "./credentials.js";
 import { FakeAdapter } from "./fake.js";
 import { OpenAIAdapter } from "./openai.js";
 import type { ProviderAdapter } from "./types.js";
 
-const DISPLAY: Record<ProviderId, string> = {
+const DISPLAY: Record<string, string> = {
   openai: "OpenAI",
   anthropic: "Claude",
   bedrock: "Amazon Bedrock",
@@ -19,6 +20,8 @@ export class ProviderRegistry {
   constructor(
     private readonly adapters: Partial<Record<ProviderId, ProviderAdapter>>,
     readonly warnings: string[] = [],
+    /** Providers this server knows about besides the built-in ones (registered compatible providers). */
+    private readonly registered: readonly { id: ProviderId; displayName: string }[] = [],
   ) {}
 
   static fromConfig(config: AppConfig): ProviderRegistry {
@@ -73,10 +76,27 @@ export class ProviderRegistry {
       );
     }
 
+    // Approved OpenAI-compatible providers registered by configuration. An unapproved one is still
+    // built (the router never sends it anything) so the operator view shows it with its privacy class.
+    for (const c of config.compatibleProviders) {
+      if (!c.enabled) continue;
+      if (!c.apiKey) {
+        warnings.push(`Compatible provider "${c.id}": ${c.apiKeyEnv} is not set, so it stays off.`);
+        continue;
+      }
+      if (looksLikePlaceholder(c.apiKey)) warnings.push(`${c.apiKeyEnv} looks like a placeholder, not a real key.`);
+      if (c.privacy === "unapproved") warnings.push(`Compatible provider "${c.id}" is unapproved: it receives no requests until approved.`);
+      adapters[c.id] = new OpenAICompatibleAdapter(c, c.apiKey);
+    }
+
     if (Object.keys(adapters).length === 0) {
       warnings.push("No AI provider is configured. Chat requests will fail until one is configured.");
     }
-    return new ProviderRegistry(adapters, warnings);
+    return new ProviderRegistry(
+      adapters,
+      warnings,
+      config.compatibleProviders.map((c) => ({ id: c.id, displayName: c.displayName ?? c.id })),
+    );
   }
 
   get(id: ProviderId): ProviderAdapter | undefined {
@@ -87,12 +107,30 @@ export class ProviderRegistry {
     return new Set((Object.keys(this.adapters) as ProviderId[]).filter((id) => this.adapters[id]));
   }
 
+  /** Demonstration adapters (fake mode): they send nothing anywhere and cost nothing. */
+  demoIds(): Set<ProviderId> {
+    return new Set((Object.keys(this.adapters) as ProviderId[]).filter((id) => this.adapters[id]?.demo));
+  }
+
+  /** Every model a provider may serve a request with (an adaptive provider has several), for cost ceilings. */
+  modelsFor(id: ProviderId): string[] {
+    const adapter = this.adapters[id];
+    if (!adapter) return [];
+    if (adapter instanceof BedrockAdapter) return Object.values(adapter.models).filter((m): m is string => Boolean(m));
+    return [adapter.model];
+  }
+
+  /** Built-in providers first, then registered ones (the router's stable order). */
+  ids(): ProviderId[] {
+    return [...new Set<ProviderId>([...BUILTIN_PROVIDER_IDS, ...this.registered.map((r) => r.id), ...(Object.keys(this.adapters) as ProviderId[])])];
+  }
+
   status(): ProviderStatus[] {
-    return ProviderId.options.map((id) => {
+    return this.ids().map((id) => {
       const adapter = this.adapters[id];
       return {
         id,
-        displayName: DISPLAY[id],
+        displayName: adapter?.displayName ?? DISPLAY[id] ?? this.registered.find((r) => r.id === id)?.displayName ?? id,
         configured: Boolean(adapter),
         model: adapter?.model ?? null,
         mode: adapter ? (adapter.demo ? "fake" : "live") : "unconfigured",

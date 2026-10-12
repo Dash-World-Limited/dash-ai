@@ -130,6 +130,10 @@ export class Metrics {
   readonly providerFailures = new Counter("dash_provider_failures_total", "Provider attempts that failed, by normalized error code.", ["provider", "code", "retryable"]);
   readonly providerRetries = new Counter("dash_provider_retries_total", "Provider requests retried after a retryable failure.", ["provider", "code"]);
   readonly estimatedCostUsd = new Counter("dash_ai_estimated_cost_usd_total", "Estimated USD cost of real answers with a known price (see MODEL_PRICES).", ["provider"]);
+  readonly inferenceAttempts = new Counter("dash_ai_inference_attempts_total", "Provider attempts recorded in the inference ledger.", ["provider", "pricing", "outcome"]);
+  readonly attemptCostUsd = new Counter("dash_ai_attempt_cost_usd_total", "USD cost of provider attempts (provider-reported, else estimated), by pricing class.", ["pricing"]);
+  readonly providerPauses = new Counter("dash_ai_provider_pauses_total", "Providers temporarily disabled after reporting an exhausted quota or a long wait.", ["provider", "reason"]);
+  readonly spendBlocked = new Counter("dash_ai_spend_blocked_total", "Requests for which a spend limit stopped paid providers.", ["scope"]);
   readonly providerFallbacks = new Counter("dash_provider_fallbacks_total", "Answers DASH AI routed to another provider after a failure before any output.", ["from", "to", "code"]);
   readonly routerDecisions = new Counter("dash_router_decisions_total", "Requests the DASH Intelligence Router routed, by task and first-choice provider.", ["task", "provider"]);
   readonly routerUnavailable = new Counter("dash_router_unavailable_total", "Requests the router could not route, by task and reason.", ["task", "reason"]);

@@ -83,6 +83,10 @@ export type ProviderChunk =
       usage: Usage;
       /** The model id the provider says actually served the request (may differ from the configured alias). */
       servedModel?: string | null;
+      /** Input tokens served from the provider's prompt cache, when it reports them (internal accounting). */
+      cachedInputTokens?: number | null;
+      /** The provider's own cost for the request in USD, when its API returns one (internal accounting). */
+      providerCostUsd?: number | null;
     };
 
 /** One AI provider behind a common streaming interface. */
@@ -99,14 +103,22 @@ export type ProviderErrorCode = "provider_error" | "provider_timeout" | "rate_li
 
 /** A provider failure with a user-safe message (never includes prompt or provider response text). */
 export class ProviderError extends Error {
+  /** How long the provider asked callers to wait (Retry-After), when it said so. */
+  readonly retryAfterMs: number | undefined;
+  /** The provider reported its quota or balance for this account as used up (not a momentary rate limit). */
+  readonly quotaExhausted: boolean;
+
   constructor(
     readonly code: ProviderErrorCode,
     message: string,
     readonly retryable: boolean,
     readonly httpStatus?: number,
+    signals: { retryAfterMs?: number; quotaExhausted?: boolean } = {},
   ) {
     super(message);
     this.name = "ProviderError";
+    this.retryAfterMs = signals.retryAfterMs;
+    this.quotaExhausted = signals.quotaExhausted ?? false;
   }
 }
 
@@ -119,7 +131,7 @@ export class ProviderError extends Error {
  * being shopped to another provider.
  */
 export const failoverAllowed = (error: ProviderError): boolean =>
-  error.retryable || error.httpStatus === 401 || error.httpStatus === 403 || error.httpStatus === 404;
+  error.retryable || error.quotaExhausted || error.httpStatus === 401 || error.httpStatus === 403 || error.httpStatus === 404;
 
 const EMPTY_USAGE: Usage = { inputTokens: null, outputTokens: null };
 export const emptyUsage = (): Usage => ({ ...EMPTY_USAGE });
@@ -129,6 +141,41 @@ interface SdkLikeError {
   status?: number;
   /** Provider error code carried by SDK errors raised from in-stream error events. */
   code?: string | null;
+  /** Response headers (SDK API errors carry them). */
+  headers?: unknown;
+  /** Provider error body (SDK API errors carry the parsed body; only its type/code are read). */
+  error?: unknown;
+}
+
+const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
+
+/** Retry-After (seconds or an HTTP date) or retry-after-ms from SDK error headers, bounded. */
+export function retryAfterFrom(headers: unknown, now: number = Date.now()): number | undefined {
+  const get = (name: string): string | null => {
+    if (!headers || typeof headers !== "object") return null;
+    if (typeof (headers as { get?: unknown }).get === "function") return (headers as Headers).get(name);
+    const value = (headers as Record<string, unknown>)[name];
+    return typeof value === "string" ? value : null;
+  };
+  const ms = Number(get("retry-after-ms"));
+  if (Number.isFinite(ms) && ms > 0) return Math.min(ms, MAX_RETRY_AFTER_MS);
+  const raw = get("retry-after");
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
+  const date = Date.parse(raw);
+  return Number.isFinite(date) && date > now ? Math.min(date - now, MAX_RETRY_AFTER_MS) : undefined;
+}
+
+/** Provider codes that mean "this account's quota or balance is used up", not a momentary rate limit. */
+const QUOTA_CODES = /^(insufficient_quota|quota_exceeded|billing_hard_limit_reached|credit_balance_too_low|out_of_credits)$/;
+
+function errorCode(e: SdkLikeError): string | null {
+  if (typeof e.code === "string") return e.code;
+  const body = e.error as { code?: unknown; type?: unknown; error?: { code?: unknown; type?: unknown } } | undefined;
+  const candidates = [body?.code, body?.type, body?.error?.code, body?.error?.type];
+  const found = candidates.find((c): c is string => typeof c === "string");
+  return found ?? null;
 }
 
 /** Maps SDK/network errors to ProviderError without copying provider error text. */
@@ -142,16 +189,23 @@ export function toProviderError(displayName: string, err: unknown, signal?: Abor
   }
   if (err instanceof ProviderError) return err;
   const e = (typeof err === "object" && err !== null ? err : {}) as SdkLikeError;
-  const name = e.name ?? "";
-  if (name === "AbortError" || name === "APIUserAbortError") {
+  // The OpenAI and Anthropic SDKs leave `name` as "Error" on their error classes: read the class too.
+  const names = [e.name ?? "", (err as { constructor?: { name?: string } } | null)?.constructor?.name ?? ""];
+  if (names.some((n) => n === "AbortError" || n === "APIUserAbortError")) {
     return new ProviderError("cancelled", "Generation was stopped.", false);
   }
-  if (name === "APIConnectionTimeoutError" || name === "TimeoutError") {
+  if (names.some((n) => n === "APIConnectionTimeoutError" || n === "TimeoutError")) {
     return new ProviderError("provider_timeout", `${displayName} took too long to respond.`, true);
   }
   const status = typeof e.status === "number" ? e.status : undefined;
-  if (status === 429 || e.code === "rate_limit_exceeded") {
-    return new ProviderError("rate_limited", `${displayName} is receiving too many requests. Try again shortly.`, true, status);
+  const code = errorCode(e);
+  const retryAfterMs = retryAfterFrom(e.headers);
+  if (code !== null && QUOTA_CODES.test(code)) {
+    // Retrying the same provider cannot help; another provider may take over (failoverAllowed).
+    return new ProviderError("rate_limited", `${displayName} reported this account's quota as used up.`, false, status, { retryAfterMs, quotaExhausted: true });
+  }
+  if (status === 429 || code === "rate_limit_exceeded") {
+    return new ProviderError("rate_limited", `${displayName} is receiving too many requests. Try again shortly.`, true, status, { retryAfterMs });
   }
   if (status === 401 || status === 403) {
     return new ProviderError(
@@ -170,7 +224,7 @@ export function toProviderError(displayName: string, err: unknown, signal?: Abor
     );
   }
   if (status !== undefined && status >= 500) {
-    return new ProviderError("provider_error", `${displayName} is temporarily unavailable. Try again.`, true, status);
+    return new ProviderError("provider_error", `${displayName} is temporarily unavailable. Try again.`, true, status, { retryAfterMs });
   }
   return new ProviderError("provider_error", `Could not reach ${displayName}. Try again.`, true, status);
 }

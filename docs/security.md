@@ -1,7 +1,8 @@
 # Security and privacy
 
 ## Credentials
-- **AI-provider keys exist only on the server** (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`). The Android
+- **AI-provider keys exist only on the server** (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `BEDROCK_API_KEY`, and each
+  compatible provider's `<NAME>_API_KEY`; document parsing runs with an empty environment, so it sees none). The Android
   app has no provider SDK, no provider hostnames and no keys; CI fails if the APK contains
   provider key patterns or provider API hosts (`scripts/check-apk.sh`), and the tracked-file scan
   fails if Android sources reference a provider API.

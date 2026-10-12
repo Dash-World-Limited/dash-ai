@@ -32,6 +32,18 @@ const TEST_PROVIDERS = {
   ANTHROPIC_MODEL: "test-claude-model",
 };
 
+/** Production with paid providers also needs spend limits and a price for every paid model. */
+const TEST_COST_CONTROLS = {
+  MAX_DAILY_AI_SPEND: "10",
+  MAX_MONTHLY_AI_SPEND: "200",
+  MODEL_PRICES: JSON.stringify({
+    "openai:test-openai-model": { inputPerMillion: 1, outputPerMillion: 4 },
+    "anthropic:test-claude-model": { inputPerMillion: 3, outputPerMillion: 15 },
+    "openai:m": { inputPerMillion: 1, outputPerMillion: 4 },
+    "anthropic:m": { inputPerMillion: 3, outputPerMillion: 15 },
+  }),
+};
+
 describe("config", () => {
   it("applies defaults and treats empty strings as unset", () => {
     const c = loadConfig({ OPENAI_API_KEY: "", OPENAI_MODEL: " ", PORT: "" });
@@ -87,7 +99,7 @@ describe("config", () => {
     });
 
     it("holds no credentials, and parses as a valid configuration", () => {
-      for (const secret of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "DATA_ENCRYPTION_PREVIOUS_KEYS", "REDIS_URL", "METRICS_TOKEN", "OPERATOR_TOKEN", "FCM_SERVICE_ACCOUNT"]) {
+      for (const secret of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BEDROCK_API_KEY", "DATABASE_URL", "DATA_ENCRYPTION_KEY", "DATA_ENCRYPTION_PREVIOUS_KEYS", "REDIS_URL", "METRICS_TOKEN", "OPERATOR_TOKEN", "FCM_SERVICE_ACCOUNT"]) {
         expect(entries.get(secret), secret).toBe("");
       }
       expect(() => loadConfig(Object.fromEntries(entries))).not.toThrow();
@@ -102,7 +114,7 @@ describe("config", () => {
         .filter((m): m is RegExpExecArray => m !== null)
         .map((m) => [m[1]!, m[2]!] as const),
     );
-    const secrets = ["DATABASE_URL", "DATA_ENCRYPTION_KEY", "DATA_ENCRYPTION_PREVIOUS_KEYS", "REDIS_URL", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "METRICS_TOKEN", "OPERATOR_TOKEN", "FCM_SERVICE_ACCOUNT"];
+    const secrets = ["DATABASE_URL", "DATA_ENCRYPTION_KEY", "DATA_ENCRYPTION_PREVIOUS_KEYS", "REDIS_URL", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BEDROCK_API_KEY", "METRICS_TOKEN", "OPERATOR_TOKEN", "FCM_SERVICE_ACCOUNT"];
 
     it("covers every variable, holds no secret values, and is production-safe once secrets are supplied", () => {
       expect([...template.keys()].sort()).toEqual([...ENV_KEYS].sort());
@@ -112,6 +124,7 @@ describe("config", () => {
         ...Object.fromEntries(template),
         DATABASE_URL: "postgres://placeholder", DATA_ENCRYPTION_KEY: "", REDIS_URL: "rediss://placeholder",
         ...TEST_PROVIDERS,
+        ...TEST_COST_CONTROLS,
       });
       expect(configWarnings(filled)).toEqual([]);
       expect(filled).toMatchObject({ nodeEnv: "production", providerMode: "live", trustProxy: true, database: { ssl: "require", autoMigrate: false, allowMemoryStore: false }, rateLimits: { backend: "redis" } });
@@ -119,7 +132,7 @@ describe("config", () => {
   });
 
   it("warns about deliberate insecure choices in production only", () => {
-    const shared = { RATE_LIMIT_BACKEND: "redis", REDIS_URL: "rediss://placeholder", ...TEST_PROVIDERS };
+    const shared = { RATE_LIMIT_BACKEND: "redis", REDIS_URL: "rediss://placeholder", ...TEST_PROVIDERS, ...TEST_COST_CONTROLS };
     const prod = (env: Record<string, string>) =>
       configWarnings(loadConfig({ NODE_ENV: "production", DATABASE_URL: "postgres://placeholder", ...shared, ...env })).join(" ");
     expect(prod({})).toBe("");
@@ -135,11 +148,11 @@ describe("config", () => {
     expect(prod({ OPENAI_API_KEY: "", OPENAI_MODEL: "" })).toMatch(/no second provider to fall back to/);
     expect(configWarnings(loadConfig({ DATABASE_SSL: "disable", LOG_LEVEL: "trace" }))).toEqual([]);
     // Defaults in production are the safe ones.
-    expect(loadConfig({ NODE_ENV: "production", ...TEST_PROVIDERS }).database).toMatchObject({ ssl: "require", autoMigrate: false, allowMemoryStore: false });
+    expect(loadConfig({ NODE_ENV: "production", ...TEST_PROVIDERS, ...TEST_COST_CONTROLS }).database).toMatchObject({ ssl: "require", autoMigrate: false, allowMemoryStore: false });
   });
 
   describe("production with PROVIDER_MODE=live refuses to start without usable provider credentials", () => {
-    const prod = (env: Record<string, string>) => () => loadConfig({ NODE_ENV: "production", PROVIDER_MODE: "live", ...env });
+    const prod = (env: Record<string, string>) => () => loadConfig({ NODE_ENV: "production", PROVIDER_MODE: "live", ...TEST_COST_CONTROLS, ...env });
     const refusal = (env: Record<string, string>): string => {
       try {
         prod(env)();

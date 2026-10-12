@@ -72,7 +72,8 @@ afterEach(async () => {
 });
 
 async function setup(adapters: Partial<Record<"openai" | "anthropic" | "bedrock", ProviderAdapter>>, env: Record<string, string> = {}) {
-  const config = testConfig({ PROVIDER_DETAILS: "hidden", PROVIDER_MAX_RETRIES: "0", PROVIDER_RETRY_BASE_MS: "0", ...env });
+  // Bedrock serves traffic only with BEDROCK_FALLBACK_ENABLED (off by default).
+  const config = testConfig({ PROVIDER_DETAILS: "hidden", PROVIDER_MAX_RETRIES: "0", PROVIDER_RETRY_BASE_MS: "0", BEDROCK_FALLBACK_ENABLED: "true", ...env });
   const made = await makeApp({ config, providers: new ProviderRegistry(adapters) });
   apps.push(made.app);
   const user = await register(made.app);
@@ -282,9 +283,9 @@ describe("cost ledger: estimated USD per answer", () => {
   const usage = (inputTokens: number | null, outputTokens: number | null) => ({ inputTokens, outputTokens });
 
   it("an operator policy override keeps Bedrock's default prices unless it sets them", () => {
-    const tuned = loadConfig({ ROUTER_POLICY: JSON.stringify({ providers: { bedrock: { quality: { "chat:general": 0.9 } } } }) }).routerPolicy;
+    const tuned = loadConfig({ BEDROCK_FALLBACK_ENABLED: "true", ROUTER_POLICY: JSON.stringify({ providers: { bedrock: { quality: { "chat:general": 0.9 } } } }) }).routerPolicy;
     expect(tuned.providers.bedrock).toMatchObject({ costPerMillionInput: 0.33, costPerMillionOutput: 2.75, enabled: true });
-    const repriced = loadConfig({ ROUTER_POLICY: JSON.stringify({ providers: { bedrock: { costPerMillionInput: 0.06 } } }) }).routerPolicy;
+    const repriced = loadConfig({ BEDROCK_FALLBACK_ENABLED: "true", ROUTER_POLICY: JSON.stringify({ providers: { bedrock: { costPerMillionInput: 0.06 } } }) }).routerPolicy;
     expect(repriced.providers.bedrock).toMatchObject({ costPerMillionInput: 0.06, costPerMillionOutput: 2.75 });
   });
 
@@ -344,7 +345,9 @@ describe("cost ledger: estimated USD per answer", () => {
 });
 
 describe("production start-up validation for Bedrock", () => {
-  const prod = (env: Record<string, string>) => () => loadConfig({ NODE_ENV: "production", PROVIDER_MODE: "live", ...env });
+  // Production with paid providers also needs spend limits (docs/provider-platform.md).
+  const prod = (env: Record<string, string>) => () =>
+    loadConfig({ NODE_ENV: "production", PROVIDER_MODE: "live", BEDROCK_FALLBACK_ENABLED: "true", MAX_DAILY_AI_SPEND: "10", MAX_MONTHLY_AI_SPEND: "200", ...env });
   const refusal = (env: Record<string, string>): string => {
     try {
       prod(env)();
@@ -363,7 +366,15 @@ describe("production start-up validation for Bedrock", () => {
   });
 
   it("a preset Region or auth mode alone does not switch Bedrock on or block start-up", () => {
-    expect(() => prod({ BEDROCK_REGION: "eu-west-1", BEDROCK_AUTH: "iam", ANTHROPIC_API_KEY: "test-anthropic-key-not-real", ANTHROPIC_MODEL: "m" })()).not.toThrow();
+    expect(() =>
+      prod({
+        BEDROCK_REGION: "eu-west-1",
+        BEDROCK_AUTH: "iam",
+        ANTHROPIC_API_KEY: "test-anthropic-key-not-real",
+        ANTHROPIC_MODEL: "m",
+        MODEL_PRICES: JSON.stringify({ "anthropic:m": { inputPerMillion: 3, outputPerMillion: 15 } }),
+      })(),
+    ).not.toThrow();
   });
 
   it("refuses incomplete, misplaced or malformed Bedrock settings by variable name only", () => {

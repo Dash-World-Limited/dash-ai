@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import type { ProviderId } from "@dash-ai/contracts";
+import type { BuiltinProviderId } from "@dash-ai/contracts";
 import { ProviderError, isToolResultTurn, type ProviderAdapter, type ProviderChunk, type ProviderRequest } from "./types.js";
 
 /**
@@ -20,7 +20,7 @@ export const FAKE_TRIGGERS = {
 } as const;
 const FAKE_TOOL = /\[\[fake:tool ([^\s\]]+)(?: (\{.*?\}))?\]\]/s;
 
-type FakeProviderId = Extract<ProviderId, "openai" | "anthropic">;
+type FakeProviderId = Extract<BuiltinProviderId, "openai" | "anthropic">;
 const NAMES: Record<FakeProviderId, { display: string; company: string; keyVar: string; modelVar: string }> = {
   openai: { display: "OpenAI", company: "OpenAI", keyVar: "OPENAI_API_KEY", modelVar: "OPENAI_MODEL" },
   anthropic: { display: "Claude", company: "Anthropic", keyVar: "ANTHROPIC_API_KEY", modelVar: "ANTHROPIC_MODEL" },

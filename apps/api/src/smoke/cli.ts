@@ -38,8 +38,8 @@ export async function runSmokeCli(
     return 0;
   }
   const only = argv.includes("--provider") ? argv[argv.indexOf("--provider") + 1] : undefined;
-  if (only !== undefined && !ProviderId.options.some((p) => p === only)) {
-    out("--provider must be openai, anthropic or bedrock.\n");
+  if (only !== undefined && !ProviderId.safeParse(only).success) {
+    out("--provider must be a provider id (openai, anthropic, bedrock or a registered compatible provider).\n");
     return 2;
   }
 
@@ -57,7 +57,7 @@ export async function runSmokeCli(
 
   const registry = (deps.registryFactory ?? ProviderRegistry.fromConfig)(config);
   for (const warning of registry.warnings) out(`warning: ${warning}\n`);
-  const adapters = ProviderId.options.filter((p) => (only ? p === only : true)).flatMap((p) => {
+  const adapters = registry.ids().filter((p) => (only ? p === only : true)).flatMap((p) => {
     const adapter = registry.get(p);
     return adapter ? [adapter] : [];
   });

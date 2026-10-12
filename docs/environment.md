@@ -18,7 +18,20 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `BEDROCK_API_KEY` | — | Bedrock API key (server only, secret). Only with `BEDROCK_AUTH=api_key`; set with `iam` it is refused. |
 | `BEDROCK_REGION` | — | AWS Region of Bedrock Runtime, e.g. `eu-west-1`. Required once Bedrock is configured; on its own it does not switch Bedrock on. |
 | `BEDROCK_MODEL_MICRO` / `BEDROCK_MODEL_LITE` / `BEDROCK_MODEL_NOVA2_LITE` | — | Model or inference-profile id for each Amazon Nova tier, e.g. `eu.amazon.nova-lite-v1:0`. At least one; each must be an id of its own tier (production refuses a mismatch). DASH picks the tier per request inside the Bedrock adapter ([intelligence-router.md](intelligence-router.md)). |
-| `MODEL_PRICES` | — | Optional JSON of USD prices per million tokens for the internal cost estimate: `{"<provider>:<model id or prefix>": {"inputPerMillion": n, "outputPerMillion": n}}`. Overrides the built-in Amazon Nova estimates (longest prefix wins); OpenAI/Anthropic costs stay unknown (null) unless listed. Invalid JSON or entries stop start-up without echoing the content. |
+| `MODEL_PRICES` | — | Optional JSON of USD prices per million tokens for the internal cost estimate: `{"<provider>:<model id or prefix>": {"inputPerMillion": n, "outputPerMillion": n}}`. Overrides the built-in Amazon Nova estimates and compatible providers' declared prices (longest prefix wins); OpenAI/Anthropic costs stay unknown (null) unless listed. Spend limits count only priced usage, so production with live paid providers requires a price for each paid model. Invalid JSON or entries stop start-up without echoing the content. |
+| `AI_ENABLED` | `true` | Global AI switch. `false` refuses every AI request, demonstrations included, with DASH AI's neutral "unavailable" message. See [provider-platform.md](provider-platform.md) for this and the following cost-control settings. |
+| `FREE_POOL_ENABLED` | `false` | Free and promotional providers (compatible providers with `pricing` `free`/`promotional`) may serve requests they are eligible for. |
+| `PAID_PROVIDERS_ENABLED` | `true` | Paid providers may serve requests. `false` stops all paid inference. |
+| `BEDROCK_FALLBACK_ENABLED` | `false` | Amazon Bedrock may serve requests. Without it a configured Bedrock receives nothing. |
+| `MAX_DAILY_AI_SPEND` / `MAX_MONTHLY_AI_SPEND` | — | System-wide paid spend limits in USD per UTC day / month (provider-reported cost, else the estimate). When reached, paid providers are excluded until the window resets. **Production with `PROVIDER_MODE=live` and a paid provider enabled refuses to start without both.** |
+| `MAX_USER_DAILY_AI_SPEND` | — | Paid spend per account per UTC day (USD). |
+| `AI_PLAN_DAILY_SPEND` | — | JSON `{"<plan>": usd}`: paid spend per plan per UTC day. |
+| `MAX_REQUEST_AI_COST` | — | Ceiling (USD) on a paid provider's worst-case cost for one request; an unpriced paid model is not used under a ceiling. |
+| `AI_DEFAULT_PLAN` | `standard` | The plan every account is on (lowercase). |
+| `AI_DEFAULT_SENSITIVITY` | `sensitive` | `sensitive`: every request only goes to providers approved for sensitive content. `standard`: ordinary requests may also go to `non_sensitive_only` providers; requests with documents or tools stay sensitive. |
+| `COMPATIBLE_PROVIDERS` | — | JSON array of approved OpenAI-compatible providers. Each entry names the variable holding its key (`apiKeyEnv`, ending in `_API_KEY`); that variable is a **secret** set separately. Unapproved by default. Format in [provider-platform.md](provider-platform.md). |
+| `<NAME>_API_KEY` | — | **Secret.** The key of a compatible provider, under the name its `apiKeyEnv` gives. Not in `.env.example`. |
+| `PROVIDER_QUOTAS` | — | JSON quota windows per provider id (requests or tokens per minute/day/month, promotional balance, unknown, unlimited) and a soft threshold. |
 | `PROVIDER_TIMEOUT_MS` | `120000` | Maximum time for one provider answer. |
 | `PROVIDER_IDLE_TIMEOUT_MS` | `45000` | Maximum gap between streamed chunks. |
 | `PROVIDER_MAX_RETRIES` | `2` | Extra attempts after a retryable provider failure (429, 5xx, timeout, malformed stream) that happened **before any output**. 0 disables retries. See [ADR 0011](decisions/0011-provider-failures-retry-not-failover.md). |
@@ -58,8 +71,8 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `METRICS_TOKEN` | — | **Secret.** At least 24 characters. Enables `GET /metrics` (Prometheus text) for requests bearing this token; unset, the endpoint does not exist. |
 | `OPERATOR_TOKEN` | — | **Secret.** At least 32 characters and a different value from `METRICS_TOKEN` (the server refuses to start if they match). Opens the operator view `GET /v1/providers` while provider details are hidden; unset, there is no operator access. |
 
-`.env.example` lists exactly these variables (a test keeps the two in sync and checks that every
-credential slot in it is empty).
+`.env.example` lists exactly these variables except the compatible providers' own key variables (a
+test keeps the two in sync and checks that every credential slot in it is empty).
 
 ## Production checklist
 
@@ -68,7 +81,8 @@ Production (`NODE_ENV=production`) **refuses to start** without `DATABASE_URL` (
 stored data, with a schema that is not migrated, or with `PROVIDER_MODE=live` (the default) and no
 usable provider credentials: no complete provider, a key without its model (or the reverse), a key
 that looks copied from an example, or Bedrock settings that are incomplete, use the wrong tier id, an
-invalid Region, or both an API key and `BEDROCK_AUTH=iam`. Its defaults are the safe ones (`DATABASE_SSL=require`,
+invalid Region, or both an API key and `BEDROCK_AUTH=iam`; and, with a paid provider enabled, without
+`MAX_DAILY_AI_SPEND`, `MAX_MONTHLY_AI_SPEND` and a `MODEL_PRICES` price for every paid model. Its defaults are the safe ones (`DATABASE_SSL=require`,
 `DATABASE_AUTO_MIGRATE=false`). It **warns** at start-up about deliberate opt-outs: `DATABASE_SSL=disable`
 or `no-verify`, `LOG_LEVEL=debug`/`trace`, `PROVIDER_MODE=fake`, only one live provider
 (nothing to fail over to), `RATE_LIMIT_BACKEND=memory` (limits are per instance) and an unencrypted

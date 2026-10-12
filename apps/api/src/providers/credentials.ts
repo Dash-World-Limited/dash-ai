@@ -1,3 +1,5 @@
+import { priceFor, type ModelPrices } from "../intelligence/cost.js";
+import type { AiControls } from "../intelligence/settings.js";
 import { matchesTier, NOVA_TIER_VARIABLES, type NovaTier } from "./nova.js";
 
 /**
@@ -27,11 +29,28 @@ export interface BedrockCredentials {
   models: Record<NovaTier, string | undefined>;
 }
 
+/** What the checks need to know about one registered OpenAI-compatible provider. */
+export interface CompatibleCredentials {
+  id: string;
+  apiKeyEnv: string;
+  apiKey: string | undefined;
+  enabled: boolean;
+  privacy: "approved_sensitive" | "non_sensitive_only" | "unapproved";
+  pricing: "free" | "promotional" | "paid";
+  model: string;
+}
+
 export interface LiveProviderConfig {
   openai: Credentials;
   anthropic: Credentials;
   bedrock: BedrockCredentials;
+  /** BEDROCK_FALLBACK_ENABLED: Bedrock only counts as a live provider when it may serve traffic. */
+  bedrockEnabled: boolean;
+  compatible: readonly CompatibleCredentials[];
 }
+
+/** A registered compatible provider that can actually serve: enabled, keyed and approved for some content. */
+const compatibleLive = (c: CompatibleCredentials): boolean => c.enabled && Boolean(c.apiKey) && c.privacy !== "unapproved";
 
 const PROVIDERS = [
   { name: "OpenAI", key: "OPENAI_API_KEY", model: "OPENAI_MODEL", config: "openai" },
@@ -105,17 +124,73 @@ export function liveProviderProblems(config: LiveProviderConfig): string[] {
     }
   }
 
-  if (bedrockConfigured(config.bedrock)) complete += 1;
+  if (bedrockConfigured(config.bedrock) && config.bedrockEnabled) complete += 1;
   problems.push(...bedrockProblems(config.bedrock));
+
+  for (const c of config.compatible) {
+    if (!c.enabled) continue;
+    if (!c.apiKey) problems.push(`${c.apiKeyEnv} is required for the compatible provider "${c.id}" (or set its "enabled" to false).`);
+    else if (looksLikePlaceholder(c.apiKey)) problems.push(`${c.apiKeyEnv} looks like a placeholder, not a real key.`);
+    else if (QUOTED.test(c.apiKey)) problems.push(quoted(c.apiKeyEnv));
+    if (compatibleLive(c)) complete += 1;
+  }
 
   if (complete === 0 && problems.length === 0) {
     problems.push(
-      "No AI provider is configured: set OPENAI_API_KEY + OPENAI_MODEL, ANTHROPIC_API_KEY + ANTHROPIC_MODEL, and/or the BEDROCK_* settings.",
+      "No AI provider is configured: set OPENAI_API_KEY + OPENAI_MODEL, ANTHROPIC_API_KEY + ANTHROPIC_MODEL, the BEDROCK_* settings with " +
+        "BEDROCK_FALLBACK_ENABLED=true, and/or an approved entry in COMPATIBLE_PROVIDERS.",
     );
   }
   return problems;
 }
 
-/** How many live provider adapters are complete enough to be constructed. */
+/** How many live provider adapters can serve traffic. */
 export const liveProviderCount = (config: LiveProviderConfig): number =>
-  PROVIDERS.filter((p) => config[p.config].apiKey && config[p.config].model).length + (bedrockConfigured(config.bedrock) ? 1 : 0);
+  PROVIDERS.filter((p) => config[p.config].apiKey && config[p.config].model).length +
+  (bedrockConfigured(config.bedrock) && config.bedrockEnabled ? 1 : 0) +
+  config.compatible.filter(compatibleLive).length;
+
+/**
+ * Production with paid AI providers must be able to stop spending: daily and monthly limits are
+ * required, and every paid model needs a known price (otherwise its spend could not be counted).
+ */
+export function costControlProblems(input: {
+  ai: AiControls;
+  prices: ModelPrices;
+  openaiModel: string | undefined;
+  anthropicModel: string | undefined;
+  bedrock: BedrockCredentials;
+  compatible: readonly CompatibleCredentials[];
+}): string[] {
+  const { ai, prices } = input;
+  if (!ai.enabled || !ai.paidProvidersEnabled) return [];
+  const unpriced: string[] = [];
+  let paid = 0;
+  if (input.openaiModel) {
+    paid += 1;
+    if (!priceFor(prices, "openai", input.openaiModel)) unpriced.push("OPENAI_MODEL");
+  }
+  if (input.anthropicModel) {
+    paid += 1;
+    if (!priceFor(prices, "anthropic", input.anthropicModel)) unpriced.push("ANTHROPIC_MODEL");
+  }
+  if (ai.bedrockFallbackEnabled && bedrockConfigured(input.bedrock)) {
+    paid += 1;
+    for (const tier of TIERS) {
+      const id = input.bedrock.models[tier];
+      if (id && !priceFor(prices, "bedrock", id)) unpriced.push(NOVA_TIER_VARIABLES[tier]);
+    }
+  }
+  for (const c of input.compatible) {
+    if (c.pricing !== "paid" || !compatibleLive(c)) continue;
+    paid += 1;
+    if (!priceFor(prices, c.id, c.model)) unpriced.push(`the compatible provider "${c.id}"`);
+  }
+  if (paid === 0) return [];
+  const problems: string[] = [];
+  if (ai.limits.systemDailyUsd === null || ai.limits.systemMonthlyUsd === null) {
+    problems.push("MAX_DAILY_AI_SPEND and MAX_MONTHLY_AI_SPEND are required while paid AI providers are enabled (or set PAID_PROVIDERS_ENABLED=false).");
+  }
+  for (const name of unpriced) problems.push(`${name} has no price: add it to MODEL_PRICES so spend limits can count it.`);
+  return problems;
+}

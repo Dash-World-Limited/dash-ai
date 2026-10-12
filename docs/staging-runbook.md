@@ -9,7 +9,7 @@ repository: every `<…>` below is yours to choose.
 | Kind | Where | Examples |
 | --- | --- | --- |
 | **Safe to commit** | `deploy/staging/staging.env.example`, these docs | `NODE_ENV=production`, limits, timeouts, `DATABASE_SSL=require`, `RATE_LIMIT_BACKEND=redis`, `TRUST_PROXY=true`, model ids |
-| **Secrets: never committed, never pasted into tickets or chats** | your platform's secret manager | `DATABASE_URL`, `DATA_ENCRYPTION_KEY` (and `DATA_ENCRYPTION_PREVIOUS_KEYS`), `REDIS_URL`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `BEDROCK_API_KEY` or, with `BEDROCK_AUTH=iam`, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, `METRICS_TOKEN`, `OPERATOR_TOKEN` |
+| **Secrets: never committed, never pasted into tickets or chats** | your platform's secret manager | `DATABASE_URL`, `DATA_ENCRYPTION_KEY` (and `DATA_ENCRYPTION_PREVIOUS_KEYS`), `REDIS_URL`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `BEDROCK_API_KEY` or, with `BEDROCK_AUTH=iam`, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, each compatible provider's `<NAME>_API_KEY` (the variable its `apiKeyEnv` names), `METRICS_TOKEN`, `OPERATOR_TOKEN` |
 | **Infrastructure prerequisites** | provisioned by you | managed PostgreSQL 14+ with TLS and backups; Redis 7 with TLS and a password; an HTTPS reverse proxy / load balancer; a secret manager; a Node 22 runtime (container or VM) |
 | **Manual steps (need you)** | §8 | creating accounts and infrastructure, generating and storing keys, provider billing, DNS/TLS certificates, approving the live smoke run, signing the Android build |
 
@@ -63,6 +63,10 @@ emails, tokens or keys (a test proves it). Key series: `dash_ai_request_seconds`
    separate `OPERATOR_TOKEN` (`openssl rand -hex 32`) kept for operators only. Never reuse one for the other.
 4. **Configure** the environment: the safe values from `deploy/staging/staging.env.example`, the
    secrets from the secret manager, and the model ids you want (`OPENAI_MODEL`, `ANTHROPIC_MODEL`).
+   With any paid provider live, set `MAX_DAILY_AI_SPEND`, `MAX_MONTHLY_AI_SPEND` and a `MODEL_PRICES`
+   price for every paid model first: production-mode start-up refuses without them. Leave
+   `FREE_POOL_ENABLED`, `BEDROCK_FALLBACK_ENABLED` and `COMPATIBLE_PROVIDERS` at their template values
+   unless that provider is what you are testing ([provider-platform.md](provider-platform.md)).
 5. **Migrate** (deliberate step; the server refuses to start on an unmigrated schema):
    `node apps/api/dist/migrate-cli.js` with the staging `DATABASE_URL`. It is safe to run twice
    (the second run reports "up to date") and takes an advisory lock, so concurrent runs are safe.
@@ -103,6 +107,10 @@ immediately, then treat database backups made before the rotation as exposed.
 - [ ] Stop Redis briefly: requests keep working, `/ready` says `degraded`, then recovers.
 - [ ] `/metrics` with the token shows the series above; without it, 401.
 - [ ] Database TLS: `DATABASE_SSL=require` with no start-up warning.
+- [ ] Cost controls: after a few answers, `inference_attempts` has one row per provider attempt with
+      provider-reported tokens and a cost (no prompt or answer text in any column); `GET /v1/router` with
+      the operator token shows today's spend against the limits; a temporarily tiny `MAX_USER_DAILY_AI_SPEND`
+      makes the next request answer "You've reached today's DASH AI usage limit" (restore it afterwards).
 
 ## 7. Backup, restore and rollback
 
@@ -121,7 +129,8 @@ conversations decrypt.
   migration it does not know (by design: it cannot know what the newer schema means). Roll forward
   with a fix, or restore the pre-deployment backup (losing writes made since). Take a snapshot
   immediately before every migrating deployment for this reason. Migrations are append-only and
-  additive so far (migration 5 adds one table).
+  additive so far (migration 5 adds one table; migration 9 adds a nullable column to `usage_records`;
+  migration 10 adds the `inference_attempts` table).
 
 ## 8. Android staging build
 

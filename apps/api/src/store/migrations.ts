@@ -313,4 +313,45 @@ CREATE INDEX push_deliveries_sending_idx ON push_deliveries (lease_until) WHERE 
 ALTER TABLE usage_records ADD COLUMN estimated_cost_usd double precision;
 `,
   },
+  {
+    id: 10,
+    name: "inference_ledger",
+    sql: `
+-- The inference ledger: one append-only row per AI provider attempt (retries, fallbacks and tool
+-- rounds included) with tokens, latency, outcome, cost and routing metadata. No prompt, answer or tool
+-- content. Deleting an account keeps the accounting rows and removes the account link (SET NULL).
+CREATE TABLE inference_attempts (
+  id                      text PRIMARY KEY,
+  inference_id            text NOT NULL,
+  user_id                 text REFERENCES users (id) ON DELETE SET NULL,
+  plan                    text NOT NULL,
+  task                    text NOT NULL,
+  mode                    text,
+  provider                text NOT NULL,
+  model                   text NOT NULL,
+  pricing                 text NOT NULL,
+  created_at              timestamptz NOT NULL,
+  latency_ms              integer NOT NULL,
+  outcome                 text NOT NULL,
+  error_code              text,
+  http_status             integer,
+  retry                   integer NOT NULL,
+  round                   integer NOT NULL,
+  fallback_index          integer NOT NULL,
+  input_tokens            bigint,
+  output_tokens           bigint,
+  cached_input_tokens     bigint,
+  estimated_input_tokens  bigint NOT NULL,
+  estimated_output_tokens bigint NOT NULL,
+  token_source            text NOT NULL,
+  estimated_cost_usd      double precision,
+  provider_cost_usd       double precision,
+  currency                text NOT NULL,
+  route                   jsonb NOT NULL
+);
+CREATE INDEX inference_attempts_created_idx ON inference_attempts (created_at);
+CREATE INDEX inference_attempts_user_created_idx ON inference_attempts (user_id, created_at);
+CREATE INDEX inference_attempts_inference_idx ON inference_attempts (inference_id);
+`,
+  },
 ];

@@ -1,4 +1,4 @@
-import { ProviderId, type Usage } from "@dash-ai/contracts";
+import type { ProviderId, Usage } from "@dash-ai/contracts";
 import { z } from "zod";
 import { NOVA_PROFILES } from "../providers/nova.js";
 
@@ -16,7 +16,7 @@ export type ModelPrice = z.infer<typeof ModelPrice>;
  * or as a prefix (so dated snapshots match). The longest match wins and always beats a built-in price.
  */
 export const ModelPrices = z.record(
-  z.string().regex(new RegExp(`^(${ProviderId.options.join("|")}):.+$`), "keys look like <provider>:<model id or prefix>"),
+  z.string().regex(/^[a-z][a-z0-9-]{1,31}:.+$/, "keys look like <provider>:<model id or prefix>"),
   ModelPrice,
 );
 export type ModelPrices = z.infer<typeof ModelPrices>;

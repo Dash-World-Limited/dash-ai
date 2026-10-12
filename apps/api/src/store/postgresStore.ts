@@ -29,6 +29,9 @@ import {
   type SessionRecord,
   type Store,
   type UsageRow,
+  type InferenceAttemptRow,
+  type InferenceSpend,
+  type InferenceSpendQuery,
   type UserRecord,
 } from "./store.js";
 
@@ -1209,6 +1212,57 @@ export class PostgresStore implements Store {
       estimatedCostUsd: r.estimated_cost_usd, createdAt: iso(r.created_at),
     }));
   }
+  async recordInferenceAttempt(a: InferenceAttemptRow): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO inference_attempts (id, inference_id, user_id, plan, task, mode, provider, model, pricing, created_at, latency_ms,
+         outcome, error_code, http_status, retry, round, fallback_index, input_tokens, output_tokens, cached_input_tokens,
+         estimated_input_tokens, estimated_output_tokens, token_source, estimated_cost_usd, provider_cost_usd, currency, route)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
+      [
+        a.id, a.inferenceId, a.userId, a.plan, a.task, a.mode, a.provider, a.model, a.pricing, a.createdAt, a.latencyMs,
+        a.outcome, a.errorCode, a.httpStatus, a.retry, a.round, a.fallbackIndex, a.inputTokens, a.outputTokens, a.cachedInputTokens,
+        a.estimatedInputTokens, a.estimatedOutputTokens, a.tokenSource, a.estimatedCostUsd, a.providerCostUsd, a.currency, JSON.stringify(a.route),
+      ],
+    );
+  }
+
+  async listInferenceAttempts(inferenceId: string): Promise<InferenceAttemptRow[]> {
+    const { rows } = await this.pool.query<{
+      id: string; inference_id: string; user_id: string | null; plan: string; task: string; mode: string | null; provider: string;
+      model: string; pricing: InferenceAttemptRow["pricing"]; created_at: Date; latency_ms: number; outcome: InferenceAttemptRow["outcome"];
+      error_code: string | null; http_status: number | null; retry: number; round: number; fallback_index: number;
+      input_tokens: string | null; output_tokens: string | null; cached_input_tokens: string | null; estimated_input_tokens: string;
+      estimated_output_tokens: string; token_source: InferenceAttemptRow["tokenSource"]; estimated_cost_usd: number | null;
+      provider_cost_usd: number | null; currency: "USD"; route: Record<string, unknown>;
+    }>("SELECT * FROM inference_attempts WHERE inference_id = $1 ORDER BY created_at, id", [inferenceId]);
+    return rows.map((r) => ({
+      id: r.id, inferenceId: r.inference_id, userId: r.user_id, plan: r.plan, task: r.task, mode: r.mode, provider: r.provider as ProviderId,
+      model: r.model, pricing: r.pricing, createdAt: iso(r.created_at), latencyMs: r.latency_ms, outcome: r.outcome, errorCode: r.error_code,
+      httpStatus: r.http_status, retry: r.retry, round: r.round, fallbackIndex: r.fallback_index, inputTokens: num(r.input_tokens),
+      outputTokens: num(r.output_tokens), cachedInputTokens: num(r.cached_input_tokens), estimatedInputTokens: Number(r.estimated_input_tokens),
+      estimatedOutputTokens: Number(r.estimated_output_tokens), tokenSource: r.token_source, estimatedCostUsd: r.estimated_cost_usd,
+      providerCostUsd: r.provider_cost_usd, currency: r.currency, route: r.route,
+    }));
+  }
+
+  async sumInferenceSpend(q: InferenceSpendQuery): Promise<InferenceSpend> {
+    const where = ["created_at >= $1"];
+    const params: unknown[] = [q.since];
+    if (q.userId !== undefined) where.push(`user_id = $${params.push(q.userId)}`);
+    if (q.plan !== undefined) where.push(`plan = $${params.push(q.plan)}`);
+    if (q.provider !== undefined) where.push(`provider = $${params.push(q.provider)}`);
+    if (q.pricing !== undefined) where.push(`pricing = ANY($${params.push([...q.pricing])})`);
+    const { rows } = await this.pool.query<{ attempts: string; cost: number | null; tokens: string | null }>(
+      `SELECT count(*) AS attempts,
+              sum(COALESCE(provider_cost_usd, estimated_cost_usd, 0)) AS cost,
+              sum(COALESCE(input_tokens, estimated_input_tokens) + COALESCE(output_tokens, estimated_output_tokens)) AS tokens
+         FROM inference_attempts WHERE ${where.join(" AND ")}`,
+      params,
+    );
+    const r = rows[0]!;
+    return { attempts: Number(r.attempts), costUsd: Number(r.cost ?? 0), tokens: Number(r.tokens ?? 0) };
+  }
+
 }
 
 interface ToolInvocationDbRow {

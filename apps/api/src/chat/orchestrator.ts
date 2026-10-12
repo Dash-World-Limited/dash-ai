@@ -16,6 +16,9 @@ import type { ProviderRegistry } from "../providers/registry.js";
 import {
   failoverAllowed,
   toProviderError,
+  type ProviderChunk,
+  type ProviderError,
+  type ProviderRequest,
   type ProviderAdapter,
   type ProviderToolResult,
   type ProviderTurn,
@@ -28,7 +31,10 @@ import type { ToolRuntime } from "../tools/runtime.js";
 import type { ModelToolCall } from "../tools/types.js";
 import type { Metrics } from "../observability/metrics.js";
 import { estimateCostUsd } from "../intelligence/cost.js";
-import { estimateTokens, type IntelligenceRouter } from "../intelligence/router.js";
+import { estimateTokens, type IntelligenceRouter, type RouteDecision } from "../intelligence/router.js";
+import { requestChars, type InferenceContext } from "../intelligence/ledger.js";
+import type { AiPlatform, Refusal } from "../intelligence/platform.js";
+import type { Sensitivity } from "../intelligence/policy.js";
 import { hideProviders, neutralErrorMessage, NEUTRAL_ROUTING_REASON, NEUTRAL_UNAVAILABLE } from "./publicSurface.js";
 import { withIdleTimeout } from "./timeouts.js";
 import { DEFAULT_TITLE, generateTitle } from "./titles.js";
@@ -43,6 +49,7 @@ export interface ChatContext {
   store: Store;
   providers: ProviderRegistry;
   router: IntelligenceRouter;
+  ai: AiPlatform;
   tools: ToolRuntime;
   config: AppConfig;
   log: FastifyBaseLogger;
@@ -74,6 +81,11 @@ export interface PreparedChat {
   documents: DocumentRecord[];
   /** Tools this user has enabled and granted. Empty when none (the usual case). */
   offered: OfferedTools;
+  /** The account plan and the request's sensitivity (they decided which providers were eligible). */
+  plan: string;
+  sensitivity: Sensitivity;
+  /** Routing metadata recorded with every ledger attempt (internal; never content). */
+  route: Record<string, unknown>;
 }
 
 /**
@@ -119,10 +131,17 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
   const offered = await ctx.tools.offeredFor(userId);
   // Consumers never choose a provider: with provider details hidden every request is DASH AI routed.
   const hidden = hideProviders(ctx.config);
+  if (!ctx.config.ai.enabled) {
+    throw new AppError("no_provider_available", hidden ? NEUTRAL_UNAVAILABLE : "AI is switched off on this server (AI_ENABLED=false).");
+  }
   const choice = hidden ? "smart" : request.modelChoice;
   const configured = ctx.providers.configured();
+  const plan = ctx.ai.plan;
+  const sensitivity = ctx.ai.classify({ documents: documents.length, toolsOffered: offered.size > 0 });
+  const spend = await ctx.ai.admit(userId);
   let targets: PreparedTarget[];
   let routingReason: string;
+  let route: Record<string, unknown>;
   if (choice === "smart") {
     // The DASH Intelligence Router decides. A provider the person named in their own words is a
     // preference, applied silently when available.
@@ -134,19 +153,22 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
       hint: providerHint(request.message.content),
       estimatedInputTokens: estimateTokens(inputChars),
       requires: offered.size > 0 ? ["tool_use"] : [],
+      sensitivity,
+      plan,
+      inputModalities: ["text"],
+      ...ctx.ai.costFields(spend, inputChars),
     });
     if (!decision.ok) {
       ctx.metrics?.routerUnavailable.inc({ task: "chat", reason: decision.reason });
-      if (decision.reason === "context_too_large") {
-        throw new AppError("payload_too_large", "This conversation and its documents are too long to answer. Start a new chat or attach fewer documents.");
-      }
-      throw new AppError("no_provider_available", hidden ? NEUTRAL_UNAVAILABLE : "No AI provider is configured on this server.");
+      ctx.log.info({ reason: decision.reason, rejected: decision.rejected, spend: spend.blockedBy }, "no provider for this request");
+      throw refusalError(ctx.ai.refusal(decision, spend), hidden, decision.reason);
     }
     const adapters = decision.providers.map((p) => ctx.providers.get(p)).filter((a): a is ProviderAdapter => a !== undefined);
     if (adapters.length === 0) throw new AppError("no_provider_available", hidden ? NEUTRAL_UNAVAILABLE : "No AI provider is configured on this server.");
     ctx.metrics?.routerDecisions.inc({ task: "chat", provider: adapters[0]!.id });
     ctx.log.debug({ routeKey: decision.routeKey, candidates: decision.candidates, rejected: decision.rejected }, "routing decision");
     targets = [{ adapter: adapters[0]!, messageId: newId(), fallbacks: adapters.slice(1) }];
+    route = routeMetadata(decision, sensitivity, spend.blockedBy);
     const legacy = resolveProviders("smart", request.mode, configured);
     routingReason = hidden
       ? NEUTRAL_ROUTING_REASON
@@ -154,14 +176,17 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
         ? legacy.reason
         : `DASH AI routed this request to ${adapters[0]!.displayName} (${decision.routeKey}).`;
   } else {
+    // Engineering routes (PROVIDER_DETAILS=exposed only): the spend limits still apply.
     const routing = resolveProviders(choice, request.mode, configured);
     if (!routing.ok) throw new AppError(routing.code, routing.message);
     targets = routing.providers.map((p) => {
       const adapter = ctx.providers.get(p);
       if (!adapter) throw new AppError("provider_not_configured", "The selected provider is not configured.");
+      if (!adapter.demo && !spend.paidAllowed) throw new AppError("rate_limited", `A spend limit (${spend.blockedBy}) stops paid providers.`, { retryable: false });
       return { adapter, messageId: newId(), fallbacks: [] };
     });
     routingReason = routing.reason;
+    route = { routeKey: `explicit:${choice}`, order: routing.providers, sensitivity };
   }
 
   return {
@@ -173,7 +198,38 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
     compareGroupId: choice === "compare" ? request.message.id : null,
     documents,
     offered,
+    plan,
+    sensitivity,
+    route,
   };
+}
+
+/** Internal routing metadata for the ledger: order, rejections and why. No content. */
+function routeMetadata(decision: Extract<RouteDecision, { ok: true }>, sensitivity: Sensitivity, spendBlockedBy: string | null): Record<string, unknown> {
+  return {
+    routeKey: decision.routeKey,
+    order: decision.providers,
+    candidates: decision.candidates.map((c) => ({ provider: c.provider, score: c.score, pricing: c.pricing, freePreferred: c.freePreferred, circuitOpen: c.circuitOpen, quota: c.quota })),
+    rejected: decision.rejected.filter((r) => r.reason !== "not_configured"),
+    sensitivity,
+    spendBlockedBy,
+  };
+}
+
+/** A request nobody may serve → an error in DASH AI's own words (details only in engineering mode). */
+function refusalError(refusal: Refusal, hidden: boolean, reason: string): AppError {
+  switch (refusal.kind) {
+    case "context_too_large":
+      return new AppError("payload_too_large", "This conversation and its documents are too long to answer. Start a new chat or attach fewer documents.");
+    case "too_large":
+      return new AppError("payload_too_large", "This request is too large for DASH AI right now. Try a shorter message or fewer documents.");
+    case "user_limit":
+      return new AppError("rate_limited", "You've reached today's DASH AI usage limit. Please try again tomorrow.", { retryable: false });
+    case "busy":
+      return new AppError("rate_limited", "DASH AI is very busy right now. Please try again in a moment.");
+    default:
+      return new AppError("no_provider_available", hidden ? NEUTRAL_UNAVAILABLE : `No AI provider may serve this request (${reason}).`);
+  }
 }
 
 export interface TargetOutcome {
@@ -281,8 +337,18 @@ async function runTarget(
     ),
   };
 
+  // Every provider attempt (retries, tool rounds, fallbacks) goes to the inference ledger.
+  const inference: InferenceContext = {
+    inferenceId: messageId,
+    userId: prepared.userId,
+    plan: prepared.plan,
+    task: "chat",
+    mode: prepared.request.mode,
+    route: prepared.route,
+  };
+
   /** One complete answer from `provider`; throws on failure. Text and tool calls stream as they come. */
-  const generate = async (provider: ProviderAdapter): Promise<"stop" | "length" | "refusal"> => {
+  const generate = async (provider: ProviderAdapter, fallbackIndex: number): Promise<"stop" | "length" | "refusal"> => {
     const adapter = provider;
     served = undefined;
     const turns: ProviderTurn[] = buildProviderMessages(
@@ -319,15 +385,32 @@ async function runTarget(
         if (controller.signal.aborted) onTargetAbort();
         else controller.signal.addEventListener("abort", onTargetAbort, { once: true });
         let produced = false;
-        try {
-          const source = adapter.stream({
-            system,
-            messages: turns,
-            ...(tools ? { tools, toolChoice: toolUse ? ("auto" as const) : ("none" as const) } : {}),
-            maxOutputTokens: ctx.config.maxOutputTokens,
-            signal: attemptController.signal,
-            routing,
+        const attemptStarted = Date.now();
+        let attemptChars = 0;
+        let attemptFinish: Extract<ProviderChunk, { type: "finish" }> | undefined;
+        const providerRequest: ProviderRequest = {
+          system,
+          messages: turns,
+          ...(tools ? { tools, toolChoice: toolUse ? ("auto" as const) : ("none" as const) } : {}),
+          maxOutputTokens: ctx.config.maxOutputTokens,
+          signal: attemptController.signal,
+          routing,
+        };
+        const report = (error?: ProviderError) =>
+          ctx.ai.attempts.record(inference, {
+            adapter,
+            fallbackIndex,
+            round,
+            retry: attempt,
+            startedAt: attemptStarted,
+            endedAt: Date.now(),
+            requestChars: requestChars(providerRequest),
+            outputChars: attemptChars,
+            finish: attemptFinish,
+            error,
           });
+        try {
+          const source = adapter.stream(providerRequest);
           for await (const chunk of withIdleTimeout(source, ctx.config.providerIdleTimeoutMs, () =>
             attemptController.abort("timeout"),
           )) {
@@ -339,6 +422,7 @@ async function runTarget(
               }
               content += chunk.text;
               roundText += chunk.text;
+              attemptChars += chunk.text.length;
               sink.send({ event: "message.delta", data: { messageId, text: chunk.text } });
             } else if (chunk.type === "tool_calls") {
               calls = chunk.calls;
@@ -347,17 +431,22 @@ async function runTarget(
               roundFinish = chunk.finishReason;
               usage = addUsage(usage, chunk.usage);
               servedModel = chunk.servedModel ?? servedModel;
+              attemptFinish = chunk;
             }
           }
+          await report();
           break;
         } catch (err) {
+          const error = toProviderError(adapter.displayName, err, attemptController.signal);
+          await report(error);
           // The target's own abort (user cancel, overall timeout) is never retried.
           if (controller.signal.aborted) throw err;
-          const error = toProviderError(adapter.displayName, err, attemptController.signal);
           ctx.metrics?.providerFailures.inc({ provider: adapter.id, code: error.code, retryable: error.retryable });
-          const delay = retryDelayMs(ctx.config.providerRetry, attempt, error);
+          // A provider that asked for a longer wait than the backoff gets it, or is not retried at all.
+          const delay = Math.max(retryDelayMs(ctx.config.providerRetry, attempt, error), error.retryAfterMs ?? 0);
           const remaining = ctx.config.providerTimeoutMs - (Date.now() - started);
-          if (produced || !error.retryable || attempt >= ctx.config.providerRetry.maxRetries || delay >= remaining) {
+          const paused = ctx.ai.quota.status(adapter.id).state === "paused";
+          if (produced || !error.retryable || error.quotaExhausted || paused || attempt >= ctx.config.providerRetry.maxRetries || delay >= remaining) {
             throw error;
           }
           ctx.metrics?.providerRetries.inc({ provider: adapter.id, code: error.code });
@@ -395,7 +484,7 @@ async function runTarget(
       adapter = candidates[c]!;
       const attemptStarted = Date.now();
       try {
-        finishReason = await generate(adapter);
+        finishReason = await generate(adapter, c);
         ctx.router.recordSuccess(adapter.id, Date.now() - attemptStarted);
         break;
       } catch (err) {

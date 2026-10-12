@@ -95,6 +95,7 @@ export function systemRoutes(app: FastifyInstance, ctx: RouteContext): void {
       policy: ctx.router.policy,
       health: ctx.router.health.snapshot([...ctx.providers.configured()]),
       routes,
+      platform: await ctx.ai.catalog(ctx.router),
     };
   });
 }

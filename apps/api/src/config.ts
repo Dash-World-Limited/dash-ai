@@ -1,11 +1,17 @@
 import { z } from "zod";
 import { ModelPrices } from "./intelligence/cost.js";
 import { loadPolicy, PolicyError, type RouterPolicy } from "./intelligence/policy.js";
-import { liveProviderCount, liveProviderProblems, type BedrockCredentials } from "./providers/credentials.js";
+import { costControlProblems, liveProviderCount, liveProviderProblems, type BedrockCredentials } from "./providers/credentials.js";
+import { compatibleProfile } from "./providers/compatible.js";
+import { parseCompatibleProviders, parsePlanLimits, parseQuotas, SettingsError, type AiControls, type CompatibleProviderSettings } from "./intelligence/settings.js";
+import type { ProviderQuotas } from "./intelligence/quota.js";
 import { FcmConfigError, parseServiceAccount, type FcmServiceAccount } from "./push/fcm.js";
 
 const emptyToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 const optionalString = z.preprocess(emptyToUndefined, z.string().trim().min(1).optional());
+const bool = (def: "true" | "false") => z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default(def));
+/** A USD amount; empty or absent = not set. */
+const usd = z.preprocess(emptyToUndefined, z.coerce.number().nonnegative().max(1_000_000).optional());
 const int = (def: number, min: number, max: number) =>
   z.preprocess(emptyToUndefined, z.coerce.number().int().min(min).max(max).default(def));
 
@@ -49,6 +55,27 @@ const EnvSchema = z.object({
    * built-in Amazon Nova estimates; OpenAI/Anthropic costs stay unknown unless listed here.
    */
   MODEL_PRICES: optionalString,
+  /**
+   * AI cost and provider controls (docs/provider-platform.md). Defaults keep today's behaviour: AI on,
+   * the free pool and Bedrock off, paid providers allowed when configured, no limit enforced unless set
+   * (production in live mode refuses to start without the daily and monthly limits).
+   */
+  AI_ENABLED: bool("true"),
+  FREE_POOL_ENABLED: bool("false"),
+  PAID_PROVIDERS_ENABLED: bool("true"),
+  BEDROCK_FALLBACK_ENABLED: bool("false"),
+  MAX_DAILY_AI_SPEND: usd,
+  MAX_MONTHLY_AI_SPEND: usd,
+  MAX_REQUEST_AI_COST: usd,
+  MAX_USER_DAILY_AI_SPEND: usd,
+  /** JSON {"<plan>": usd}: daily paid spend per account plan. */
+  AI_PLAN_DAILY_SPEND: optionalString,
+  AI_DEFAULT_PLAN: z.preprocess(emptyToUndefined, z.string().regex(/^[a-z0-9][a-z0-9_-]{0,39}$/).default("standard")),
+  AI_DEFAULT_SENSITIVITY: z.preprocess(emptyToUndefined, z.enum(["sensitive", "standard"]).default("sensitive")),
+  /** JSON array of approved OpenAI-compatible providers (keys are read from the variables they name). */
+  COMPATIBLE_PROVIDERS: optionalString,
+  /** JSON {"<provider>": {windows: [...], softThreshold}}: quota windows per provider. */
+  PROVIDER_QUOTAS: optionalString,
   PROVIDER_TIMEOUT_MS: int(120_000, 1_000, 600_000),
   PROVIDER_IDLE_TIMEOUT_MS: int(45_000, 500, 300_000),
   /** Extra attempts after a retryable provider failure that happened before any output (0 = none). */
@@ -161,6 +188,12 @@ export interface AppConfig {
   bedrock: BedrockCredentials;
   /** Operator prices for estimated USD cost (MODEL_PRICES); built-in estimates fill the gaps. */
   modelPrices: ModelPrices;
+  /** Global AI switches and spend limits. */
+  ai: AiControls;
+  /** Approved OpenAI-compatible providers registered by configuration. */
+  compatibleProviders: CompatibleProviderSettings[];
+  /** Quota windows per provider (PROVIDER_QUOTAS, plus those declared with compatible providers). */
+  providerQuotas: ProviderQuotas;
   providerTimeoutMs: number;
   providerIdleTimeoutMs: number;
   providerRetry: { maxRetries: number; baseMs: number };
@@ -257,13 +290,54 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     }
     modelPrices = parsedPrices.data;
   }
+  let compatibleProviders: CompatibleProviderSettings[];
+  let providerQuotas: ProviderQuotas;
+  let planDailyUsd: Record<string, number>;
+  try {
+    compatibleProviders = parseCompatibleProviders(e.COMPATIBLE_PROVIDERS, env, ENV_KEYS, e.NODE_ENV === "production");
+    providerQuotas = {
+      ...Object.fromEntries(compatibleProviders.filter((p) => p.quota).map((p) => [p.id, p.quota!])),
+      ...parseQuotas(e.PROVIDER_QUOTAS),
+    };
+    planDailyUsd = parsePlanLimits(e.AI_PLAN_DAILY_SPEND);
+  } catch (err) {
+    if (err instanceof SettingsError) throw new ConfigError(`Invalid configuration: ${err.message}`);
+    throw err;
+  }
+  // A compatible provider's declared prices price its model, unless MODEL_PRICES says otherwise.
+  const declaredPrices: ModelPrices = Object.fromEntries(
+    compatibleProviders
+      .filter((p) => p.inputPerMillion !== null && p.outputPerMillion !== null)
+      .map((p) => [`${p.id}:${p.model}`, { inputPerMillion: p.inputPerMillion!, outputPerMillion: p.outputPerMillion! }]),
+  );
+  modelPrices = { ...declaredPrices, ...modelPrices };
   let routerPolicy: RouterPolicy;
   try {
-    routerPolicy = loadPolicy(e.ROUTER_POLICY);
+    routerPolicy = loadPolicy(e.ROUTER_POLICY, Object.fromEntries(compatibleProviders.map((p) => [p.id, compatibleProfile(p)])));
   } catch (err) {
     if (err instanceof PolicyError) throw new ConfigError(`Invalid configuration: ${err.message}`);
     throw err;
   }
+  const bedrockFallbackEnabled = e.BEDROCK_FALLBACK_ENABLED === "true";
+  // Bedrock serves traffic only when BEDROCK_FALLBACK_ENABLED is on, whatever ROUTER_POLICY says.
+  if (!bedrockFallbackEnabled && routerPolicy.providers.bedrock) {
+    routerPolicy = { ...routerPolicy, providers: { ...routerPolicy.providers, bedrock: { ...routerPolicy.providers.bedrock, enabled: false } } };
+  }
+  const ai: AiControls = {
+    enabled: e.AI_ENABLED === "true",
+    freePoolEnabled: e.FREE_POOL_ENABLED === "true",
+    paidProvidersEnabled: e.PAID_PROVIDERS_ENABLED === "true",
+    bedrockFallbackEnabled,
+    defaultPlan: e.AI_DEFAULT_PLAN,
+    defaultSensitivity: e.AI_DEFAULT_SENSITIVITY,
+    limits: {
+      requestUsd: e.MAX_REQUEST_AI_COST ?? null,
+      userDailyUsd: e.MAX_USER_DAILY_AI_SPEND ?? null,
+      systemDailyUsd: e.MAX_DAILY_AI_SPEND ?? null,
+      systemMonthlyUsd: e.MAX_MONTHLY_AI_SPEND ?? null,
+      planDailyUsd,
+    },
+  };
   // Production with real providers must be able to answer: a missing, half-set or example key is a
   // deployment mistake, so the server refuses to start instead of failing every chat and automation.
   // Development and tests keep starting (the registry warns). Variable names only, never values.
@@ -274,11 +348,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     models: { micro: e.BEDROCK_MODEL_MICRO, lite: e.BEDROCK_MODEL_LITE, nova2Lite: e.BEDROCK_MODEL_NOVA2_LITE },
   };
   if (e.NODE_ENV === "production" && e.PROVIDER_MODE === "live") {
-    const problems = liveProviderProblems({
-      openai: { apiKey: e.OPENAI_API_KEY, model: e.OPENAI_MODEL },
-      anthropic: { apiKey: e.ANTHROPIC_API_KEY, model: e.ANTHROPIC_MODEL },
-      bedrock,
-    });
+    const problems = [
+      ...liveProviderProblems({
+        openai: { apiKey: e.OPENAI_API_KEY, model: e.OPENAI_MODEL },
+        anthropic: { apiKey: e.ANTHROPIC_API_KEY, model: e.ANTHROPIC_MODEL },
+        bedrock,
+        bedrockEnabled: bedrockFallbackEnabled,
+        compatible: compatibleProviders,
+      }),
+      ...costControlProblems({ ai, prices: modelPrices, openaiModel: e.OPENAI_MODEL, anthropicModel: e.ANTHROPIC_MODEL, bedrock, compatible: compatibleProviders }),
+    ];
     if (problems.length > 0) {
       throw new ConfigError(
         `Invalid configuration: PROVIDER_MODE=live needs real AI provider credentials in production. ${problems.join(" ")} ` +
@@ -297,6 +376,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     anthropic: { apiKey: e.ANTHROPIC_API_KEY, model: e.ANTHROPIC_MODEL },
     bedrock,
     modelPrices,
+    ai,
+    compatibleProviders,
+    providerQuotas,
     providerTimeoutMs: e.PROVIDER_TIMEOUT_MS,
     providerIdleTimeoutMs: e.PROVIDER_IDLE_TIMEOUT_MS,
     providerRetry: { maxRetries: e.PROVIDER_MAX_RETRIES, baseMs: e.PROVIDER_RETRY_BASE_MS },
@@ -387,7 +469,10 @@ export function configWarnings(config: AppConfig): string[] {
   if (config.providerMode === "fake") {
     warnings.push("PROVIDER_MODE=fake in production: every answer is a labelled demonstration, not a real model.");
   }
-  if (config.providerMode === "live" && liveProviderCount(config) === 1) {
+  if (
+    config.providerMode === "live" &&
+    liveProviderCount({ ...config, bedrockEnabled: config.ai.bedrockFallbackEnabled, compatible: config.compatibleProviders }) === 1
+  ) {
     warnings.push("Only one AI provider is configured in production: if it fails, DASH AI has no second provider to fall back to. Configure another live provider for failover.");
   }
   return warnings;

@@ -11,6 +11,7 @@ import type { FastifyBaseLogger } from "fastify";
 import type { AppConfig } from "../config.js";
 import { estimateCostUsd } from "../intelligence/cost.js";
 import { GenerationError, generateText } from "../intelligence/generate.js";
+import type { AiPlatform } from "../intelligence/platform.js";
 import type { IntelligenceRouter } from "../intelligence/router.js";
 import type { Metrics } from "../observability/metrics.js";
 import type { ProviderRegistry } from "../providers/registry.js";
@@ -22,6 +23,8 @@ export interface AutomationDeps {
   store: Store;
   providers: ProviderRegistry;
   router: IntelligenceRouter;
+  /** Provider and cost controls (spend limits, quotas, the inference ledger). */
+  ai: AiPlatform;
   config: AppConfig;
   log: FastifyBaseLogger;
   metrics: Metrics;
@@ -55,6 +58,8 @@ export function runErrorMessage(code: string | null): string {
       return "DASH AI was unavailable when this ran.";
     case "interrupted":
       return "This run was interrupted before it finished.";
+    case "limit_reached":
+      return "A DASH AI usage limit stopped this run. It can run again later.";
     default:
       return "DASH AI couldn't complete this run.";
   }
@@ -251,8 +256,10 @@ export class AutomationService {
     const budget = AbortSignal.any([signal, AbortSignal.timeout(Math.max(1_000, this.leaseMs() - 30_000))]);
     try {
       const result = await generateText(
-        { providers: this.deps.providers, router: this.deps.router, config: this.deps.config, log, metrics },
+        { providers: this.deps.providers, router: this.deps.router, ai: this.deps.ai, config: this.deps.config, log, metrics },
         {
+          userId: run.userId,
+          inferenceId: run.id,
           task: "automation",
           mode: automation.mode,
           instructions: automationInstructions(automation.timeZone, this.deps.now()),
