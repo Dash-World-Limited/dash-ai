@@ -189,7 +189,7 @@ export interface AppConfig {
   port: number;
   logLevel: Env["LOG_LEVEL"];
   providerMode: Env["PROVIDER_MODE"];
-  /** Whether consumer responses may carry provider identity (never in production). */
+  /** Whether consumer responses may carry provider identity (production refuses to start with exposed). */
   providerDetails: Env["PROVIDER_DETAILS"];
   openai: ProviderConfig & { encryptedReasoning: boolean };
   anthropic: ProviderConfig;
@@ -358,6 +358,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     region: e.BEDROCK_REGION,
     models: { micro: e.BEDROCK_MODEL_MICRO, lite: e.BEDROCK_MODEL_LITE, nova2Lite: e.BEDROCK_MODEL_NOVA2_LITE },
   };
+  // The engineering view opens the operator routes (/v1/providers, /v1/router: provider settings,
+  // prices, spend) without the operator token and lets requests pick a provider directly, outside
+  // worst-case spend admission. It is for tests and diagnostics, never a production server.
+  if (e.NODE_ENV === "production" && e.PROVIDER_DETAILS === "exposed") {
+    throw new ConfigError(
+      "Invalid configuration: PROVIDER_DETAILS=exposed is not allowed in production (it opens the operator views without " +
+        "OPERATOR_TOKEN and lets requests choose a provider directly). Use PROVIDER_DETAILS=hidden.",
+    );
+  }
   if (e.NODE_ENV === "production" && e.PROVIDER_MODE === "live") {
     const problems = [
       ...liveProviderProblems({
@@ -493,9 +502,6 @@ export function configWarnings(config: AppConfig): string[] {
   }
   if (config.rateLimits.redisUrl?.startsWith("redis://") && config.rateLimits.backend === "redis") {
     warnings.push("REDIS_URL uses redis:// in production: traffic to Redis is not encrypted in transit. Use rediss:// unless Redis is on a private network.");
-  }
-  if (config.providerDetails === "exposed") {
-    warnings.push("PROVIDER_DETAILS=exposed in production: consumer responses name the AI provider and model. Use hidden.");
   }
   if (config.push.transport === "fake") {
     warnings.push("PUSH_TRANSPORT=fake in production: push notifications are recorded but never delivered. Use fcm, or none.");

@@ -94,7 +94,9 @@ start-up, in-memory store allowed).
 `PROVIDER_DETAILS` (`hidden`, the default and the production value, or `exposed`): with `hidden`, nothing
 a consumer receives names an AI provider or model, and every request is routed by DASH AI
 ([provider-neutrality.md](provider-neutrality.md)). `exposed` is the engineering view for tests and the
-live smoke run; production logs a warning if it is set.
+live smoke run. **Production refuses to start with `exposed`**: it opens the operator views
+(`/v1/providers`, `/v1/router`) without `OPERATOR_TOKEN` and lets requests choose a provider directly,
+outside worst-case spend admission.
 
 `GET /v1/assistant` tells the apps whether DASH AI can answer (`available`, `demo`, research note).
 `GET /v1/providers` (configured providers, `live`/`fake`/`unconfigured`, model ids) is operator-only: it

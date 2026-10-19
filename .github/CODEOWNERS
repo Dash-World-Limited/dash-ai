@@ -1,0 +1,29 @@
+# Owners who are asked to review changes to the paths below. With branch protection's "Require review
+# from Code Owners" enabled, a change to one of these paths cannot merge without their approval.
+# Later lines take precedence over earlier ones.
+
+*                                   @dashworldng-bit
+
+# CI and release workflows, repository security policy, ownership itself
+/.github/                           @dashworldng-bit
+/SECURITY.md                        @dashworldng-bit
+/.gitleaks.toml                     @dashworldng-bit
+/.gitignore                         @dashworldng-bit
+/scripts/                           @dashworldng-bit
+
+# Provider adapters, routing, spend control, the inference ledger
+/apps/api/src/providers/            @dashworldng-bit
+/apps/api/src/intelligence/         @dashworldng-bit
+/apps/api/src/chat/orchestrator.ts  @dashworldng-bit
+
+# Authentication, sessions, encryption, configuration and secrets handling
+/apps/api/src/security/             @dashworldng-bit
+/apps/api/src/routes/               @dashworldng-bit
+/apps/api/src/config.ts             @dashworldng-bit
+/apps/api/.env.example              @dashworldng-bit
+
+# Database schema and migrations, data handling
+/apps/api/src/store/                @dashworldng-bit
+
+# Deployment
+/deploy/                            @dashworldng-bit

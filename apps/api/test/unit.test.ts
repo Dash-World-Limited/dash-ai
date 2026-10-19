@@ -152,6 +152,18 @@ describe("config", () => {
     expect(loadConfig({ NODE_ENV: "production", ...TEST_PROVIDERS, ...TEST_COST_CONTROLS }).database).toMatchObject({ ssl: "require", autoMigrate: false, allowMemoryStore: false });
   });
 
+  it("refuses the engineering view (PROVIDER_DETAILS=exposed) in production, live or demonstration", () => {
+    const shared = { DATABASE_URL: "postgres://placeholder", RATE_LIMIT_BACKEND: "redis", REDIS_URL: "rediss://placeholder", ...TEST_PROVIDERS, ...TEST_COST_CONTROLS };
+    for (const mode of ["live", "fake"]) {
+      expect(() => loadConfig({ NODE_ENV: "production", PROVIDER_MODE: mode, PROVIDER_DETAILS: "exposed", ...shared })).toThrow(ConfigError);
+      expect(() => loadConfig({ NODE_ENV: "production", PROVIDER_MODE: mode, PROVIDER_DETAILS: "exposed", ...shared })).toThrow(/PROVIDER_DETAILS=exposed is not allowed in production/);
+      expect(loadConfig({ NODE_ENV: "production", PROVIDER_MODE: mode, PROVIDER_DETAILS: "hidden", ...shared }).providerDetails).toBe("hidden");
+    }
+    // Tests and development keep the engineering view.
+    expect(loadConfig({ NODE_ENV: "test", PROVIDER_DETAILS: "exposed" }).providerDetails).toBe("exposed");
+    expect(loadConfig({ PROVIDER_DETAILS: "exposed" }).providerDetails).toBe("exposed");
+  });
+
   describe("production with PROVIDER_MODE=live refuses to start without usable provider credentials", () => {
     const prod = (env: Record<string, string>) => () => loadConfig({ NODE_ENV: "production", PROVIDER_MODE: "live", ...TEST_COST_CONTROLS, ...env });
     const refusal = (env: Record<string, string>): string => {

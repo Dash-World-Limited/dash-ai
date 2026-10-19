@@ -1,0 +1,13 @@
+# Keeps the commit-SHA pins of GitHub Actions current (each pin carries its version in a comment).
+# npm dependencies are not version-bumped here: security updates for them come from Dependabot
+# security updates (a repository setting), reviewed like any other change.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 5

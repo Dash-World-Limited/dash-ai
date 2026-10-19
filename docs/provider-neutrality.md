@@ -19,7 +19,7 @@ Tools and plugins are user capabilities ("Tools & Connections"), unrelated to pr
 
 `PROVIDER_DETAILS=exposed` restores the engineering view (provider and model in responses, explicit
 routes, Compare). It exists for the API test suite and the live provider smoke run
-([provider-verification.md](provider-verification.md)); production config warns if it is set.
+([provider-verification.md](provider-verification.md)); production refuses to start with it.
 
 ## Routing (server)
 

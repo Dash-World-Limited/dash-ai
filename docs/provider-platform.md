@@ -279,8 +279,8 @@ five seconds of cached totals). An attempt that a timeout or cancellation cut sh
 possibly billed; a provider retry of such an attempt, and a fallback to the next provider after a
 billed failure, are not part of the worst case. Because admission reserves the worst case, a limit stops
 new paid requests before it is reached; tool-using answers reserve the most.
-Explicit engineering routes (`PROVIDER_DETAILS=exposed`, never in production) only check that no limit
-is already reached.
+Explicit engineering routes (`PROVIDER_DETAILS=exposed`, which production refuses to start with) only
+check that no limit is already reached.
 
 ### Renamed: `BEDROCK_ENABLED`
 
