@@ -101,7 +101,7 @@ export class BedrockAdapter implements ProviderAdapter {
       system: [{ text: toolsOff ? `${request.system}\n\n${TOOLS_OFF}` : request.system }],
       messages: toBedrockMessages(request.messages, names),
       inferenceConfig: {
-        maxTokens: Math.min(request.maxOutputTokens, novaProfileFor(model)?.maxOutputTokens ?? 5_000),
+        maxTokens: Math.min(request.maxOutputTokens, this.outputTokenCap(model)),
         // Nova's guidance for tool use is greedy decoding.
         ...(toolsOffered ? { temperature: 0 } : {}),
       },
@@ -165,6 +165,11 @@ export class BedrockAdapter implements ProviderAdapter {
       yield { type: "tool_calls", calls: toolCalls };
     }
     yield { type: "finish", finishReason: mapStopReason(stopReason), usage, servedModel: model };
+  }
+
+  /** Nova's own output limit for the tier (5,000 tokens for an unrecognised id: the smallest tier's). */
+  outputTokenCap(model: string): number {
+    return novaProfileFor(model)?.maxOutputTokens ?? 5_000;
   }
 
   /**

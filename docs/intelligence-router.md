@@ -75,7 +75,7 @@ Bedrock's default prices.
 ## Amazon Bedrock (Amazon Nova)
 
 Bedrock is one more provider behind the same router ([ADR 0013](decisions/0013-amazon-bedrock-and-cost-ledger.md)).
-It serves requests only with `BEDROCK_FALLBACK_ENABLED=true` ([provider-platform.md](provider-platform.md)).
+It serves requests only with `BEDROCK_ENABLED=true` (formerly `BEDROCK_FALLBACK_ENABLED`) ([provider-platform.md](provider-platform.md)).
 Its default profile: capabilities `text`, `long_context`, `tool_use`; a context the router may rely on of
 128k tokens (the smallest Nova tier); quality 0.8 on every route (below the OpenAI/Anthropic starting
 values, so with them configured Bedrock is an internal fallback until an operator raises it, for

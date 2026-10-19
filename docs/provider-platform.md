@@ -22,7 +22,7 @@ by changing the router or the API contracts.
 | Provider | How it is registered | Default state |
 | --- | --- | --- |
 | `openai`, `anthropic` | Built in; key and model in the environment. | On when configured. |
-| `bedrock` (Amazon Nova) | Built in; Region, Nova model ids and credentials in the environment. | **Off** until `BEDROCK_FALLBACK_ENABLED=true`, even when configured. |
+| `bedrock` (Amazon Nova) | Built in; Region, Nova model ids and credentials in the environment. | **Off** until `BEDROCK_ENABLED=true`, even when configured. |
 | OpenAI-compatible providers | `COMPATIBLE_PROVIDERS` (JSON); one entry per approved API. | `unapproved` (receives nothing) until approved individually. |
 | Demonstration adapters | `PROVIDER_MODE=fake`. | Send nothing anywhere, cost nothing, exempt from pools, privacy, quotas and spend limits. |
 
@@ -53,7 +53,7 @@ and today's and this month's spend against the limits.
 
 Configured as before ([environment.md](environment.md): `BEDROCK_AUTH`, `BEDROCK_API_KEY` or the AWS
 SDK credential chain, `BEDROCK_REGION`, `BEDROCK_MODEL_MICRO` / `_LITE` / `_NOVA2_LITE`), and in
-addition switched on with `BEDROCK_FALLBACK_ENABLED=true`. Without the switch Bedrock is shown to
+addition switched on with `BEDROCK_ENABLED=true` (formerly `BEDROCK_FALLBACK_ENABLED`, see below). Without the switch Bedrock is shown to
 operators as configured but disabled and receives no requests. Credentials come only from the server's
 environment (or its IAM role); the Region and model ids are configuration. The adapter streams with
 `ConverseStream`, honours the request's abort signal and timeouts, reports Bedrock's token usage, and
@@ -214,26 +214,48 @@ Rules:
 | `AI_ENABLED` | `true` | `false` refuses every AI request (demonstrations included). |
 | `PAID_PROVIDERS_ENABLED` | `true` | `false` keeps every paid provider out of routing. |
 | `FREE_POOL_ENABLED` | `false` | Free and promotional providers may serve requests. |
-| `BEDROCK_FALLBACK_ENABLED` | `false` | Bedrock may serve requests. |
+| `BEDROCK_ENABLED` | `false` | Bedrock may serve requests. `BEDROCK_FALLBACK_ENABLED` is its deprecated former name (see below). |
 | `MAX_DAILY_AI_SPEND` | — | System-wide paid spend per UTC day (USD). |
 | `MAX_MONTHLY_AI_SPEND` | — | System-wide paid spend per UTC month (USD). |
 | `MAX_USER_DAILY_AI_SPEND` | — | Paid spend per account per UTC day. |
 | `AI_PLAN_DAILY_SPEND` | — | JSON `{"<plan>": usd}`: paid spend per plan per UTC day. |
-| `MAX_REQUEST_AI_COST` | — | Ceiling on a paid provider's worst case for one request: the dearest model it may use, the conservative input estimate and the full `MAX_OUTPUT_TOKENS`. A paid model with no price is not used under a ceiling. |
+| `MAX_REQUEST_AI_COST` | — | Ceiling on a paid provider's worst case for one request (see *The spend circuit breaker*). A paid model with no price is not used under a ceiling. |
 | `AI_DEFAULT_PLAN` | `standard` | Every account's plan until plans are assigned per account. |
 | `AI_DEFAULT_SENSITIVITY` | `sensitive` | See privacy classes. |
 
 **The spend circuit breaker.** Before routing, DASH sums paid spend from the ledger (provider charge,
 else estimate) and works out the tightest allowance left across the configured limits (monthly, daily,
-plan, person). A paid provider may serve the request only if its **worst case** fits in that allowance:
-the dearest model it may use, everything sent (system prompt, tool schemas, history, documents and the
-message, at about three characters per token) and the full `MAX_OUTPUT_TOKENS`, once for each provider
-request the answer may make (a request that offers tools may take `TOOL_MAX_ROUNDS` tool rounds and a
-final answer). A paid model with **no price** never fits: under any configured limit it is not used, at
-run time as well as at start-up. Excluded paid providers leave free providers to serve the requests
-they are eligible for; otherwise the request is refused neutrally. Free, promotional and demonstration
-usage never counts against the paid limits. System totals are cached for at most five seconds and
-refreshed after every paid attempt on the same instance.
+plan, person). A paid provider may serve the request only if its **worst case** fits in that allowance
+(and under `MAX_REQUEST_AI_COST`). The worst case is the dearest model the provider may use, over every
+provider request the answer may make:
+
+- **Requests.** One, or for a request that offers tools, `TOOL_MAX_ROUNDS` tool rounds and the final
+  answer with tool use off (`TOOL_MAX_ROUNDS + 1` requests).
+- **Input of each request**, in the ledger's estimated tokens (about three characters per token). The
+  first request is everything it sends: system prompt, tool schemas, history, rendered documents and the
+  message. Each later round re-sends everything before it, so round *k* is budgeted the first request
+  plus *k* rounds of growth, and never more than the provider's context window (`contextTokens` in its
+  router profile). One round's growth is its own output sent back (the output cap at up to four
+  characters per token) plus its tool results (every call that may run, `MAX_TOOL_CALLS_PER_ROUND` = 8,
+  at `TOOL_MAX_RESULT_CHARS` plus a small margin).
+- **Output of each request**: the model's output cap, which is `MAX_OUTPUT_TOKENS`, or less where the
+  adapter knows the model's real limit and never asks for more (Amazon Nova Micro and Lite: 5,000
+  tokens; Nova 2 Lite: 64,000; an OpenAI-compatible provider's declared `maxOutputTokens`). A cap is
+  never raised above `MAX_OUTPUT_TOKENS`.
+
+**Budgets are enforced, not only priced.** Once a paid provider is admitted on its worst case, every
+request of that answer is held to its round's input budget. If tool results or the model's own output
+grew past the budget (for example a model that wrote far more characters per token than assumed, or
+asked for more calls than may run), DASH answers right away with tool use off, provided the final
+answer's budget still covers the request (the answer then makes fewer requests than admitted). If even
+that would not fit, the answer ends there with finish reason `length`, and nothing more is sent.
+Without any spend limit or ceiling nothing is reserved, so nothing is enforced.
+
+A paid model with **no price** never fits: under any configured limit it is not used, at run time as
+well as at start-up. Excluded paid providers leave free providers to serve the requests they are
+eligible for; otherwise the request is refused neutrally. Free, promotional and demonstration usage
+never counts against the paid limits. System totals are cached for at most five seconds and refreshed
+after every paid attempt on the same instance.
 
 An answer whose served model id has no price (providers often report a dated snapshot of the alias the
 operator priced) is charged at the configured model's price, so it can never count as free.
@@ -245,13 +267,36 @@ Anthropic, Bedrock stays off, no compatible provider exists, and the free pool i
 configured Nova tier when Bedrock is enabled, each paid compatible provider), so spend limits can never
 silently count nothing. `PROVIDER_MODE=fake` is unaffected.
 
-**What a limit guarantees.** A request admitted on its own cannot take spend past a limit: it was let
-in only because its worst case fitted. Requests running at the same time are each admitted against the
-same recorded spend, so together they can pass a limit by at most the sum of their worst cases (and,
-across instances, by what was spent in the last five seconds of cached totals). An attempt that a
-timeout or cancellation cut short is estimated as possibly billed; a provider retry of such an attempt
-is not part of the worst case. Because admission reserves the worst case, a limit stops new paid
-requests slightly before it is reached: lower `MAX_OUTPUT_TOKENS` to leave more of a small limit usable.
+**What a limit guarantees.** A request admitted on its own cannot take spend past a limit, as DASH
+estimates it: it was let in only because its worst case fitted, and none of its provider requests may
+send more than that worst case budgeted. The guarantee is stated in the ledger's own terms: input is
+the estimate above, and an answer is charged the provider's reported usage. A provider whose tokenizer
+counts more tokens than the three-characters-per-token estimate for the same text (unusual scripts,
+dense code or data) can bill more input than was reserved; output never exceeds the cap sent. Requests
+running at the same time are each admitted against the same recorded spend, so together they can pass
+a limit by at most the sum of their worst cases (and, across instances, by what was spent in the last
+five seconds of cached totals). An attempt that a timeout or cancellation cut short is estimated as
+possibly billed; a provider retry of such an attempt, and a fallback to the next provider after a
+billed failure, are not part of the worst case. Because admission reserves the worst case, a limit stops
+new paid requests before it is reached; tool-using answers reserve the most.
+Explicit engineering routes (`PROVIDER_DETAILS=exposed`, never in production) only check that no limit
+is already reached.
+
+### Renamed: `BEDROCK_ENABLED`
+
+`BEDROCK_ENABLED` replaces `BEDROCK_FALLBACK_ENABLED` (the switch turns Bedrock on as a provider, not
+only as a fallback). The old name is **deprecated but still read**:
+
+| `BEDROCK_ENABLED` | `BEDROCK_FALLBACK_ENABLED` | Result |
+| --- | --- | --- |
+| unset | unset | Bedrock off. |
+| set | unset | Its value. |
+| unset | set | Its value, and a start-up warning to rename it. |
+| same value | same value | That value, and a start-up warning to remove the old name. |
+| different values | different values | **The server refuses to start** (no silent precedence). |
+
+An empty value counts as unset. The old name will be removed in a later release, after every
+environment has been renamed.
 
 ## Metrics (internal)
 
@@ -264,6 +309,28 @@ router, failure, retry, fallback and estimated-cost counters.
 ## Safe production rollout
 
 Nothing here is deployed by merging. When the operator decides to roll it out:
+
+0. **Deployment blocker until verified: which migration 10 has each database run?** Two competing
+   implementations of this milestone both numbered their ledger migration 10. Only this one
+   (`10 inference_ledger`) is supported. Whether a staging database ever ran the other one is **not
+   known**, so before upgrading any database that has been migrated since 2026-10-09, run this
+   **read-only** query against it (do not change the database to investigate):
+
+   ```sql
+   SELECT id, name
+   FROM schema_migrations
+   WHERE id >= 10
+   ORDER BY id;
+   ```
+
+   - **Safe:** no rows (the database predates both; it will receive 9 if missing, then 10 and 11), or
+     `10 | inference_ledger` alone, or `10 | inference_ledger` then `11 | inference_ledger_integrity`.
+   - **Unsafe:** `10 | inference_attempt_ledger`, or any other name for 10 or 11, or an id above 11.
+     That database ran the other implementation's migration. Do not deploy to it. The new server would
+     refuse to start anyway (each applied migration's checksum is verified), so nothing is corrupted
+     silently; the remedy (restoring a snapshot taken before that migration, or rebuilding a disposable
+     staging database) needs the owner's approval first.
+   - If `schema_migrations` does not exist, the database was never migrated: safe.
 
 1. **Back up the database** (snapshot) before upgrading.
 2. **Migrations.** This release adds three additive migrations (no existing data is changed or deleted):
@@ -291,7 +358,7 @@ Nothing here is deployed by merging. When the operator decides to roll it out:
    - Review the provider's current privacy and data-use terms for the traffic it will receive, and
      record the decision in its privacy class (`ROUTER_POLICY` or `COMPATIBLE_PROVIDERS`).
    - Keep provider credentials in the server's secret store only, never in app bundles or the repository.
-   - Keep `FREE_POOL_ENABLED=false` and `BEDROCK_FALLBACK_ENABLED=false` unless that provider is part of the plan.
+   - Keep `FREE_POOL_ENABLED=false` and `BEDROCK_ENABLED=false` unless that provider is part of the plan.
 5. **Switch one provider on in staging** first ([staging-runbook.md](staging-runbook.md)) with an
    explicitly approved, tiny and bounded smoke test; watch the ledger, `/metrics` (alert on
    `dash_ai_ledger_write_failures_total`) and the operator view, then repeat in production with one
@@ -300,15 +367,30 @@ Nothing here is deployed by merging. When the operator decides to roll it out:
    inference; a lower spend limit stops paid inference once spend reaches it. Each needs only an
    environment change and a restart, and applies from the first request after it.
 
+## Ledger retention
+
+**Policy: inference ledger rows (`inference_attempts`) are kept for 24 months**, counted from
+`created_at`. The rows are accounting and operational metadata (tokens, costs, latency, outcome,
+routing), never prompts, documents or answers, and 24 months gives cost and audit history across the
+current and previous financial year without keeping them indefinitely. Rows of deleted accounts are
+already unlinked from the person (`user_id` set to NULL) and follow the same period.
+
+**Enforcement is not built yet** (next milestone). Until then no row is deleted. The purge will:
+delete only rows with `created_at` older than 24 months, in small batches; be run deliberately by an
+operator (a CLI, like migrations), never automatically on start-up; report what it would delete with a
+dry run first; and be tested on PostgreSQL. Deleting rows that old only lowers spend sums for days and
+months that closed long ago, so no current spend limit is affected.
+
 ## Known limits
 
 - Quota counters and health are per instance (seeded from the ledger at start-up).
 - Plans: every account is on `AI_DEFAULT_PLAN`; assigning plans per account is future work.
 - Spend sums read the ledger; at very high volume they should move to pre-aggregated totals.
-- Retention: ledger rows hold no content, but they are kept indefinitely until a retention period is
-  decided (accounting usually needs at least the current and previous financial year); a purge would
-  then delete rows older than the period, which only lowers sums for windows already closed.
+- Retention: the policy is **24 months** (see *Ledger retention*); the purge that enforces it is not
+  built yet, so until then rows are kept.
 - Concurrent requests can together pass a limit by the sum of their worst cases (see *What a limit
   guarantees*); with several API instances, add up to five seconds of cached system totals.
+- The worst case is in DASH's estimated tokens (about three characters per token). A provider that
+  counts more tokens for the same text can bill more input than was reserved.
 - Sensitivity is classified from structure (documents, tools) and the operator default, not from
   content; content classification is future work.

@@ -4,12 +4,13 @@ import type { AppConfig } from "../config.js";
 import type { Metrics } from "../observability/metrics.js";
 import type { ProviderRegistry } from "../providers/registry.js";
 import type { Store } from "../store/store.js";
-import { estimateCostUsd, priceFor } from "./cost.js";
+import { priceFor } from "./cost.js";
 import { AttemptRecorder, estimateTokensForLedger } from "./ledger.js";
 import type { Sensitivity } from "./policy.js";
 import { QuotaTracker, type QuotaWindow } from "./quota.js";
 import type { IntelligenceRouter, RouteDecision, RouteRequest, RoutingControls } from "./router.js";
 import { dayStart, monthStart, SpendGuard, type SpendScope, type SpendStatus } from "./spend.js";
+import { roundGrowthTokens, roundInputBudgets, worstCaseUsd, type ToolLoop } from "./worstCase.js";
 
 /** Why a request could not be served, in terms the consumer surface turns into a neutral message. */
 export type Refusal =
@@ -85,26 +86,69 @@ export class AiPlatform {
   }
 
   /**
+   * The most output tokens one provider request to `model` can be billed for: MAX_OUTPUT_TOKENS, or
+   * the adapter's lower cap where it knows the model's real limit (for example Amazon Nova's).
+   */
+  outputTokenCap(provider: ProviderId, model: string): number {
+    const cap = this.deps.providers.get(provider)?.outputTokenCap?.(model);
+    return cap !== undefined && cap > 0 ? Math.min(this.deps.config.maxOutputTokens, cap) : this.deps.config.maxOutputTokens;
+  }
+
+  /**
+   * Estimated input tokens each provider request of one answer on `provider` may send (see
+   * worstCase.ts): the first request, then each tool round's growth, capped at the provider's context
+   * window. Spend admission prices these, and the orchestrator holds the answer's requests to them.
+   */
+  inputBudgets(provider: ProviderId, firstInputTokens: number, loop: ToolLoop | null): number[] {
+    const { config, providers } = this.deps;
+    const caps = providers.modelsFor(provider).map((m) => this.outputTokenCap(provider, m));
+    const outputCap = caps.length > 0 ? Math.max(...caps) : config.maxOutputTokens;
+    return roundInputBudgets(firstInputTokens, {
+      rounds: loop ? loop.toolRounds + 1 : 1,
+      growthTokens: loop ? roundGrowthTokens(outputCap, loop) : 0,
+      contextTokens: config.routerPolicy.providers[provider]?.contextTokens ?? Number.POSITIVE_INFINITY,
+    });
+  }
+
+  /** Whether paid providers are admitted on their worst case: a spend limit or a per-request ceiling applies. */
+  costBounded(spend: SpendStatus): boolean {
+    return spend.headroom !== null || this.deps.config.ai.limits.requestUsd !== null;
+  }
+
+  /** Whether a provider's requests count against spend limits (paid and not a demonstration adapter). */
+  isPaid(provider: ProviderId): boolean {
+    const { config, providers } = this.deps;
+    if (providers.get(provider)?.demo) return false;
+    return (config.routerPolicy.providers[provider]?.pricing ?? "paid") === "paid";
+  }
+
+  /**
    * The cost fields of a route request: whether paid providers may serve it, the spend allowance left,
-   * and a per-request ceiling, all compared with a paid provider's worst case (the dearest model it may
-   * use, the conservative input estimate and the full output allowance).
+   * and a per-request ceiling, all compared with a paid provider's worst case: for the dearest model
+   * it may use, every provider request the answer may make (each tool round and the final answer) at
+   * its input budget, each with the model's full output cap.
    */
   costFields(
     spend: SpendStatus,
+    /** Everything the first provider request sends, in characters (system prompt and tool schemas included). */
     inputChars: number,
-    /** Provider requests one answer may make (tool rounds); each is billed in full. */
-    rounds = 1,
+    /** The tool loop when the request offers tools (null: one provider request). */
+    loop: ToolLoop | null = null,
   ): Pick<RouteRequest, "paidAllowed" | "paidHeadroomUsd" | "maxCostUsd" | "worstCaseCostUsd"> {
     const { config, providers } = this.deps;
-    const inputTokens = estimateTokensForLedger(inputChars);
+    const firstInputTokens = estimateTokensForLedger(inputChars);
     const worstCaseCostUsd = (provider: ProviderId): number | null => {
-      const costs = providers
-        .modelsFor(provider)
-        .map((model) =>
-          estimateCostUsd(config.modelPrices, { provider, model, demo: false, usage: { inputTokens, outputTokens: config.maxOutputTokens } }),
-        );
-      if (costs.length === 0 || costs.some((c) => c === null)) return null;
-      return Math.max(...(costs as number[])) * rounds;
+      const models = providers.modelsFor(provider);
+      if (models.length === 0) return null;
+      const budgets = this.inputBudgets(provider, firstInputTokens, loop);
+      let worst = 0;
+      for (const model of models) {
+        const price = priceFor(config.modelPrices, provider, model);
+        // An unpriced model cannot be bounded: the provider never fits (spend limits fail closed).
+        if (!price) return null;
+        worst = Math.max(worst, worstCaseUsd(price, budgets, this.outputTokenCap(provider, model)));
+      }
+      return worst;
     };
     return { paidAllowed: spend.paidAllowed, paidHeadroomUsd: spend.headroom?.usd ?? null, maxCostUsd: config.ai.limits.requestUsd, worstCaseCostUsd };
   }
@@ -143,7 +187,7 @@ export class AiPlatform {
         aiEnabled: config.ai.enabled,
         freePoolEnabled: config.ai.freePoolEnabled,
         paidProvidersEnabled: config.ai.paidProvidersEnabled,
-        bedrockFallbackEnabled: config.ai.bedrockFallbackEnabled,
+        bedrockEnabled: config.ai.bedrockEnabled,
         defaultPlan: config.ai.defaultPlan,
         defaultSensitivity: config.ai.defaultSensitivity,
       },

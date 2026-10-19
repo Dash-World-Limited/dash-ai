@@ -10,6 +10,7 @@ import { FcmConfigError, parseServiceAccount, type FcmServiceAccount } from "./p
 const emptyToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 const optionalString = z.preprocess(emptyToUndefined, z.string().trim().min(1).optional());
 const bool = (def: "true" | "false") => z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default(def));
+const optionalBool = z.preprocess(emptyToUndefined, z.enum(["true", "false"]).optional());
 /** A USD amount; empty or absent = not set. */
 const usd = z.preprocess(emptyToUndefined, z.coerce.number().nonnegative().max(1_000_000).optional());
 const int = (def: number, min: number, max: number) =>
@@ -63,7 +64,12 @@ const EnvSchema = z.object({
   AI_ENABLED: bool("true"),
   FREE_POOL_ENABLED: bool("false"),
   PAID_PROVIDERS_ENABLED: bool("true"),
-  BEDROCK_FALLBACK_ENABLED: bool("false"),
+  /**
+   * BEDROCK_ENABLED (default false): Bedrock may serve requests. BEDROCK_FALLBACK_ENABLED is its
+   * deprecated former name, still read; when both are set they must agree (see bedrockSwitch).
+   */
+  BEDROCK_ENABLED: optionalBool,
+  BEDROCK_FALLBACK_ENABLED: optionalBool,
   MAX_DAILY_AI_SPEND: usd,
   MAX_MONTHLY_AI_SPEND: usd,
   MAX_REQUEST_AI_COST: usd,
@@ -169,6 +175,8 @@ export type Env = z.infer<typeof EnvSchema>;
 
 /** Every environment variable the API reads (kept in sync with .env.example by a test). */
 export const ENV_KEYS: readonly string[] = Object.keys(EnvSchema.shape);
+/** Deprecated names still read for compatibility; templates leave them out so new environments use the new name. */
+export const DEPRECATED_ENV_KEYS: readonly string[] = ["BEDROCK_FALLBACK_ENABLED"];
 
 export interface ProviderConfig {
   apiKey: string | undefined;
@@ -190,6 +198,8 @@ export interface AppConfig {
   modelPrices: ModelPrices;
   /** Global AI switches and spend limits. */
   ai: AiControls;
+  /** Deprecated environment variables in use, with what replaces them (logged at start-up in every environment). */
+  deprecations: string[];
   /** Approved OpenAI-compatible providers registered by configuration. */
   compatibleProviders: CompatibleProviderSettings[];
   /** Quota windows per provider (PROVIDER_QUOTAS, plus those declared with compatible providers). */
@@ -318,16 +328,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     if (err instanceof PolicyError) throw new ConfigError(`Invalid configuration: ${err.message}`);
     throw err;
   }
-  const bedrockFallbackEnabled = e.BEDROCK_FALLBACK_ENABLED === "true";
-  // Bedrock serves traffic only when BEDROCK_FALLBACK_ENABLED is on, whatever ROUTER_POLICY says.
-  if (!bedrockFallbackEnabled && routerPolicy.providers.bedrock) {
+  const bedrockSwitched = bedrockSwitch(e.BEDROCK_ENABLED, e.BEDROCK_FALLBACK_ENABLED);
+  const bedrockEnabled = bedrockSwitched.enabled;
+  // Bedrock serves traffic only when BEDROCK_ENABLED is on, whatever ROUTER_POLICY says.
+  if (!bedrockEnabled && routerPolicy.providers.bedrock) {
     routerPolicy = { ...routerPolicy, providers: { ...routerPolicy.providers, bedrock: { ...routerPolicy.providers.bedrock, enabled: false } } };
   }
   const ai: AiControls = {
     enabled: e.AI_ENABLED === "true",
     freePoolEnabled: e.FREE_POOL_ENABLED === "true",
     paidProvidersEnabled: e.PAID_PROVIDERS_ENABLED === "true",
-    bedrockFallbackEnabled,
+    bedrockEnabled,
     defaultPlan: e.AI_DEFAULT_PLAN,
     defaultSensitivity: e.AI_DEFAULT_SENSITIVITY,
     limits: {
@@ -353,7 +364,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         openai: { apiKey: e.OPENAI_API_KEY, model: e.OPENAI_MODEL },
         anthropic: { apiKey: e.ANTHROPIC_API_KEY, model: e.ANTHROPIC_MODEL },
         bedrock,
-        bedrockEnabled: bedrockFallbackEnabled,
+        bedrockEnabled,
         compatible: compatibleProviders,
       }),
       ...costControlProblems({ ai, prices: modelPrices, openaiModel: e.OPENAI_MODEL, anthropicModel: e.ANTHROPIC_MODEL, bedrock, compatible: compatibleProviders }),
@@ -434,7 +445,30 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       previousKeys: e.DATA_ENCRYPTION_PREVIOUS_KEYS,
     },
     version: "0.1.0",
+    deprecations: bedrockSwitched.deprecation ? [bedrockSwitched.deprecation] : [],
   };
+}
+
+/**
+ * The Bedrock switch. BEDROCK_ENABLED is the name; BEDROCK_FALLBACK_ENABLED, its former name, is still
+ * read so existing environments keep working. BEDROCK_ENABLED wins only by being the same: when both
+ * are set to different values the server refuses to start, so a half-finished rename can never
+ * switch Bedrock on or off silently.
+ */
+export function bedrockSwitch(current: "true" | "false" | undefined, deprecated: "true" | "false" | undefined): { enabled: boolean; deprecation: string | null } {
+  if (current !== undefined && deprecated !== undefined && current !== deprecated) {
+    throw new ConfigError(
+      `Invalid configuration: BEDROCK_ENABLED=${current} and the deprecated BEDROCK_FALLBACK_ENABLED=${deprecated} disagree. ` +
+        "Remove BEDROCK_FALLBACK_ENABLED and keep the value you want in BEDROCK_ENABLED.",
+    );
+  }
+  const deprecation =
+    deprecated === undefined
+      ? null
+      : current === undefined
+        ? `BEDROCK_FALLBACK_ENABLED is deprecated: rename it to BEDROCK_ENABLED (same value, ${deprecated}).`
+        : "BEDROCK_FALLBACK_ENABLED is deprecated and set to the same value as BEDROCK_ENABLED: remove it.";
+  return { enabled: (current ?? deprecated ?? "false") === "true", deprecation };
 }
 
 /**
@@ -443,8 +477,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
  * logged loudly at start-up instead.
  */
 export function configWarnings(config: AppConfig): string[] {
-  if (config.nodeEnv !== "production") return [];
-  const warnings: string[] = [];
+  if (config.nodeEnv !== "production") return [...config.deprecations];
+  const warnings: string[] = [...config.deprecations];
   if (config.database.url && config.database.ssl === "disable") {
     warnings.push("DATABASE_SSL=disable in production: database traffic (including session hashes and ciphertext) is not encrypted in transit.");
   }
@@ -471,7 +505,7 @@ export function configWarnings(config: AppConfig): string[] {
   }
   if (
     config.providerMode === "live" &&
-    liveProviderCount({ ...config, bedrockEnabled: config.ai.bedrockFallbackEnabled, compatible: config.compatibleProviders }) === 1
+    liveProviderCount({ ...config, bedrockEnabled: config.ai.bedrockEnabled, compatible: config.compatibleProviders }) === 1
   ) {
     warnings.push("Only one AI provider is configured in production: if it fails, DASH AI has no second provider to fall back to. Configure another live provider for failover.");
   }

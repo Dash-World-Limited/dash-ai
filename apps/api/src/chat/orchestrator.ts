@@ -32,9 +32,10 @@ import type { ModelToolCall } from "../tools/types.js";
 import type { Metrics } from "../observability/metrics.js";
 import { estimateAnswerCostUsd } from "../intelligence/cost.js";
 import { estimateTokens, type IntelligenceRouter, type RouteDecision } from "../intelligence/router.js";
-import { requestChars, type InferenceContext } from "../intelligence/ledger.js";
+import { estimateTokensForLedger, requestChars, type InferenceContext } from "../intelligence/ledger.js";
 import type { AiPlatform, Refusal } from "../intelligence/platform.js";
 import type { Sensitivity } from "../intelligence/policy.js";
+import type { ToolLoop } from "../intelligence/worstCase.js";
 import { hideProviders, neutralErrorMessage, NEUTRAL_ROUTING_REASON, NEUTRAL_UNAVAILABLE } from "./publicSurface.js";
 import { withIdleTimeout } from "./timeouts.js";
 import { DEFAULT_TITLE, generateTitle } from "./titles.js";
@@ -59,6 +60,13 @@ export interface ChatContext {
 
 /** A model may ask for many calls in one step; beyond this they are refused, not run. */
 export const MAX_TOOL_CALLS_PER_ROUND = 8;
+
+/**
+ * The most tool-result characters one round can add to the next request: every call that may run, at
+ * its result bound plus room for its name and a truncation note. Calls beyond the limit get short
+ * refusals; a round that still grows past its budget is answered without tools (see runChat).
+ */
+export const toolResultCharsPerRound = (maxResultChars: number): number => MAX_TOOL_CALLS_PER_ROUND * (maxResultChars + 200);
 const SAFE_CALL_ID = /^[A-Za-z0-9_.:-]{1,64}$/;
 
 export interface PreparedTarget {
@@ -86,6 +94,12 @@ export interface PreparedChat {
   sensitivity: Sensitivity;
   /** Routing metadata recorded with every ledger attempt (internal; never content). */
   route: Record<string, unknown>;
+  /**
+   * What a paid provider was admitted on under a spend limit or ceiling (DASH AI routing only): the
+   * first request's estimated input tokens and the tool loop. Each provider request of the answer is
+   * then held to its round's input budget (see AiPlatform.inputBudgets). Null when nothing is bounded.
+   */
+  costBudget: { firstInputTokens: number; loop: ToolLoop | null } | null;
 }
 
 /**
@@ -141,12 +155,25 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
   const spend = await ctx.ai.admit(userId);
   let targets: PreparedTarget[];
   let routingReason: string;
+  let costBudget: PreparedChat["costBudget"] = null;
   let route: Record<string, unknown>;
   if (choice === "smart") {
     // The DASH Intelligence Router decides. A provider the person named in their own words is a
     // preference, applied silently when available.
     const inputChars =
       historyChars + request.message.content.length + documents.reduce((n, d) => n + d.extractedText.length, 0);
+    // The first provider request exactly as it will be sent (documents rendered, history trimmed; the
+    // turns are the same for every provider), and never less than the plain estimate above.
+    const firstInputChars =
+      Math.max(inputChars, requestChars({ system: "", messages: buildProviderMessages("dash", request.history, request.message.content, documents) })) +
+      requestChars({
+        system: buildSystemPrompt(request.mode, undefined, { toolsOffered: offered.size > 0 }),
+        messages: [],
+        ...(offered.size > 0 ? { tools: offered.list() } : {}),
+      });
+    const loop: ToolLoop | null =
+      offered.size > 0 ? { toolRounds: ctx.tools.maxRounds, resultCharsPerRound: toolResultCharsPerRound(ctx.tools.maxResultChars) } : null;
+    costBudget = ctx.ai.costBounded(spend) ? { firstInputTokens: estimateTokensForLedger(firstInputChars), loop } : null;
     const decision = ctx.router.route({
       task: "chat",
       mode: request.mode,
@@ -156,18 +183,9 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
       sensitivity,
       plan,
       inputModalities: ["text"],
-      // Cost limits compare against everything sent (system prompt and tool schemas included), once
-      // per provider request a tool-using answer may make (its tool rounds, then a final answer).
-      ...ctx.ai.costFields(
-        spend,
-        inputChars +
-          requestChars({
-            system: buildSystemPrompt(request.mode, undefined, { toolsOffered: offered.size > 0 }),
-            messages: [],
-            ...(offered.size > 0 ? { tools: offered.list() } : {}),
-          }),
-        offered.size > 0 ? ctx.tools.maxRounds + 1 : 1,
-      ),
+      // Cost limits compare against everything sent (system prompt and tool schemas included), for
+      // every provider request a tool-using answer may make (its tool rounds, then a final answer).
+      ...ctx.ai.costFields(spend, firstInputChars, loop),
     });
     ctx.ai.noteSpendLimit(decision, spend);
     if (!decision.ok) {
@@ -213,6 +231,7 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
     plan,
     sensitivity,
     route,
+    costBudget,
   };
 }
 
@@ -373,6 +392,12 @@ async function runTarget(
     const system = buildSystemPrompt(prepared.request.mode, adapter, { toolsOffered: offered.size > 0 });
     let finishReason: "stop" | "length" | "refusal" = "stop";
     let servedModel: string | null | undefined;
+    // A paid provider admitted on its worst case is held to it: no request of this answer may send
+    // more than its round's input budget (null: nothing to enforce).
+    const budgets =
+      prepared.costBudget && ctx.ai.isPaid(adapter.id)
+        ? ctx.ai.inputBudgets(adapter.id, prepared.costBudget.firstInputTokens, prepared.costBudget.loop)
+        : null;
 
     for (let round = 0; ; round++) {
       // A cancel or timeout during a tool call must end the response, not start another round.
@@ -380,7 +405,23 @@ async function runTarget(
       // The tool list stays identical every round (see ProviderRequest.toolChoice). On the last
       // allowed round tool use is switched off, so the model must answer with what it has.
       const tools = offered.size > 0 ? offered.list() : undefined;
-      const toolUse = tools !== undefined && round < ctx.tools.maxRounds;
+      let toolUse = tools !== undefined && round < ctx.tools.maxRounds;
+      if (budgets) {
+        const sending = estimateTokensForLedger(requestChars({ system, messages: turns, ...(tools ? { tools } : {}) }));
+        const budget = budgets[Math.min(round, budgets.length - 1)]!;
+        if (sending > budget) {
+          // Tool results grew past what was admitted. If the final answer's budget still covers this
+          // request, answer now without tools (the answer then makes fewer requests than admitted);
+          // otherwise stop here rather than spend past the reservation.
+          if (sending > budgets[budgets.length - 1]!) {
+            ctx.log.warn({ provider: adapter.id, round, sending, budget }, "answer stopped at its spend reservation");
+            finishReason = "length";
+            break;
+          }
+          ctx.log.info({ provider: adapter.id, round, sending, budget }, "final answer early: tool results reached the spend reservation");
+          toolUse = false;
+        }
+      }
       let roundText = "";
       let calls: ModelToolCall[] = [];
       let continuation: unknown;

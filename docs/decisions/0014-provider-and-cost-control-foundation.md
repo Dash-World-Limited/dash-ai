@@ -34,7 +34,8 @@ than the business has decided to spend. Production currently runs with demonstra
 - **Spend circuit breakers** read the ledger: system daily and monthly, per plan and per person, plus
   a per-request worst-case ceiling. When one trips, paid providers are excluded; free ones may still
   serve. Global switches: `AI_ENABLED`, `FREE_POOL_ENABLED`, `PAID_PROVIDERS_ENABLED`,
-  `BEDROCK_FALLBACK_ENABLED`.
+  `BEDROCK_ENABLED` (formerly `BEDROCK_FALLBACK_ENABLED`, still read as a deprecated alias; conflicting
+  values refuse to start).
 - **Fail closed in production.** With live paid providers, production refuses to start without daily
   and monthly limits and a price for each paid model. Bedrock, the free pool and compatible providers
   are off unless switched on. Demonstration mode is unaffected.
@@ -56,6 +57,14 @@ whose served model id was unpriced counted as free; they are now charged at the 
   between restarts; both are documented operator expectations.
 - Deploying requires migrations 9, 10 and 11 (additive) after a database snapshot; an older server refuses
   to start on the migrated schema, so rollback is by snapshot.
-- Because admission reserves a request's worst case, a limit stops new paid requests slightly before it is
-  reached; small limits need a smaller `MAX_OUTPUT_TOKENS`.
+- Because admission reserves a request's worst case, a limit stops new paid requests before it is
+  reached; tool-using answers reserve the most.
+
+**Hardening (adoption PR).** The worst case of a tool-using answer counted every round at the size of
+the first request, although each round re-sends the earlier output and tool results. Each round is now
+budgeted the first request plus its growth (capped at the provider's context window), the final answer
+is counted, output is reserved at each model's real cap where the adapter knows it (Amazon Nova), and
+the orchestrator holds every request of an admitted answer to its round's budget, answering early
+without tools or stopping rather than spending past the reservation. The ledger retention policy is
+24 months; the purge that enforces it is a separate milestone.
 - Plans per account and content-based sensitivity classification remain future work.

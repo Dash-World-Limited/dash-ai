@@ -97,6 +97,12 @@ export interface ProviderAdapter {
   /** True for fake adapters. Their output must always be labelled as a demonstration. */
   readonly demo: boolean;
   stream(request: ProviderRequest): AsyncIterable<ProviderChunk>;
+  /**
+   * The most output tokens this adapter ever asks `model` for, when the adapter lowers
+   * maxOutputTokens to a known model limit (undefined: it sends maxOutputTokens unchanged). Spend
+   * limits reserve this instead of MAX_OUTPUT_TOKENS, so it must never be below what is sent.
+   */
+  outputTokenCap?(model: string): number | undefined;
 }
 
 export type ProviderErrorCode = "provider_error" | "provider_timeout" | "rate_limited" | "cancelled";

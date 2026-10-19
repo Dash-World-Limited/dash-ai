@@ -44,7 +44,7 @@ export interface LiveProviderConfig {
   openai: Credentials;
   anthropic: Credentials;
   bedrock: BedrockCredentials;
-  /** BEDROCK_FALLBACK_ENABLED: Bedrock only counts as a live provider when it may serve traffic. */
+  /** BEDROCK_ENABLED: Bedrock only counts as a live provider when it may serve traffic. */
   bedrockEnabled: boolean;
   compatible: readonly CompatibleCredentials[];
 }
@@ -138,7 +138,7 @@ export function liveProviderProblems(config: LiveProviderConfig): string[] {
   if (complete === 0 && problems.length === 0) {
     problems.push(
       "No AI provider is configured: set OPENAI_API_KEY + OPENAI_MODEL, ANTHROPIC_API_KEY + ANTHROPIC_MODEL, the BEDROCK_* settings with " +
-        "BEDROCK_FALLBACK_ENABLED=true, and/or an approved entry in COMPATIBLE_PROVIDERS.",
+        "BEDROCK_ENABLED=true, and/or an approved entry in COMPATIBLE_PROVIDERS.",
     );
   }
   return problems;
@@ -174,7 +174,7 @@ export function costControlProblems(input: {
     paid += 1;
     if (!priceFor(prices, "anthropic", input.anthropicModel)) unpriced.push("ANTHROPIC_MODEL");
   }
-  if (ai.bedrockFallbackEnabled && bedrockConfigured(input.bedrock)) {
+  if (ai.bedrockEnabled && bedrockConfigured(input.bedrock)) {
     paid += 1;
     for (const tier of TIERS) {
       const id = input.bedrock.models[tier];

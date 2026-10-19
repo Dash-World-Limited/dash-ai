@@ -65,9 +65,11 @@ emails, tokens or keys (a test proves it). Key series: `dash_ai_request_seconds`
    secrets from the secret manager, and the model ids you want (`OPENAI_MODEL`, `ANTHROPIC_MODEL`).
    With any paid provider live, set `MAX_DAILY_AI_SPEND`, `MAX_MONTHLY_AI_SPEND` and a `MODEL_PRICES`
    price for every paid model first: production-mode start-up refuses without them. Leave
-   `FREE_POOL_ENABLED`, `BEDROCK_FALLBACK_ENABLED` and `COMPATIBLE_PROVIDERS` at their template values
+   `FREE_POOL_ENABLED`, `BEDROCK_ENABLED` and `COMPATIBLE_PROVIDERS` at their template values
    unless that provider is what you are testing ([provider-platform.md](provider-platform.md)).
-5. **Migrate** (deliberate step; the server refuses to start on an unmigrated schema):
+5. **Migrate** (deliberate step; the server refuses to start on an unmigrated schema). First run the
+   read-only migration 10 check in [provider-platform.md](provider-platform.md#safe-production-rollout)
+   (step 0) and stop if it reports anything unsafe. Then:
    `node apps/api/dist/migrate-cli.js` with the staging `DATABASE_URL`. It is safe to run twice
    (the second run reports "up to date") and takes an advisory lock, so concurrent runs are safe.
 6. **Encryption maintenance** (only needed if data from an older version exists):

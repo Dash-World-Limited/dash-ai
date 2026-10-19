@@ -108,6 +108,11 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     });
   }
 
+  /** The operator-declared output limit of this API (`maxOutputTokens`), when one was configured. */
+  outputTokenCap(): number | undefined {
+    return this.config.maxOutputTokens;
+  }
+
   async *stream(request: ProviderRequest): AsyncIterable<ProviderChunk> {
     const tools = request.tools && request.tools.length > 0 ? request.tools : undefined;
     const calls = new Map<number, { id: string; name: string; args: string }>();
@@ -122,7 +127,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           model: this.model,
           messages: toChatMessages(request.system, request.messages),
           stream: true,
-          max_tokens: Math.min(request.maxOutputTokens, this.config.maxOutputTokens ?? request.maxOutputTokens),
+          max_tokens: Math.min(request.maxOutputTokens, this.outputTokenCap() ?? request.maxOutputTokens),
           ...(this.config.streamUsage ? { stream_options: { include_usage: true } } : {}),
           // The same tools every round; tool use is switched off with tool_choice, never by dropping them.
           ...(tools ? { tools: toChatTools(tools), tool_choice: request.toolChoice === "none" ? ("none" as const) : ("auto" as const) } : {}),

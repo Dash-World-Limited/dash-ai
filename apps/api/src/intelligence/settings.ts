@@ -25,8 +25,8 @@ export interface AiControls {
   freePoolEnabled: boolean;
   /** PAID_PROVIDERS_ENABLED (default true): paid providers may serve requests. */
   paidProvidersEnabled: boolean;
-  /** BEDROCK_FALLBACK_ENABLED (default false): the Bedrock adapter may serve requests. */
-  bedrockFallbackEnabled: boolean;
+  /** BEDROCK_ENABLED (default false; formerly BEDROCK_FALLBACK_ENABLED): the Bedrock adapter may serve requests. */
+  bedrockEnabled: boolean;
   /** AI_DEFAULT_PLAN: the plan every account is on until plans are assigned per account. */
   defaultPlan: string;
   /** AI_DEFAULT_SENSITIVITY (default sensitive): how ordinary requests are classified. */

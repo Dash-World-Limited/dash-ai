@@ -2,7 +2,9 @@ import { Automation, AutomationDetailResponse, AutomationRunResponse, type Provi
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import { containsProviderName, NEUTRAL_UNAVAILABLE } from "../src/chat/publicSurface.js";
-import { QUOTA_PAUSE_MS } from "../src/intelligence/ledger.js";
+import { estimateTokensForLedger, QUOTA_PAUSE_MS, requestChars } from "../src/intelligence/ledger.js";
+import { roundGrowthTokens, roundInputBudgets, worstCaseUsd } from "../src/intelligence/worstCase.js";
+import { BedrockAdapter } from "../src/providers/bedrock.js";
 import { ProviderRegistry } from "../src/providers/registry.js";
 import { toProviderError, type ProviderAdapter, type ProviderChunk, type ProviderRequest } from "../src/providers/types.js";
 import { MemoryStore } from "../src/store/memoryStore.js";
@@ -15,7 +17,7 @@ import { createTestPgStore } from "./pgTestStore.js";
 // here is in-process; nothing leaves the test.
 
 /** What one provider request does. */
-type Step = "answer" | "answer-no-usage" | "answer-provider-cost" | "503" | "429" | "429-long" | "quota" | "partial-then-503";
+type Step = "answer" | "answer-no-usage" | "answer-provider-cost" | "503" | "429" | "429-long" | "quota" | "partial-then-503" | "tool";
 
 class Engine implements ProviderAdapter {
   readonly demo = false;
@@ -25,6 +27,8 @@ class Engine implements ProviderAdapter {
   otherwise: Step = "answer";
   /** The model id the provider reports for its answers (default: the configured one). */
   served?: string;
+  /** What a "tool" step writes before asking for a tool (its output is sent back next round). */
+  toolRoundText = "Checking the time.";
   constructor(
     readonly id: ProviderId,
     readonly model: string,
@@ -50,6 +54,11 @@ class Engine implements ProviderAdapter {
       case "partial-then-503":
         yield { type: "text", text: "Here is the start " };
         throw toProviderError(this.displayName, { status: 503 });
+      case "tool":
+        yield { type: "text", text: this.toolRoundText };
+        yield { type: "tool_calls", calls: [{ id: `call_${this.calls}`, name: "dash-demo__current_time", argumentsJson: "{}" }] };
+        yield { type: "finish", finishReason: "stop", usage: { inputTokens: 1_000, outputTokens: 500 }, servedModel: this.model };
+        return;
       default:
         yield { type: "text", text: ANSWER };
         yield {
@@ -590,6 +599,105 @@ describe("spend limits hold under adversarial conditions", () => {
   });
 });
 
+describe("the worst case of a tool-using answer", () => {
+  const enableTools = async (s: Awaited<ReturnType<typeof setup>>) =>
+    expect((await s.app.inject({ method: "PUT", url: "/v1/plugins/dash-demo", headers: s.user.auth, payload: { enabled: true } })).statusCode).toBe(200);
+  const LOOP = { toolRounds: 4, resultCharsPerRound: 8 * (20_000 + 200) };
+
+  it("each round may send everything before it: input grows by the round's output and tool results", () => {
+    // 500 output tokens sent back (at up to 4 characters each) plus eight 20,000-character results.
+    const growth = roundGrowthTokens(500, LOOP);
+    expect(growth).toBe(Math.ceil((500 * 4 + 8 * 20_200) / 3));
+    expect(roundInputBudgets(1_000, { rounds: 5, growthTokens: growth, contextTokens: 1_000_000 })).toEqual([0, 1, 2, 3, 4].map((k) => 1_000 + k * growth));
+  });
+
+  it("no round is budgeted past the provider's context window, and the first request is never cut", () => {
+    expect(roundInputBudgets(1_000, { rounds: 5, growthTokens: 60_000, contextTokens: 128_000 })).toEqual([1_000, 61_000, 121_000, 128_000, 128_000]);
+    // A first request larger than the window was admitted on its own size (the router checks fit).
+    expect(roundInputBudgets(200_000, { rounds: 3, growthTokens: 10, contextTokens: 128_000 })).toEqual([200_000, 200_000, 200_000]);
+    // Every request is billed its full output allowance.
+    expect(worstCaseUsd({ inputPerMillion: 1, outputPerMillion: 10 }, [1_000_000, 2_000_000], 100_000)).toBeCloseTo(3 + 2, 10);
+  });
+
+  it("admission prices tool-result growth: a ceiling that fits five copies of the first request still refuses", async () => {
+    // Input-only prices at $1/M. The first request (system prompt, tool schemas, message) is a few
+    // thousand tokens, so five unchanged copies cost about $0.01; with tool results growing every
+    // round the worst case is several hundred thousand tokens.
+    const inputOnly = JSON.stringify({ "openai:paid-a-model": { inputPerMillion: 1, outputPerMillion: 0 }, "anthropic:paid-b-model": { inputPerMillion: 1, outputPerMillion: 0 } });
+    const s = await setup({ env: { MAX_REQUEST_AI_COST: "0.1", MODEL_PRICES: inputOnly } });
+    expect((await chat(s.app, s.user.auth)).text).toBe(ANSWER);
+    await enableTools(s);
+    const refused = await chat(s.app, s.user.auth);
+    expect(refused.res.statusCode).toBe(413);
+    expect(s.a.calls + s.b.calls).toBe(1);
+
+    // The operator's context window bounds it: the same answer fits a ceiling sized for it.
+    const budgets = s.context.ai.inputBudgets("openai", 3_000, LOOP);
+    expect(budgets).toHaveLength(5);
+    expect(Math.max(...budgets)).toBe(128_000);
+  });
+
+  it("the final answer after the last tool round is counted (TOOL_MAX_ROUNDS + 1 requests)", async () => {
+    // Output-only prices: one round tool, then a final answer, each up to 500 tokens at $50/M.
+    const tight = await setup({ env: { MAX_REQUEST_AI_COST: "0.049", TOOL_MAX_ROUNDS: "1" } });
+    await enableTools(tight);
+    expect((await chat(tight.app, tight.user.auth)).res.statusCode).toBe(413);
+    const roomy = await setup({ env: { MAX_REQUEST_AI_COST: "0.051", TOOL_MAX_ROUNDS: "1" } });
+    await enableTools(roomy);
+    expect((await chat(roomy.app, roomy.user.auth)).text).toBe(ANSWER);
+  });
+
+  it("a round that grows past its admitted budget is answered without tools, and stops if even that would not fit", async () => {
+    const s = await setup({ env: { MAX_REQUEST_AI_COST: "1" } });
+    await enableTools(s);
+    // Round 0 writes far more text than 500 output tokens can hold (about 70,000 estimated tokens
+    // sent back), so round 1 is past its budget but inside the final answer's (the context window).
+    s.primary.steps = ["tool", "tool"];
+    s.primary.toolRoundText = "x".repeat(210_000);
+    const early = await chat(s.app, s.user.auth);
+    expect(early.failed).toBe(false);
+    expect(s.primary.requests.map((r) => r.toolChoice)).toEqual(["auto", "none"]);
+    const second = s.primary.requests[1]!;
+    const budgets = s.context.ai.inputBudgets(s.primary.id, 0, LOOP);
+    expect(estimateTokensForLedger(requestChars(second))).toBeLessThanOrEqual(budgets[budgets.length - 1]!);
+
+    // Past even the final answer's budget: the answer ends there, no further request is sent.
+    const t = await setup({ env: { MAX_REQUEST_AI_COST: "1" } });
+    await enableTools(t);
+    t.primary.steps = ["tool"];
+    t.primary.toolRoundText = "x".repeat(600_000);
+    const stopped = await chat(t.app, t.user.auth);
+    expect(t.primary.calls).toBe(1);
+    expect(byEvent(stopped.events, "message.end")[0]?.data.finishReason).toBe("length");
+
+    // Without any limit or ceiling nothing is reserved, so nothing is enforced.
+    const u = await setup();
+    await enableTools(u);
+    u.primary.steps = ["tool"];
+    u.primary.toolRoundText = "x".repeat(210_000);
+    await chat(u.app, u.user.auth);
+    expect(u.primary.requests.map((r) => r.toolChoice)).toEqual(["auto", "auto"]);
+  });
+
+  it("reserves a model's real output limit where the adapter knows it, never more than MAX_OUTPUT_TOKENS", async () => {
+    const bedrock = new BedrockAdapter({ kind: "api_key", apiKey: "test-key" }, "eu-west-1", { lite: "eu.amazon.nova-lite-v1:0", nova2Lite: "eu.amazon.nova-2-lite-v1:0" }, { client: {} as never });
+    const made = await makeApp({ config: testConfig({ MAX_OUTPUT_TOKENS: "16000" }), providers: new ProviderRegistry({ bedrock }) });
+    apps.push(made.app);
+    const ai = made.context.ai;
+    // Nova Lite cannot write more than 5,000 tokens; Nova 2 Lite can write 64,000, so MAX_OUTPUT_TOKENS binds.
+    expect(ai.outputTokenCap("bedrock", "eu.amazon.nova-lite-v1:0")).toBe(5_000);
+    expect(ai.outputTokenCap("bedrock", "eu.amazon.nova-2-lite-v1:0")).toBe(16_000);
+    // Adapters without a known limit reserve MAX_OUTPUT_TOKENS.
+    expect(ai.outputTokenCap("openai", "any-model")).toBe(16_000);
+
+    // The worst case is the dearer of the two tiers, each with its own cap (one request, 3,000 input tokens).
+    const { worstCaseCostUsd } = ai.costFields({ paidAllowed: true, blockedBy: null, headroom: null, totals: { systemDailyUsd: 0, systemMonthlyUsd: 0, planDailyUsd: null, userDailyUsd: null } }, 9_000);
+    const lite = (3_000 * 0.06 + 5_000 * 0.24) / 1e6;
+    const nova2 = (3_000 * 0.33 + 16_000 * 2.75) / 1e6;
+    expect(worstCaseCostUsd!("bedrock")).toBeCloseTo(Math.max(lite, nova2), 12);
+  });
+});
+
 describe("Automates", () => {
   const brief = { name: "Morning brief", prompt: "Write my morning brief.", mode: "business", schedule: { kind: "daily", time: "08:00" }, timeZone: "Africa/Lagos" };
 
@@ -641,7 +749,7 @@ describe("nothing about providers or costs reaches consumers", () => {
     const operator = await router(`Bearer ${OPERATOR}`);
     expect(operator.statusCode).toBe(200);
     const platform = operator.json().platform;
-    expect(platform.controls).toMatchObject({ aiEnabled: true, freePoolEnabled: true, paidProvidersEnabled: true, bedrockFallbackEnabled: false, defaultSensitivity: "standard" });
+    expect(platform.controls).toMatchObject({ aiEnabled: true, freePoolEnabled: true, paidProvidersEnabled: true, bedrockEnabled: false, defaultSensitivity: "standard" });
     expect(platform.spend.today.systemUsd).toBeCloseTo(PAID_ANSWER_USD, 10);
     expect(platform.providers.find((p: { provider: string }) => p.provider === "freepool")).toMatchObject({
       configured: true,

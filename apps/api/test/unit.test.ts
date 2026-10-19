@@ -4,7 +4,7 @@ import { withIdleTimeout, IdleTimeoutError } from "../src/chat/timeouts.js";
 import { DEFAULT_TITLE, generateTitle } from "../src/chat/titles.js";
 import { StreamRegistry } from "../src/chat/streamRegistry.js";
 import { readFileSync } from "node:fs";
-import { ConfigError, ENV_KEYS, configWarnings, loadConfig } from "../src/config.js";
+import { ConfigError, DEPRECATED_ENV_KEYS, ENV_KEYS, configWarnings, loadConfig } from "../src/config.js";
 import { sanitizeFileName, signatureMatches } from "../src/documents/inspect.js";
 import { redactSecrets, sanitizeUrl } from "../src/logging.js";
 import {
@@ -94,8 +94,9 @@ describe("config", () => {
         .map((m) => [m[1]!, m[2]!] as const),
     );
 
-    it("documents exactly the variables the server reads", () => {
-      expect([...entries.keys()].sort()).toEqual([...ENV_KEYS].sort());
+    it("documents exactly the variables the server reads (deprecated names left out)", () => {
+      expect([...entries.keys()].sort()).toEqual(ENV_KEYS.filter((k) => !DEPRECATED_ENV_KEYS.includes(k)).sort());
+      expect(DEPRECATED_ENV_KEYS.every((k) => ENV_KEYS.includes(k))).toBe(true);
     });
 
     it("holds no credentials, and parses as a valid configuration", () => {
@@ -117,7 +118,7 @@ describe("config", () => {
     const secrets = ["DATABASE_URL", "DATA_ENCRYPTION_KEY", "DATA_ENCRYPTION_PREVIOUS_KEYS", "REDIS_URL", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "BEDROCK_API_KEY", "METRICS_TOKEN", "OPERATOR_TOKEN", "FCM_SERVICE_ACCOUNT"];
 
     it("covers every variable, holds no secret values, and is production-safe once secrets are supplied", () => {
-      expect([...template.keys()].sort()).toEqual([...ENV_KEYS].sort());
+      expect([...template.keys()].sort()).toEqual(ENV_KEYS.filter((k) => !DEPRECATED_ENV_KEYS.includes(k)).sort());
       for (const secret of secrets) expect(template.get(secret), secret).toBe("");
       // Placeholders the operator would supply from the secret manager (none of them real).
       const filled = loadConfig({

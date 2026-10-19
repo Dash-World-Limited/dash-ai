@@ -424,7 +424,7 @@ describe("configuration: compatible providers, quotas and cost controls", () => 
       enabled: true,
       freePoolEnabled: false,
       paidProvidersEnabled: true,
-      bedrockFallbackEnabled: false,
+      bedrockEnabled: false,
       defaultPlan: "standard",
       defaultSensitivity: "sensitive",
       limits: { requestUsd: null, userDailyUsd: null, systemDailyUsd: null, systemMonthlyUsd: null, planDailyUsd: {} },
@@ -455,10 +455,56 @@ describe("configuration: compatible providers, quotas and cost controls", () => 
     // An unapproved one does not count as a live provider; a missing key is named.
     expect(prod({ COMPATIBLE_PROVIDERS: JSON.stringify([{ ...ENTRY, privacy: "unapproved" }]), EXAMPLE_FREE_API_KEY: KEY })).toMatch(/No AI provider is configured/);
     expect(prod({ COMPATIBLE_PROVIDERS: JSON.stringify([ENTRY]) })).toMatch(/EXAMPLE_FREE_API_KEY is required for the compatible provider "example-free"/);
-    // Bedrock settings without BEDROCK_FALLBACK_ENABLED do not count either.
-    expect(prod({ BEDROCK_AUTH: "iam", BEDROCK_REGION: "eu-west-1", BEDROCK_MODEL_LITE: "eu.amazon.nova-lite-v1:0" })).toMatch(/BEDROCK_FALLBACK_ENABLED=true/);
+    // Bedrock settings without BEDROCK_ENABLED do not count either.
+    expect(prod({ BEDROCK_AUTH: "iam", BEDROCK_REGION: "eu-west-1", BEDROCK_MODEL_LITE: "eu.amazon.nova-lite-v1:0" })).toMatch(/BEDROCK_ENABLED=true/);
     // Never a key value in the message.
     expect(prod(openai)).not.toContain("test-openai-key-not-real");
+  });
+
+  it("BEDROCK_ENABLED switches Bedrock; the deprecated BEDROCK_FALLBACK_ENABLED still works and may never disagree", () => {
+    const bedrock = (env: Record<string, string>) => {
+      const config = loadConfig({ PROVIDER_MODE: "live", ...env });
+      return { enabled: config.ai.bedrockEnabled, routed: config.routerPolicy.providers.bedrock?.enabled, warnings: configWarnings(config) };
+    };
+    // Off by default, and the router then never sends Bedrock anything.
+    expect(bedrock({})).toEqual({ enabled: false, routed: false, warnings: [] });
+    expect(bedrock({ BEDROCK_ENABLED: "" })).toEqual({ enabled: false, routed: false, warnings: [] });
+    expect(bedrock({ BEDROCK_ENABLED: "true" })).toEqual({ enabled: true, routed: true, warnings: [] });
+    expect(bedrock({ BEDROCK_ENABLED: "false" })).toMatchObject({ enabled: false, routed: false });
+
+    // The former name alone keeps working, with a warning to rename it (in every environment).
+    const legacy = bedrock({ BEDROCK_FALLBACK_ENABLED: "true" });
+    expect(legacy).toMatchObject({ enabled: true, routed: true });
+    expect(legacy.warnings).toEqual(["BEDROCK_FALLBACK_ENABLED is deprecated: rename it to BEDROCK_ENABLED (same value, true)."]);
+    expect(bedrock({ BEDROCK_FALLBACK_ENABLED: "false" })).toMatchObject({ enabled: false, routed: false });
+    // Both set to the same value: fine, with a warning to remove the old one.
+    expect(bedrock({ BEDROCK_ENABLED: "true", BEDROCK_FALLBACK_ENABLED: "true" }).warnings).toEqual([
+      "BEDROCK_FALLBACK_ENABLED is deprecated and set to the same value as BEDROCK_ENABLED: remove it.",
+    ]);
+    expect(bedrock({ BEDROCK_ENABLED: "false", BEDROCK_FALLBACK_ENABLED: "false" })).toMatchObject({ enabled: false, routed: false });
+
+    // Disagreeing values refuse to start, either way round: no silent precedence.
+    for (const [current, deprecated] of [["true", "false"], ["false", "true"]] as const) {
+      expect(() => loadConfig({ BEDROCK_ENABLED: current, BEDROCK_FALLBACK_ENABLED: deprecated })).toThrow(ConfigError);
+      expect(() => loadConfig({ BEDROCK_ENABLED: current, BEDROCK_FALLBACK_ENABLED: deprecated })).toThrow(
+        `BEDROCK_ENABLED=${current} and the deprecated BEDROCK_FALLBACK_ENABLED=${deprecated} disagree`,
+      );
+    }
+    // Anything but true or false is refused as before.
+    expect(() => loadConfig({ BEDROCK_ENABLED: "yes" })).toThrow(ConfigError);
+    expect(() => loadConfig({ BEDROCK_FALLBACK_ENABLED: "1" })).toThrow(ConfigError);
+
+    // In production the deprecation is logged with the other warnings.
+    const prod = loadConfig({
+      NODE_ENV: "production",
+      DATABASE_URL: "postgres://placeholder",
+      RATE_LIMIT_BACKEND: "redis",
+      REDIS_URL: "rediss://placeholder",
+      PROVIDER_MODE: "fake",
+      BEDROCK_FALLBACK_ENABLED: "false",
+      DATA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
+    });
+    expect(configWarnings(prod)).toContain("BEDROCK_FALLBACK_ENABLED is deprecated: rename it to BEDROCK_ENABLED (same value, false).");
   });
 
   it("production warnings still name single-provider setups (compatible providers count)", () => {
