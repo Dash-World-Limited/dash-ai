@@ -88,6 +88,31 @@ No `TODO`, `FIXME`, `HACK` or "not implemented" markers exist in production code
 | Empty provider answer saved as complete | **fake success → fixed** |
 | Android Tools/Automates "Sign in" sets Demo Mode without the account guard (`DashAiApp.kt:268,316`) | unfinished path, P2 (the old account's data stays visible in Demo Mode) |
 
+## 2a. Orphaned / duplicated product paths
+
+| Finding | Impact | Classification |
+| --- | --- | --- |
+| Every Android route (`DashAiApp.kt` `Routes`) and every Web screen is reachable from navigation; no button without an action was found | – | none |
+| API routes with no client: `GET /v1/me/export` (both apps), `GET /v1/tools/activity` (both apps), push device list/delete-by-id (Android unregisters by token) | capability exists but no person can use it | P2 (export), P3 (others) |
+| Android Tools and Automates "Sign in" (`DashAiApp.kt:271,319`) set Demo Mode and drop the account without `LocalAccountGuard.signOut`; the chat banner now uses the plain sign-in route instead | the previous account's local data stays visible in Demo Mode until the next sign-in, which wipes it if a different account signs in (`LocalAccountGuard`) | P2 |
+| History truncation existed only on Android (`ContextBuilder.kt`); Web sent turns verbatim | duplicated rule that drifted | fixed (Web now applies the same limit) |
+| Demo Mode answers exist twice (Web `backends.ts`, Android `DemoResponses.kt`) | intentional: each client works offline | none |
+| No local/demo behaviour reachable from production: the fake providers need `PROVIDER_MODE=fake` and production warns; Demo Mode is labelled and never sends history to the server | – | none |
+
+## 2b. Expanded checklist items verified without a code change
+
+| Item | Evidence |
+| --- | --- |
+| Repeated failed login | per-account and per-IP sign-in limits, shared across instances through Redis (`routes/auth.ts:44`, `rate-limit.test.ts` "whole API instances share sign-in limits per account and per IP"); per-IP part depends on the `TRUST_PROXY` fix above |
+| Renamed/mismatched file type, empty, corrupt | file signature check (`documents/inspect.ts:10`); hostile-document suite ("garbage that passes the signature check is refused cleanly") |
+| Encrypted / password-protected PDF | refused before parsing, with a reason (`documents/budget.ts:132`; "a real RC4-encrypted PDF … is refused before parsing") |
+| Partial response | a disconnect mid-stream keeps the partial text once, stored as failed, not retried (`provider-resilience.test.ts:179`) |
+| Refusal | surfaced as `finishReason: "refusal"` (`adapters.test.ts:257`; `product-completion.test.ts`) |
+| Database timeouts | pool `connectionTimeoutMillis` 10 s, `statement_timeout` 30 s (`postgresStore.ts:274-276`) |
+| Push token refresh | `DashMessagingService.onNewToken` re-registers for the current session |
+| Push delivery state, retries, duplicates | delivery rows claimed with `SKIP LOCKED`, up to 5 attempts with backoff, a retried send replaces an undelivered one (`push/fcm.ts:120`), invalid tokens removed (`push.test.ts`) |
+| Firefox | CI runs the whole E2E suite in Firefox as well (`ci.yml` `DASH_E2E_FIREFOX=1`); locally only Chromium is installed |
+
 ## 3. Security findings (while touching flows; not the final audit)
 
 | Finding | Severity | Status |
