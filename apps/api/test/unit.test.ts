@@ -138,9 +138,7 @@ describe("config", () => {
       configWarnings(loadConfig({ NODE_ENV: "production", DATABASE_URL: "postgres://placeholder", ...shared, ...env })).join(" ");
     expect(prod({})).toBe("");
     expect(prod({ RATE_LIMIT_BACKEND: "memory" })).toMatch(/per instance/);
-    expect(prod({ TRUST_PROXY: "true" })).toMatch(/pick its own IP/);
     expect(prod({ TRUST_PROXY: "1" })).toBe("");
-    expect(() => loadConfig({ TRUST_PROXY: "yes" })).toThrow(/TRUST_PROXY/);
     expect(prod({ REDIS_URL: "redis://placeholder" })).toMatch(/not encrypted in transit/);
     expect(() => loadConfig({ RATE_LIMIT_BACKEND: "redis" })).toThrow(/REDIS_URL is required/);
     expect(prod({ DATABASE_SSL: "disable" })).toMatch(/not encrypted in transit/);
@@ -153,6 +151,46 @@ describe("config", () => {
     expect(configWarnings(loadConfig({ DATABASE_SSL: "disable", LOG_LEVEL: "trace" }))).toEqual([]);
     // Defaults in production are the safe ones.
     expect(loadConfig({ NODE_ENV: "production", ...TEST_PROVIDERS, ...TEST_COST_CONTROLS }).database).toMatchObject({ ssl: "require", autoMigrate: false, allowMemoryStore: false });
+  });
+
+  describe("TRUST_PROXY", () => {
+    const prodEnv = { NODE_ENV: "production", DATABASE_URL: "postgres://placeholder", RATE_LIMIT_BACKEND: "redis", REDIS_URL: "rediss://placeholder", ...TEST_PROVIDERS, ...TEST_COST_CONTROLS };
+    const prod = (value: string) => loadConfig({ ...prodEnv, TRUST_PROXY: value });
+
+    it("production refuses true: the server does not start", () => {
+      expect(() => prod("true")).toThrow(ConfigError);
+      expect(() => prod("true")).toThrow(/TRUST_PROXY=true is not allowed in production/);
+      expect(() => prod(" true ")).toThrow(/TRUST_PROXY=true is not allowed in production/);
+    });
+
+    it("production refuses a /0 range, which trusts every address like true", () => {
+      for (const value of ["0.0.0.0/0", "::/0", "10.0.0.0/8, 0.0.0.0/0"]) {
+        expect(() => prod(value), value).toThrow(/must not contain a \/0 range in production/);
+      }
+    });
+
+    it("development and tests still accept true (local proxies, the rate-limit suite)", () => {
+      expect(loadConfig({ TRUST_PROXY: "true" }).trustProxy).toBe(true);
+      expect(loadConfig({ NODE_ENV: "test", TRUST_PROXY: "true" }).trustProxy).toBe(true);
+      expect(loadConfig({ TRUST_PROXY: "0.0.0.0/0" }).trustProxy).toBe("0.0.0.0/0");
+    });
+
+    it("production accepts a hop count, proxy addresses/CIDRs, and false", () => {
+      expect(prod("1").trustProxy).toBe(1);
+      expect(prod("10").trustProxy).toBe(10);
+      expect(prod("10.0.0.0/8").trustProxy).toBe("10.0.0.0/8");
+      expect(prod("10.0.0.2, 192.168.0.0/16,fd00::/8").trustProxy).toBe("10.0.0.2, 192.168.0.0/16,fd00::/8");
+      expect(prod("false").trustProxy).toBe(false);
+      expect(configWarnings(prod("1"))).toEqual([]);
+      expect(configWarnings(prod("10.0.0.0/8"))).toEqual([]);
+    });
+
+    it("refuses values that are not a count, an address or a CIDR, in every environment", () => {
+      for (const value of ["yes", "0", "11", "-1", "1.5", "10.0.0.0/33", "fd00::/129", "999.1.1.1", "10.0.0.0/8,", "...", "ff", "loopback"]) {
+        expect(() => loadConfig({ TRUST_PROXY: value }), value).toThrow(/TRUST_PROXY must be/);
+        expect(() => prod(value), value).toThrow(/TRUST_PROXY must be/);
+      }
+    });
   });
 
   it("refuses the engineering view (PROVIDER_DETAILS=exposed) in production, live or demonstration", () => {

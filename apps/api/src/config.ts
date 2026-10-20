@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { z } from "zod";
 import { ModelPrices } from "./intelligence/cost.js";
 import { loadPolicy, PolicyError, type RouterPolicy } from "./intelligence/policy.js";
@@ -15,6 +16,16 @@ const optionalBool = z.preprocess(emptyToUndefined, z.enum(["true", "false"]).op
 const usd = z.preprocess(emptyToUndefined, z.coerce.number().nonnegative().max(1_000_000).optional());
 const int = (def: number, min: number, max: number) =>
   z.preprocess(emptyToUndefined, z.coerce.number().int().min(min).max(max).default(def));
+
+/** One TRUST_PROXY address or CIDR: its IP version and prefix length, or null when it is not one. */
+function proxyRange(entry: string): { version: 4 | 6; prefix: number } | null {
+  const m = /^([^/]+)(?:\/(\d{1,3}))?$/.exec(entry);
+  const version = m ? isIP(m[1]!) : 0;
+  if (!m || (version !== 4 && version !== 6)) return null;
+  const max = version === 4 ? 32 : 128;
+  const prefix = m[2] === undefined ? max : Number(m[2]);
+  return prefix <= max ? { version, prefix } : null;
+}
 
 const EnvSchema = z.object({
   NODE_ENV: z.preprocess(emptyToUndefined, z.enum(["development", "test", "production"]).default("development")),
@@ -113,7 +124,7 @@ const EnvSchema = z.object({
    * Which X-Forwarded-For entries to believe for the client IP (per-IP rate limits depend on it):
    * "false" (direct traffic), the number of proxies in front of the API (for example 1 behind one load
    * balancer), or a comma-separated list of the proxies' addresses/CIDRs. "true" believes every entry,
-   * so a client can choose its own IP: development only.
+   * so a client can choose its own IP: development and tests only (production refuses it, and any /0 range).
    */
   TRUST_PROXY: z.preprocess(
     emptyToUndefined,
@@ -122,7 +133,7 @@ const EnvSchema = z.object({
       .trim()
       .default("false")
       .refine(
-        (v) => v === "true" || v === "false" || /^([1-9]|10)$/.test(v) || v.split(",").every((p) => /^[0-9a-fA-F.:]+(\/\d{1,3})?$/.test(p.trim())),
+        (v) => v === "true" || v === "false" || /^([1-9]|10)$/.test(v) || v.split(",").every((p) => proxyRange(p.trim()) !== null),
         "TRUST_PROXY must be false, true, a proxy count from 1 to 10, or comma-separated proxy addresses/CIDRs",
       ),
   ),
@@ -277,6 +288,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const e = parsed.data;
   if (e.RATE_LIMIT_BACKEND === "redis" && !e.REDIS_URL) {
     throw new ConfigError("Invalid configuration: REDIS_URL is required when RATE_LIMIT_BACKEND=redis.");
+  }
+  // Believing every X-Forwarded-For entry lets a client choose its own IP and get around per-IP limits.
+  // Production must name its proxies (a count, or addresses narrower than "everything").
+  if (e.NODE_ENV === "production" && e.TRUST_PROXY === "true") {
+    throw new ConfigError(
+      "Invalid configuration: TRUST_PROXY=true is not allowed in production (every X-Forwarded-For entry would be believed, so a " +
+        "client could pick its own IP and get around per-IP rate limits). Set the number of proxies in front of the API (for example 1) or their addresses/CIDRs.",
+    );
+  }
+  if (e.NODE_ENV === "production" && e.TRUST_PROXY.split(",").some((p) => proxyRange(p.trim())?.prefix === 0)) {
+    throw new ConfigError(
+      "Invalid configuration: TRUST_PROXY must not contain a /0 range in production (it trusts every address, the same as true). " +
+        "Name the proxies' own addresses or subnets.",
+    );
   }
   if (e.OPERATOR_TOKEN && e.OPERATOR_TOKEN === e.METRICS_TOKEN) {
     throw new ConfigError("Invalid configuration: OPERATOR_TOKEN must be a different secret from METRICS_TOKEN.");
@@ -518,11 +543,6 @@ export function configWarnings(config: AppConfig): string[] {
   }
   if (config.rateLimits.redisUrl?.startsWith("redis://") && config.rateLimits.backend === "redis") {
     warnings.push("REDIS_URL uses redis:// in production: traffic to Redis is not encrypted in transit. Use rediss:// unless Redis is on a private network.");
-  }
-  if (config.trustProxy === true) {
-    warnings.push(
-      "TRUST_PROXY=true in production: every X-Forwarded-For entry is believed, so a client can pick its own IP and get around per-IP rate limits. Set the number of proxies in front of the API (for example 1) or their addresses.",
-    );
   }
   if (config.push.transport === "fake") {
     warnings.push("PUSH_TRANSPORT=fake in production: push notifications are recorded but never delivered. Use fcm, or none.");
