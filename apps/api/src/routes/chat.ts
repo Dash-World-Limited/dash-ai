@@ -78,6 +78,8 @@ export function chatRoutes(app: FastifyInstance, ctx: RouteContext): void {
         // The client went away (e.g. the app pressed Stop or lost its connection).
         if (!finished) controller.abort("cancelled");
       });
+      // It may have gone while the request was being prepared, before anyone listened: nothing is sent then.
+      if (res.destroyed || !res.socket || res.socket.destroyed) controller.abort("cancelled");
       const heartbeat = setInterval(() => sink.comment("ping"), HEARTBEAT_MS);
 
       let outcome = "ok";
