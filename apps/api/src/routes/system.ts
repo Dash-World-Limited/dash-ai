@@ -49,7 +49,8 @@ export function systemRoutes(app: FastifyInstance, ctx: RouteContext): void {
    * Without a token configured the route answers 404 like any unknown path.
    */
   // Event-loop delay between scrapes: a saturated instance shows it before requests start failing.
-  const loopDelay = monitorEventLoopDelay({ resolution: 20 });
+  const LOOP_RESOLUTION_MS = 20;
+  const loopDelay = monitorEventLoopDelay({ resolution: LOOP_RESOLUTION_MS });
   loopDelay.enable();
   app.addHook("onClose", async () => loopDelay.disable());
 
@@ -57,9 +58,11 @@ export function systemRoutes(app: FastifyInstance, ctx: RouteContext): void {
     if (!ctx.config.metricsToken) throw new AppError("not_found", "Not found.");
     if (!bearerMatches(request, ctx.config.metricsToken)) throw new AppError("unauthorized", "Not authorized.");
     reply.type("text/plain; version=0.0.4");
-    ctx.metrics.eventLoopDelay.set({ stat: "p50" }, loopDelay.percentile(50) / 1e9);
-    ctx.metrics.eventLoopDelay.set({ stat: "p99" }, loopDelay.percentile(99) / 1e9);
-    ctx.metrics.eventLoopDelay.set({ stat: "max" }, loopDelay.max / 1e9);
+    // The histogram measures whole timer intervals; report only the delay beyond the sampling interval.
+    const beyond = (ns: number) => Math.max(0, ns / 1e9 - LOOP_RESOLUTION_MS / 1000);
+    ctx.metrics.eventLoopDelay.set({ stat: "p50" }, beyond(loopDelay.percentile(50)));
+    ctx.metrics.eventLoopDelay.set({ stat: "p99" }, beyond(loopDelay.percentile(99)));
+    ctx.metrics.eventLoopDelay.set({ stat: "max" }, beyond(loopDelay.max));
     loopDelay.reset();
     ctx.metrics.residentMemory.set({}, process.memoryUsage.rss());
     const pool = ctx.store.poolStats?.();

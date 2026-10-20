@@ -53,8 +53,8 @@ if (env.SPEND_WORKER) {
             admittedUsd += Number(env.AMOUNT);
             if (!hold) await store.settleSpendReservation(r.reservation.id);
           } else denied++;
-        } catch {
-          errors++;
+        } catch (err) {
+          if (errors++ === 0) process.stderr.write(`first error: ${err instanceof Error ? err.message : String(err)}\n`);
         }
         latencies.push(performance.now() - started);
         i++;
@@ -62,13 +62,20 @@ if (env.SPEND_WORKER) {
     }),
   );
   await store.close();
-  process.stdout.write(`${JSON.stringify({ admitted, denied, errors, admittedUsd, latencies })}\n`);
-  process.exit(0);
+  // Rounded to 0.1 ms to keep the line small; exit only once stdout has flushed.
+  const line = JSON.stringify({ admitted, denied, errors, admittedUsd, latencies: latencies.map((l) => Math.round(l * 10) / 10) });
+  process.stdout.write(`${line}\n`, () => process.exit(0));
 }
 
 async function scenario(name: string, opts: { processes: number; concurrency: number; kind: "user" | "system"; durationMs: number; systemUsd?: number; amount?: number; hold?: boolean }) {
   const schema = `t_${randomBytes(6).toString("hex")}`;
   const setup = await PostgresStore.connect({ connectionString: env.TEST_DATABASE_URL!, cipher: testCipher(), schema, poolMax: 2 });
+  // Holds reference real accounts (foreign key): one per caller.
+  for (let p = 0; p < opts.processes; p++) {
+    for (let c = 0; c < opts.concurrency; c++) {
+      await setup.createUser({ id: `p${p}-u${c}`, email: `p${p}-u${c}@example.com`, displayName: "Load", passwordHash: "x", createdAt: new Date().toISOString() });
+    }
+  }
   const startAt = Date.now() + 2_500;
   const self = fileURLToPath(import.meta.url);
   const runs = await Promise.all(
