@@ -297,11 +297,19 @@ in-flight reservations, requests running at the same time were each admitted aga
 spend, so together they could pass a limit by the sum of their worst cases (and, across instances, by
 what was spent in the last five seconds of cached totals). This is **closed by in-flight reservations**: requests running at the same
 time, on any number of instances sharing the database, are admitted only while their holds fit together
-with actual spend. An attempt that a timeout or cancellation cut short is estimated as possibly billed; a
-provider retry of such an attempt, and a fallback to the next provider after a billed failure, are not
-part of the worst case (they still charge the same hold through the ledger; an actual above the hold is
-logged and counted as `dash_ai_spend_reservation_overage_total`). Because admission reserves the worst case, a limit stops
-new paid requests before it is reached; tool-using answers reserve the most.
+with actual spend. An attempt that a timeout or cancellation cut short is estimated as possibly billed.
+**Retries and fallbacks** ([ADR 0016](decisions/0016-retry-fallback-spend-accounting.md)): every paid
+provider attempt beyond the admitted path (a retry, a fallback provider, a tool round whose room a retry
+used) is covered by the request's hold **before it is sent**. Each request counts what its attempts may
+have cost so far (an attempt that failed in a way that may have been billed keeps its full worst case until
+the request settles; one the provider refused with a 4xx before any output counts its ledger cost, 0); when
+the next attempt's worst case at its own provider's prices does not fit, the hold is extended atomically
+under the same scope locks, or the attempt is not sent: a refused retry is dropped (the route's next
+provider may still serve, a free one needs no cover), a refused fallback is skipped, and a refused later
+round ends the answer where it is. A database error refuses too (fails closed). An actual above the hold
+is still logged and counted as `dash_ai_spend_reservation_overage_total`; within the estimate it can now
+come only from a provider counting more tokens than the estimate. Because admission reserves the worst
+case, a limit stops new paid requests before it is reached; tool-using answers reserve the most.
 Explicit engineering routes (`PROVIDER_DETAILS=exposed`, which production refuses to start with) only
 check that no limit is already reached.
 
@@ -330,7 +338,10 @@ under-count while ledger writes fail), `dash_ai_spend_reservations_total{outcome
 `dash_ai_spend_reservation_settlements_total{status}`, `dash_ai_spend_reservations_expired_total` (holds whose
 request never settled: alert on a steady rise), `dash_ai_spend_reservation_failures_total{stage}`,
 `dash_ai_spend_reservation_overage_total` and `_overage_usd_total` (alert on any increase: an actual cost
-above its hold), plus the existing
+above its hold), `dash_ai_spend_extension_attempts_total{kind}`, `dash_ai_spend_extensions_total{kind,outcome}`
+(extended, covered, duplicate, denied, inactive, error), `dash_ai_spend_extension_usd_total{kind}` and
+`dash_ai_spend_prevented_attempts_total{kind,reason}` (paid retries, fallbacks and rounds not sent because their
+spend could not be covered; `kind` is retry, fallback or round), plus the existing
 router, failure, retry, fallback and estimated-cost counters.
 
 ## Safe production rollout
@@ -360,7 +371,7 @@ Nothing here is deployed by merging. When the operator decides to roll it out:
    - If `schema_migrations` does not exist, the database was never migrated: safe.
 
 1. **Back up the database** (snapshot) before upgrading.
-2. **Migrations.** These releases add four additive migrations (no existing data is changed or deleted):
+2. **Migrations.** These releases add five additive migrations (no existing data is changed or deleted):
    - `9 usage_estimated_cost`: `ALTER TABLE usage_records ADD COLUMN estimated_cost_usd double precision` (nullable).
    - `10 inference_ledger`: `CREATE TABLE inference_attempts (…)` with indexes on `created_at`,
      `(user_id, created_at)` and `inference_id`; `user_id` references `users` with `ON DELETE SET NULL`.
@@ -373,11 +384,15 @@ Nothing here is deployed by merging. When the operator decides to roll it out:
      ledger by a trigger on `inference_attempts` and backfilled from it. No existing row is changed. The
      backfill reads the whole ledger and blocks ledger writes until the migration commits; on a large
      ledger run it in a quiet period.
+   - `13 spend_reservation_attempts` (retry and fallback accounting, [ADR 0016](decisions/0016-retry-fallback-spend-accounting.md)):
+     `CREATE TABLE spend_reservation_attempts (…)`, one row per provider attempt a hold was asked to cover
+     beyond its admitted path, keyed by reservation, fallback index, round and retry, deleted with its
+     reservation. A new empty table: no backfill, no lock on existing tables beyond the foreign key.
    Production has `DATABASE_AUTO_MIGRATE=false`: run `pnpm --filter @dash-ai/api migrate` (or
    `node apps/api/dist/migrate-cli.js`) against the production database before starting the new
    version. **Rollback:** the previous server version refuses to start on a database that has
    migrations it does not know, so going back after migrating means restoring the snapshot from step 1
-   (or an operator reverting migrations 12, 11, 10 and 9 by hand, which discards the holds, the ledger and the cost column).
+   (or an operator reverting migrations 13, 12, 11, 10 and 9 by hand, which discards the holds, the ledger and the cost column).
 3. **Deploy with the current mode first.** With `PROVIDER_MODE=fake` nothing changes for people;
    check `/health`, `/ready` and that demonstration answers appear in `inference_attempts` with
    pricing `demo` and cost 0.

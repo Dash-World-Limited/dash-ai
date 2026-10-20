@@ -272,6 +272,16 @@ describe("retries: covered before they are sent, or not sent", () => {
     expect(metric(s, /dash_ai_spend_prevented_attempts_total\{kind="fallback",reason="denied"\} 1/)).toBe(true);
   });
 
+  it("the person's own daily limit stops an uncovered retry while the system still has room", async () => {
+    const s = await tracked({ env: { MAX_DAILY_AI_SPEND: "10", MAX_USER_DAILY_AI_SPEND: "0.04", PROVIDER_MAX_RETRIES: "1" } });
+    s.primary.otherwise = "503";
+    const r = await chat(s);
+    expect([s.primary.calls, s.backup.calls]).toEqual([1, 0]);
+    expect(r.error).toBeDefined();
+    expect(metric(s, /dash_ai_spend_prevented_attempts_total\{kind="retry",reason="denied"\} 1/)).toBe(true);
+    await settledHold(s, r.messageId);
+  });
+
   it("a provider that refused with 429 before working is not counted as billed: its retry fits the admitted hold", async () => {
     const s = await tracked({ env: { MAX_DAILY_AI_SPEND: "0.03", PROVIDER_MAX_RETRIES: "1" } });
     s.primary.steps = ["429", "answer"];
