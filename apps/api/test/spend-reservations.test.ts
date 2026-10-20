@@ -483,7 +483,7 @@ describe.skipIf(!TEST_DATABASE_URL)("spend reservations on PostgreSQL", () => {
          VALUES ($1, $2, 'standard', 'chat', 'openai', 'm', 'paid', now(), 1, 'success', 0, 0, 0, 1, 1, 'estimated', $3, 'USD', '{}')`,
         [row.id, row.inferenceId, 0.25],
       );
-      await expect(assertMigrated(pool)).rejects.toThrow(/missing 1 migration/);
+      await expect(assertMigrated(pool)).rejects.toThrow(/missing 2 migration/);
 
       // A failing migration 12 (a conflicting object) leaves nothing half-applied.
       await pool.query("CREATE TABLE spend_reservations (id text)");
@@ -492,7 +492,7 @@ describe.skipIf(!TEST_DATABASE_URL)("spend reservations on PostgreSQL", () => {
       expect((await pool.query("SELECT to_regclass('inference_spend_daily') AS t")).rows[0].t).toBeNull();
       await pool.query("DROP TABLE spend_reservations");
 
-      expect((await migrate(pool)).applied).toEqual(["12_spend_reservations"]);
+      expect((await migrate(pool)).applied).toEqual(["12_spend_reservations", "13_spend_reservation_attempts"]);
       expect((await migrate(pool)).applied).toEqual([]); // second run: up to date
       await assertMigrated(pool);
       const kept = await pool.query("SELECT inference_id, estimated_cost_usd FROM inference_attempts");

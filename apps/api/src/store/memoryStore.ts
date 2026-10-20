@@ -3,6 +3,8 @@ import {
   type InferenceAttemptRow,
   type InferenceSpend,
   type InferenceSpendQuery,
+  type ExtendSpendInput,
+  type ExtendSpendResult,
   type ReserveSpendInput,
   type ReserveSpendResult,
   type SettleSpendResult,
@@ -60,6 +62,8 @@ export class MemoryStore implements Store {
   private attempts: InferenceAttemptRow[] = [];
   /** Insertion order is creation order. */
   private readonly reservations = new Map<string, SpendReservationRecord>();
+  /** Attempts each hold was asked to cover (ADR 0016), keyed by fallback index, round and retry. */
+  private readonly reservationAttempts = new Map<string, Map<string, { fallbackIndex: number; round: number; retry: number; attemptUsd: number }>>();
   private readonly pluginSettings = new Map<string, Map<string, PluginSettingRecord>>();
   private toolInvocations: ToolInvocationRow[] = [];
   private readonly toolExecutions = new Map<string, { userId: string; status: string }>();
@@ -454,6 +458,32 @@ export class MemoryStore implements Store {
     return { ok: true, reservation: { ...reservation }, usage };
   }
 
+  async extendSpendReservation(input: ExtendSpendInput): Promise<ExtendSpendResult> {
+    const r = this.reservations.get(input.reservationId);
+    if (!r || r.status !== "active" || Date.parse(r.expiresAt) <= this.clock()) return { ok: false, reason: "inactive" };
+    const { fallbackIndex, round, retry } = input.attempt;
+    const key = `${fallbackIndex}:${round}:${retry}`;
+    const registered = this.reservationAttempts.get(r.id) ?? new Map<string, { fallbackIndex: number; round: number; retry: number; attemptUsd: number }>();
+    if (registered.has(key)) return { ok: true, reservation: { ...r }, extendedUsd: 0, duplicate: true, usage: [] };
+    const own = this.attempts.filter((a) => a.inferenceId === r.inferenceId);
+    // Registered attempts with no ledger row yet are still in flight: held at their worst case.
+    const inflight = [...registered.values()]
+      .filter((x) => !own.some((a) => a.fallbackIndex === x.fallbackIndex && a.round === x.round && a.retry === x.retry))
+      .reduce((n, x) => n + x.attemptUsd, 0);
+    const attemptUsd = Math.max(0, input.attemptUsd);
+    const target = Math.max(input.priorUsd, this.recordedUsd(r.inferenceId)) + inflight + attemptUsd;
+    const increase = Math.max(0, Math.ceil((target - r.reservedUsd) * 1e10 - 1e-6) / 1e10);
+    const usage = this.usageNow(input.limits);
+    if (increase > 0) {
+      const blocked = usage.find((u) => Math.round((u.actualUsd + u.reservedUsd + increase) * 1e10) > Math.round(u.limitUsd * 1e10));
+      if (blocked) return { ok: false, reason: "limit", blockedBy: blocked.scope, usage };
+      r.reservedUsd = round10(r.reservedUsd + increase);
+    }
+    registered.set(key, { fallbackIndex, round, retry, attemptUsd });
+    this.reservationAttempts.set(r.id, registered);
+    return { ok: true, reservation: { ...r }, extendedUsd: increase, duplicate: false, usage: increase > 0 ? this.usageNow(input.limits) : [] };
+  }
+
   async settleSpendReservation(id: string): Promise<SettleSpendResult | undefined> {
     const r = this.reservations.get(id);
     if (!r) return undefined;
@@ -485,6 +515,7 @@ export class MemoryStore implements Store {
     for (const [id, r] of this.reservations) {
       if (purged < limit && r.status !== "active" && r.finishedAt !== null && Date.parse(r.finishedAt) < now - retentionMs) {
         this.reservations.delete(id);
+        this.reservationAttempts.delete(id);
         purged += 1;
       }
     }

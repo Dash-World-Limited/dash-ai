@@ -140,6 +140,10 @@ export class Metrics {
   readonly spendReservationOverage = new Counter("dash_ai_spend_reservation_overage_total", "INVARIANT VIOLATION: requests whose actual paid cost exceeded their reservation.", []);
   readonly spendReservationOverageUsd = new Counter("dash_ai_spend_reservation_overage_usd_total", "USD by which settled requests exceeded their reservations.", []);
   readonly spendReservationFailures = new Counter("dash_ai_spend_reservation_failures_total", "Spend reservation store errors, by stage (reserve, settle, sweep).", ["stage"]);
+  readonly spendExtensionAttempts = new Counter("dash_ai_spend_extension_attempts_total", "Provider attempts a spend hold had to be asked to cover (retry, fallback or round beyond the admitted path).", ["kind"]);
+  readonly spendExtensions = new Counter("dash_ai_spend_extensions_total", "Spend hold extensions by outcome (extended, covered = no increase needed, duplicate, denied, inactive, error).", ["kind", "outcome"]);
+  readonly spendExtensionUsd = new Counter("dash_ai_spend_extension_usd_total", "USD added to spend holds by extensions.", ["kind"]);
+  readonly spendPreventedAttempts = new Counter("dash_ai_spend_prevented_attempts_total", "Paid provider attempts not sent because their spend could not be covered (retry, fallback, round).", ["kind", "reason"]);
   readonly spendReservationsExpired = new Counter("dash_ai_spend_reservations_expired_total", "Lapsed spend reservations marked expired by housekeeping (their request never settled).", []);
   readonly providerFallbacks = new Counter("dash_provider_fallbacks_total", "Answers DASH AI routed to another provider after a failure before any output.", ["from", "to", "code"]);
   readonly routerDecisions = new Counter("dash_router_decisions_total", "Requests the DASH Intelligence Router routed, by task and first-choice provider.", ["task", "provider"]);

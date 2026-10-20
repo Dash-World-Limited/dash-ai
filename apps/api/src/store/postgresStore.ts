@@ -32,6 +32,8 @@ import {
   type InferenceAttemptRow,
   type InferenceSpend,
   type InferenceSpendQuery,
+  type ExtendSpendInput,
+  type ExtendSpendResult,
   type ReserveSpendInput,
   type ReserveSpendResult,
   type SettleSpendResult,
@@ -133,6 +135,19 @@ function spendLockKeys(limits: readonly SpendLimit[]): string[] {
   }
   return [...keys];
 }
+
+/** Takes the advisory lock of every scope with a limit, deduplicated and in one total order (no deadlock). */
+async function lockSpendScopes(client: pg.PoolClient, limits: readonly SpendLimit[]): Promise<void> {
+  const keys = spendLockKeys(limits);
+  if (keys.length === 0) return;
+  await client.query(
+    `SELECT pg_advisory_xact_lock(${SPEND_LOCK_CLASS}, h)
+       FROM (SELECT DISTINCT hashtext(k) AS h FROM unnest($1::text[]) AS k ORDER BY 1) AS locks`,
+    [keys],
+  );
+}
+
+const round10 = (usd: number): number => Math.round(usd * 1e10) / 1e10;
 
 /**
  * One statement's worth of CTEs computing every limit's actual and outstanding (reserved) spend from a
@@ -1393,43 +1408,122 @@ export class PostgresStore implements Store {
    * drop a hold, so they can never make an admitted state exceed a limit.
    */
   async reserveSpend(input: ReserveSpendInput): Promise<ReserveSpendResult> {
+    return this.spendTx(async (client) => {
+      await lockSpendScopes(client, input.limits);
+      const params: unknown[] = [];
+      const amount = (v: string) => `$${params.push(v)}`;
+      const usage = input.limits.length > 0 ? spendUsageCtes(input.limits, params) : null;
+      const amt = amount(holdAmount(input.amountUsd));
+      const values = [input.id, input.inferenceId, input.userId, input.plan, input.task, input.provider, input.model].map((v) => `$${params.push(v)}`);
+      const lease = `$${params.push(Math.max(1, Math.round(input.leaseMs)))}`;
+      const fits = usage ? `(SELECT COALESCE(bool_and(actual_usd + reserved_usd + ${amt}::numeric <= limit_usd), true) FROM usage)` : "true";
+      const { rows } = await client.query<{ usage: SpendUsageRow[] | null; reservation: SpendReservationRow | null }>(
+        `WITH ${usage ? `${usage},` : ""}
+         ins AS (
+           INSERT INTO spend_reservations (id, inference_id, user_id, plan, task, provider, model, reserved_usd, status, created_at, expires_at)
+           SELECT ${values.join(", ")}, ${amt}::numeric, 'active', statement_timestamp(),
+                  statement_timestamp() + ${lease}::double precision * interval '1 millisecond'
+            WHERE ${fits}
+           RETURNING *)
+         SELECT ${usage ? "(SELECT json_agg(u ORDER BY u.ord) FROM usage u)" : "NULL::json"} AS usage,
+                (SELECT row_to_json(ins) FROM ins) AS reservation`,
+        params,
+      );
+      const row = rows[0]!;
+      const used = (row.usage ?? []).map(toSpendUsage);
+      if (row.reservation) return { ok: true as const, reservation: toSpendReservation(row.reservation), usage: used };
+      const amountUsd = Number(holdAmount(input.amountUsd));
+      const blocked = used.find((u) => Math.round((u.actualUsd + u.reservedUsd + amountUsd) * 1e10) > Math.round(u.limitUsd * 1e10)) ?? used[0]!;
+      return { ok: false as const, blockedBy: blocked.scope, usage: used };
+    });
+  }
+
+  /**
+   * One READ COMMITTED transaction (ADR 0016). First the hold's own row is locked (every extension of one
+   * request is serialized there), then read with what the request has already
+   * spent (its paid ledger rows) and what is still in flight (attempts registered on this hold with no
+   * ledger row yet). A repeated attempt changes nothing. If the hold already covers the attempt it is only
+   * registered; otherwise the scope locks are taken in admission's order and ONE statement checks every
+   * limit on one snapshot and grows the hold only if the increase fits. Lock order is always the
+   * reservation row, then scopes; admission never locks an existing reservation row, settlement takes
+   * only the row, so there is no cycle.
+   */
+  async extendSpendReservation(input: ExtendSpendInput): Promise<ExtendSpendResult> {
+    const { fallbackIndex, round, retry, provider, model } = input.attempt;
+    return this.spendTx(async (client) => {
+      // Lock first, then read in a NEW statement: under READ COMMITTED a statement that waited for a row
+      // lock still reads everything else from the snapshot it started with, so a single locking read would
+      // miss the attempt and ledger rows the previous lock holder just committed.
+      await client.query("SELECT id FROM spend_reservations WHERE id = $1 FOR UPDATE", [input.reservationId]);
+      const { rows } = await client.query<SpendReservationRow & { recorded_usd: string; inflight_usd: string; duplicate: boolean; live: boolean }>(
+        `SELECT r.*,
+                COALESCE((SELECT sum(${LEDGER_COST}) FROM inference_attempts a WHERE a.inference_id = r.inference_id AND a.pricing = 'paid'), 0) AS recorded_usd,
+                COALESCE((SELECT sum(x.attempt_usd) FROM spend_reservation_attempts x
+                           WHERE x.reservation_id = r.id
+                             AND NOT EXISTS (SELECT 1 FROM inference_attempts a
+                                              WHERE a.inference_id = r.inference_id AND a.fallback_index = x.fallback_index
+                                                AND a.round = x.round AND a.retry = x.retry)), 0) AS inflight_usd,
+                EXISTS (SELECT 1 FROM spend_reservation_attempts x
+                         WHERE x.reservation_id = r.id AND x.fallback_index = $2 AND x.round = $3 AND x.retry = $4) AS duplicate,
+                r.expires_at > statement_timestamp() AS live
+           FROM spend_reservations r WHERE r.id = $1`,
+        [input.reservationId, fallbackIndex, round, retry],
+      );
+      const row = rows[0];
+      if (!row || row.status !== "active" || !row.live) return { ok: false as const, reason: "inactive" as const };
+      if (row.duplicate) return { ok: true as const, reservation: toSpendReservation(row), extendedUsd: 0, duplicate: true, usage: [] };
+      const attemptUsd = holdAmount(input.attemptUsd);
+      // The caller's own earlier attempts or the ledger (whichever is more), plus attempts other code paths
+      // registered that are still in flight (no ledger row yet), plus this one.
+      const target = Math.max(input.priorUsd, Number(row.recorded_usd)) + Number(row.inflight_usd) + Number(attemptUsd);
+      const increase = holdAmount(target - Number(row.reserved_usd));
+      const register = (extended: string, from: string) =>
+        `INSERT INTO spend_reservation_attempts (reservation_id, fallback_index, round, retry, provider, model, attempt_usd, extended_usd, created_at)
+         SELECT $1, $2, $3, $4, $5, $6, $7::numeric, ${extended}::numeric, statement_timestamp()${from}`;
+      const base = [input.reservationId, fallbackIndex, round, retry, provider, model, attemptUsd];
+      if (Number(increase) <= 0) {
+        // Already covered: the hold does not grow, so no limit can be passed and no scope lock is needed.
+        await client.query(register("0", ""), base);
+        return { ok: true as const, reservation: toSpendReservation(row), extendedUsd: 0, duplicate: false, usage: [] };
+      }
+      await lockSpendScopes(client, input.limits);
+      const params: unknown[] = [...base];
+      const usage = input.limits.length > 0 ? spendUsageCtes(input.limits, params) : null;
+      const inc = `$${params.push(increase)}`;
+      const fits = usage ? `(SELECT COALESCE(bool_and(actual_usd + reserved_usd + ${inc}::numeric <= limit_usd), true) FROM usage)` : "true";
+      const result = await client.query<{ usage: SpendUsageRow[] | null; reservation: SpendReservationRow | null }>(
+        `WITH ${usage ? `${usage},` : ""}
+         grown AS (
+           UPDATE spend_reservations SET reserved_usd = reserved_usd + ${inc}::numeric
+            WHERE id = $1 AND status = 'active' AND expires_at > statement_timestamp() AND ${fits}
+           RETURNING *),
+         registered AS (${register(inc, " FROM grown")} RETURNING 1)
+         SELECT ${usage ? "(SELECT json_agg(u ORDER BY u.ord) FROM usage u)" : "NULL::json"} AS usage,
+                (SELECT row_to_json(grown) FROM grown) AS reservation,
+                (SELECT count(*) FROM registered) AS registered`,
+        params,
+      );
+      const out = result.rows[0]!;
+      const used = (out.usage ?? []).map(toSpendUsage);
+      const increaseUsd = Number(increase);
+      if (out.reservation) {
+        // The usage snapshot was read before the hold grew: report it with the increase held.
+        const after = used.map((u) => ({ ...u, reservedUsd: round10(u.reservedUsd + increaseUsd), availableUsd: round10(u.availableUsd - increaseUsd) }));
+        return { ok: true as const, reservation: toSpendReservation(out.reservation), extendedUsd: increaseUsd, duplicate: false, usage: after };
+      }
+      const blocked = used.find((u) => Math.round((u.actualUsd + u.reservedUsd + increaseUsd) * 1e10) > Math.round(u.limitUsd * 1e10)) ?? used[0];
+      if (!blocked) return { ok: false as const, reason: "inactive" as const };
+      return { ok: false as const, reason: "limit" as const, blockedBy: blocked.scope, usage: used };
+    });
+  }
+
+  /** A spend transaction: deadlocks and serialization failures are retried (defensive); a lock timeout is not. */
+  private async spendTx<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
     for (let attempt = 1; ; attempt++) {
       try {
         return await this.tx(async (client) => {
           await client.query(`SET LOCAL lock_timeout = '${SPEND_LOCK_TIMEOUT}'`);
-          const keys = spendLockKeys(input.limits);
-          if (keys.length > 0) {
-            await client.query(
-              `SELECT pg_advisory_xact_lock(${SPEND_LOCK_CLASS}, h)
-                 FROM (SELECT DISTINCT hashtext(k) AS h FROM unnest($1::text[]) AS k ORDER BY 1) AS locks`,
-              [keys],
-            );
-          }
-          const params: unknown[] = [];
-          const amount = (v: string) => `$${params.push(v)}`;
-          const usage = input.limits.length > 0 ? spendUsageCtes(input.limits, params) : null;
-          const amt = amount(holdAmount(input.amountUsd));
-          const values = [input.id, input.inferenceId, input.userId, input.plan, input.task, input.provider, input.model].map((v) => `$${params.push(v)}`);
-          const lease = `$${params.push(Math.max(1, Math.round(input.leaseMs)))}`;
-          const fits = usage ? `(SELECT COALESCE(bool_and(actual_usd + reserved_usd + ${amt}::numeric <= limit_usd), true) FROM usage)` : "true";
-          const { rows } = await client.query<{ usage: SpendUsageRow[] | null; reservation: SpendReservationRow | null }>(
-            `WITH ${usage ? `${usage},` : ""}
-             ins AS (
-               INSERT INTO spend_reservations (id, inference_id, user_id, plan, task, provider, model, reserved_usd, status, created_at, expires_at)
-               SELECT ${values.join(", ")}, ${amt}::numeric, 'active', statement_timestamp(),
-                      statement_timestamp() + ${lease}::double precision * interval '1 millisecond'
-                WHERE ${fits}
-               RETURNING *)
-             SELECT ${usage ? "(SELECT json_agg(u ORDER BY u.ord) FROM usage u)" : "NULL::json"} AS usage,
-                    (SELECT row_to_json(ins) FROM ins) AS reservation`,
-            params,
-          );
-          const row = rows[0]!;
-          const used = (row.usage ?? []).map(toSpendUsage);
-          if (row.reservation) return { ok: true as const, reservation: toSpendReservation(row.reservation), usage: used };
-          const amountUsd = Number(holdAmount(input.amountUsd));
-          const blocked = used.find((u) => Math.round((u.actualUsd + u.reservedUsd + amountUsd) * 1e10) > Math.round(u.limitUsd * 1e10)) ?? used[0]!;
-          return { ok: false as const, blockedBy: blocked.scope, usage: used };
+          return fn(client);
         });
       } catch (err) {
         const code = (err as { code?: string }).code;

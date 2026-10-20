@@ -453,4 +453,30 @@ SELECT (created_at AT TIME ZONE 'UTC')::date, plan, sum(COALESCE(provider_cost_u
   FROM inference_attempts WHERE pricing = 'paid' GROUP BY 1, 2;
 `,
   },
+  {
+    id: 13,
+    name: "spend_reservation_attempts",
+    sql: `
+-- Retry and fallback spend accounting (ADR 0016): the provider attempts a request's spend hold was asked to
+-- cover beyond its admitted path (a retry, a fallback provider, a round whose room an earlier retry used), so
+-- that a repeated call for one attempt never extends the hold twice and attempts still in flight (no ledger
+-- row yet) are held together. An attempt is identified exactly as its ledger row is: fallback index, round
+-- and retry within the request. Operational accounting metadata only: no prompt, answer, tool content or
+-- credential. Rows go with their reservation. Additive: no existing row is changed.
+CREATE TABLE spend_reservation_attempts (
+  reservation_id text NOT NULL REFERENCES spend_reservations (id) ON DELETE CASCADE,
+  fallback_index integer NOT NULL,
+  round          integer NOT NULL,
+  retry          integer NOT NULL,
+  provider       text NOT NULL,
+  model          text,
+  attempt_usd    numeric(20, 10) NOT NULL,
+  extended_usd   numeric(20, 10) NOT NULL,
+  created_at     timestamptz NOT NULL,
+  PRIMARY KEY (reservation_id, fallback_index, round, retry),
+  CONSTRAINT spend_reservation_attempts_counts_check CHECK (fallback_index >= 0 AND round >= 0 AND retry >= 0),
+  CONSTRAINT spend_reservation_attempts_amounts_check CHECK (attempt_usd >= 0 AND extended_usd >= 0)
+);
+`,
+  },
 ];
