@@ -3,13 +3,14 @@ import type { FastifyBaseLogger } from "fastify";
 import type { AppConfig } from "../config.js";
 import type { Metrics } from "../observability/metrics.js";
 import type { ProviderRegistry } from "../providers/registry.js";
-import type { Store } from "../store/store.js";
+import { newId } from "../security/crypto.js";
+import type { SpendReservationRecord, Store } from "../store/store.js";
 import { priceFor } from "./cost.js";
 import { AttemptRecorder, estimateTokensForLedger } from "./ledger.js";
 import type { Sensitivity } from "./policy.js";
 import { QuotaTracker, type QuotaWindow } from "./quota.js";
 import type { IntelligenceRouter, RouteDecision, RouteRequest, RoutingControls } from "./router.js";
-import { dayStart, monthStart, SpendGuard, type SpendScope, type SpendStatus } from "./spend.js";
+import { dayStart, monthStart, SpendGuard, spendStatusFrom, type SpendScope, type SpendStatus } from "./spend.js";
 import { roundGrowthTokens, roundInputBudgets, worstCaseUsd, type ToolLoop } from "./worstCase.js";
 
 /** Why a request could not be served, in terms the consumer surface turns into a neutral message. */
@@ -19,6 +20,41 @@ export type Refusal =
   | { kind: "user_limit" }
   | { kind: "too_large" }
   | { kind: "context_too_large" };
+
+/** The route fields costFields() supplies. */
+export type RouteCostFields = Pick<RouteRequest, "paidAllowed" | "paidHeadroomUsd" | "maxCostUsd" | "worstCaseCostUsd">;
+
+/** A request admitted (or not) for routing: the decision, the spend state it used, and its hold if any. */
+export interface Admission {
+  decision: RouteDecision;
+  spend: SpendStatus;
+  /** The in-flight hold on the paid route's worst case; null when no aggregate limit or no paid provider applies. */
+  reservation: SpendReservationRecord | null;
+}
+
+/**
+ * The spend admission could not be checked (database unavailable, a scope's lock busy for too long).
+ * Paid work is refused rather than admitted unchecked; surfaces tell the person DASH AI is busy.
+ */
+export class SpendAdmissionError extends Error {
+  constructor() {
+    super("spend admission unavailable");
+    this.name = "SpendAdmissionError";
+  }
+}
+
+/**
+ * Added to a request's enforced execution bound to give its reservation's lease: covers the moments
+ * between admission and the bound's start, and writing the last ledger row after it.
+ */
+export const RESERVATION_GRACE_MS = 120_000;
+/** Reservation attempts per request: the first on the cached estimate, then on the database's fresh numbers. */
+const RESERVE_ATTEMPTS = 3;
+const SETTLE_ATTEMPTS = 3;
+/** Housekeeping at most this often per instance; finished holds are kept this long (diagnostics). */
+const SWEEP_EVERY_MS = 60_000;
+const SWEEP_BATCH = 500;
+export const RESERVATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * DASH AI's provider and cost-control plane: the global switches, quotas, the spend circuit breaker
@@ -71,6 +107,151 @@ export class AiPlatform {
   /** Spend state for this account now (paid providers allowed or not, and the allowance left). */
   async admit(userId: string | null): Promise<SpendStatus> {
     return this.spend.check({ userId, plan: this.plan });
+  }
+
+  /**
+   * Spend admission (ADR 0015): route on the quick spend estimate, then atomically hold the worst case
+   * of the paid providers in the route against every aggregate limit, counting actual spend and every
+   * other request still in flight. If another request took the room meanwhile, route again on the
+   * database's fresh numbers (a free provider may still serve), at most RESERVE_ATTEMPTS times; then
+   * refuse as a spend limit. Throws SpendAdmissionError when the hold cannot be checked (fails closed).
+   *
+   * The hold is the dearest worst case among the paid providers in the route, so falling back inside
+   * the route stays covered. The caller must settle() it when the request ends, whatever the outcome.
+   */
+  async admitAndReserve(req: {
+    userId: string | null;
+    /** The request's ledger id (InferenceContext.inferenceId): every attempt of it charges this hold. */
+    inferenceId: string;
+    task: string;
+    /** The request's enforced execution bound; the hold lives this long plus RESERVATION_GRACE_MS. */
+    maxDurationMs: number;
+    inputChars: number;
+    loop: ToolLoop | null;
+    route: (fields: RouteCostFields) => RouteDecision;
+  }): Promise<Admission> {
+    const log = this.deps.log;
+    const metrics = this.deps.metrics;
+    let spend = await this.admit(req.userId);
+    for (let attempt = 1; ; attempt++) {
+      const fields = this.costFields(spend, req.inputChars, req.loop);
+      const decision = req.route(fields);
+      if (!decision.ok) return { decision, spend, reservation: null };
+      const paid = decision.providers.filter((p) => this.isPaid(p));
+      if (paid.length === 0 || this.spend.limits({ userId: req.userId, plan: this.plan }).length === 0) return { decision, spend, reservation: null };
+      // Under a limit the router only keeps priced paid providers whose worst case fits; an unpriced one
+      // here would be unbounded, so it is never admitted (fails closed).
+      const worst = paid.map((p) => fields.worstCaseCostUsd?.(p) ?? null);
+      if (worst.some((w) => w === null)) {
+        return { decision: { ok: false, reason: "limit_reached", rejected: paid.map((provider) => ({ provider, reason: "spend_limit" as const })), routeKey: decision.routeKey }, spend, reservation: null };
+      }
+      const amountUsd = Math.max(...(worst as number[]));
+      const primary = paid[0]!;
+      let result;
+      try {
+        result = await this.spend.reserve({
+          id: newId(),
+          inferenceId: req.inferenceId,
+          userId: req.userId,
+          plan: this.plan,
+          task: req.task,
+          provider: primary,
+          model: this.deps.providers.get(primary)?.model ?? null,
+          amountUsd,
+          leaseMs: req.maxDurationMs + RESERVATION_GRACE_MS,
+        });
+      } catch (err) {
+        metrics?.spendReservations.inc({ outcome: "error" });
+        metrics?.spendReservationFailures.inc({ stage: "reserve" });
+        log.warn({ err, task: req.task, inferenceId: req.inferenceId }, "spend reservation could not be checked; paid request refused");
+        throw new SpendAdmissionError();
+      }
+      if (result.ok) {
+        metrics?.spendReservations.inc({ outcome: "admitted" });
+        log.debug({ reservation: result.reservation.id, inferenceId: req.inferenceId, reservedUsd: result.reservation.reservedUsd, provider: primary }, "spend reserved");
+        this.maybeSweep();
+        return { decision, spend: spendStatusFrom(result.usage, spend.totals), reservation: result.reservation };
+      }
+      metrics?.spendReservations.inc({ outcome: "denied" });
+      log.info({ task: req.task, inferenceId: req.inferenceId, blockedBy: result.blockedBy, amountUsd, attempt, usage: result.usage }, "spend reservation denied");
+      spend = spendStatusFrom(result.usage, spend.totals);
+      if (attempt >= RESERVE_ATTEMPTS) {
+        spend = { ...spend, blockedBy: spend.blockedBy ?? result.blockedBy };
+        return { decision: { ok: false, reason: "limit_reached", rejected: paid.map((provider) => ({ provider, reason: "spend_limit" as const })), routeKey: decision.routeKey }, spend, reservation: null };
+      }
+    }
+  }
+
+  /**
+   * Ends a request's hold once its last ledger row is written: its paid ledger cost becomes the hold's
+   * actual and the rest is released. Retried on failure; if it still fails the hold stays until its
+   * lease runs out (over-protects, never under-counts). Never throws. An actual above the hold is an
+   * invariant violation: logged at error level and counted, never hidden.
+   */
+  async settle(reservation: SpendReservationRecord | null | undefined): Promise<void> {
+    if (!reservation) return;
+    const { log, metrics, store } = this.deps;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const result = await store.settleSpendReservation(reservation.id);
+        this.spend.invalidate();
+        if (!result || result.alreadyFinished) return;
+        const r = result.reservation;
+        metrics?.spendReservationSettlements.inc({ status: r.status });
+        const actual = r.actualUsd ?? 0;
+        if (actual - r.reservedUsd > 1e-9) {
+          metrics?.spendReservationOverage.inc();
+          metrics?.spendReservationOverageUsd.inc({}, actual - r.reservedUsd);
+          log.error({ reservation: r.id, inferenceId: r.inferenceId, task: r.task, provider: r.provider, reservedUsd: r.reservedUsd, actualUsd: actual }, "spend reservation invariant violated: actual cost exceeded the reservation");
+        } else if (r.status === "expired") {
+          log.warn({ reservation: r.id, inferenceId: r.inferenceId, task: r.task }, "spend reservation settled after its lease expired");
+        } else {
+          log.debug({ reservation: r.id, status: r.status, reservedUsd: r.reservedUsd, actualUsd: actual }, "spend reservation settled");
+        }
+        this.maybeSweep();
+        return;
+      } catch (err) {
+        if (attempt >= SETTLE_ATTEMPTS) {
+          metrics?.spendReservationFailures.inc({ stage: "settle" });
+          log.warn({ err, reservation: reservation.id, inferenceId: reservation.inferenceId }, "spend reservation could not be settled; it is held until its lease expires");
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50 * 4 ** (attempt - 1)));
+      }
+    }
+  }
+
+  private lastSweep = Number.NEGATIVE_INFINITY;
+  private sweeping = false;
+
+  /** Lazy housekeeping (never on the admission's critical path; correctness never depends on it). */
+  private maybeSweep(): void {
+    const now = (this.deps.now ?? Date.now)();
+    if (this.sweeping || now - this.lastSweep < SWEEP_EVERY_MS) return;
+    this.lastSweep = now;
+    this.sweeping = true;
+    this.sweep()
+      .catch(() => undefined)
+      .finally(() => {
+        this.sweeping = false;
+      });
+  }
+
+  /** Marks lapsed holds expired and deletes old finished ones (idempotent; safe on every instance). */
+  async sweep(): Promise<{ expired: number; purged: number }> {
+    const { log, metrics, store } = this.deps;
+    try {
+      const result = await store.sweepSpendReservations(SWEEP_BATCH, RESERVATION_RETENTION_MS);
+      if (result.expired > 0) {
+        metrics?.spendReservationsExpired.inc({}, result.expired);
+        log.info({ expired: result.expired }, "lapsed spend reservations expired");
+      }
+      return result;
+    } catch (err) {
+      metrics?.spendReservationFailures.inc({ stage: "sweep" });
+      log.warn({ err }, "spend reservation housekeeping failed");
+      throw err;
+    }
   }
 
   /** The limit that kept paid providers out of this route: one already reached, or the one with too little left. */
@@ -134,7 +315,7 @@ export class AiPlatform {
     inputChars: number,
     /** The tool loop when the request offers tools (null: one provider request). */
     loop: ToolLoop | null = null,
-  ): Pick<RouteRequest, "paidAllowed" | "paidHeadroomUsd" | "maxCostUsd" | "worstCaseCostUsd"> {
+  ): RouteCostFields {
     const { config, providers } = this.deps;
     const firstInputTokens = estimateTokensForLedger(inputChars);
     const worstCaseCostUsd = (provider: ProviderId): number | null => {
@@ -191,7 +372,15 @@ export class AiPlatform {
         defaultPlan: config.ai.defaultPlan,
         defaultSensitivity: config.ai.defaultSensitivity,
       },
-      spend: { limits: config.ai.limits, today: { systemUsd: spend.totals.systemDailyUsd }, month: { systemUsd: spend.totals.systemMonthlyUsd }, paidAllowed: spend.paidAllowed, blockedBy: spend.blockedBy },
+      spend: {
+        limits: config.ai.limits,
+        today: { systemUsd: spend.totals.systemDailyUsd },
+        month: { systemUsd: spend.totals.systemMonthlyUsd },
+        // Each configured system limit: actual, reserved by requests in flight, available.
+        usage: spend.usage,
+        paidAllowed: spend.paidAllowed,
+        blockedBy: spend.blockedBy,
+      },
       providers: providers.ids().map((id) => {
         const profile = config.routerPolicy.providers[id];
         const models = providers.modelsFor(id);

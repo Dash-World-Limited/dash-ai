@@ -253,7 +253,8 @@ export class AutomationService {
     }
     const started = Date.now();
     // A run never outlives its lease, so another instance can never recover a run that is still going.
-    const budget = AbortSignal.any([signal, AbortSignal.timeout(Math.max(1_000, this.leaseMs() - 30_000))]);
+    const maxDurationMs = Math.max(1_000, this.leaseMs() - 30_000);
+    const budget = AbortSignal.any([signal, AbortSignal.timeout(maxDurationMs)]);
     try {
       const result = await generateText(
         { providers: this.deps.providers, router: this.deps.router, ai: this.deps.ai, config: this.deps.config, log, metrics },
@@ -265,6 +266,7 @@ export class AutomationService {
           instructions: automationInstructions(automation.timeZone, this.deps.now()),
           prompt: automation.prompt,
           signal: budget,
+          maxDurationMs,
         },
       );
       const content = result.content.slice(0, AUTOMATION_LIMITS.maxResultChars);

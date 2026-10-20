@@ -32,6 +32,13 @@ import {
   type InferenceAttemptRow,
   type InferenceSpend,
   type InferenceSpendQuery,
+  type ReserveSpendInput,
+  type ReserveSpendResult,
+  type SettleSpendResult,
+  type SpendLimit,
+  type SpendReservationRecord,
+  type SpendScope,
+  type SpendUsage,
   type UserRecord,
 } from "./store.js";
 
@@ -99,6 +106,96 @@ interface NotificationRow {
   id: string; user_id: string; kind: string; automation_id: string; run_id: string; created_at: Date; read_at: Date | null;
 }
 const isoOrNull = (d: Date | null): string | null => (d === null ? null : iso(d));
+
+// ---- spend reservations ------------------------------------------------------------------------
+
+/** Namespace of the spend admission advisory locks (the migration lock uses a different key). */
+const SPEND_LOCK_CLASS = 7_262_025;
+/** How long an admission waits for a busy scope before refusing (fail closed). */
+const SPEND_LOCK_TIMEOUT = "3s";
+/** Deadlock / serialization failure: retried. Lock timeout (55P03) is not. */
+const RETRYABLE_TX = new Set(["40P01", "40001"]);
+const SPEND_TX_ATTEMPTS = 3;
+
+/** Paid ledger cost of one row, exactly as the spend limits count it (sumInferenceSpend). */
+const LEDGER_COST = "COALESCE(provider_cost_usd, estimated_cost_usd, 0)::numeric";
+
+/**
+ * The advisory lock keys an admission under these limits must hold: one per scope with a limit.
+ * Every writer that could change a scope's total holds that scope's lock while it checks and inserts.
+ */
+function spendLockKeys(limits: readonly SpendLimit[]): string[] {
+  const keys = new Set<string>();
+  for (const l of limits) {
+    if (l.scope === "system_daily" || l.scope === "system_monthly") keys.add("system");
+    else if (l.scope === "plan_daily") keys.add(`plan:${l.plan ?? ""}`);
+    else keys.add(`user:${l.userId ?? ""}`);
+  }
+  return [...keys];
+}
+
+/**
+ * One statement's worth of CTEs computing every limit's actual and outstanding (reserved) spend from a
+ * single snapshot: `holds` (active, unexpired reservations in the scopes involved, each minus its own
+ * paid ledger rows so far, never below zero) and `usage` (one row per limit, in order). Parameters are
+ * appended to `params`.
+ */
+export function spendUsageCtes(limits: readonly SpendLimit[], params: unknown[]): string {
+  const p = (v: unknown) => `$${params.push(v)}`;
+  const system = limits.some((l) => l.scope === "system_daily" || l.scope === "system_monthly");
+  const narrow: string[] = [];
+  if (!system) {
+    for (const l of limits) {
+      if (l.scope === "plan_daily") narrow.push(`r.plan = ${p(l.plan ?? "")}`);
+      if (l.scope === "user_daily") narrow.push(`r.user_id = ${p(l.userId ?? "")}`);
+    }
+  }
+  const holds = `holds AS (
+    SELECT r.user_id, r.plan,
+           GREATEST(r.reserved_usd - COALESCE((SELECT sum(${LEDGER_COST}) FROM inference_attempts a
+                                                WHERE a.inference_id = r.inference_id AND a.pricing = 'paid'), 0), 0) AS held
+      FROM spend_reservations r
+     WHERE r.status = 'active' AND r.expires_at > statement_timestamp()${narrow.length ? ` AND (${narrow.join(" OR ")})` : ""})`;
+  const rows = limits.map((l, i) => {
+    const ledger = ["pricing = 'paid'", `created_at >= ${p(l.since)}::timestamptz`];
+    let held = "";
+    if (l.scope === "plan_daily") {
+      const plan = p(l.plan ?? "");
+      ledger.push(`plan = ${plan}`);
+      held = ` WHERE plan = ${plan}`;
+    } else if (l.scope === "user_daily") {
+      const user = p(l.userId ?? "");
+      ledger.push(`user_id = ${user}`);
+      held = ` WHERE user_id = ${user}`;
+    }
+    return `SELECT ${i} AS ord, ${p(l.scope)}::text AS scope, ${p(String(l.limitUsd))}::numeric AS limit_usd,
+           (SELECT COALESCE(sum(${LEDGER_COST}), 0) FROM inference_attempts WHERE ${ledger.join(" AND ")}) AS actual_usd,
+           (SELECT COALESCE(sum(held), 0) FROM holds${held}) AS reserved_usd`;
+  });
+  return `${holds}, usage AS (${rows.join(" UNION ALL ")})`;
+}
+
+interface SpendUsageRow { scope: SpendScope; limit_usd: string; actual_usd: string; reserved_usd: string }
+const toSpendUsage = (r: SpendUsageRow): SpendUsage => {
+  const limitUsd = Number(r.limit_usd);
+  const actualUsd = Number(r.actual_usd);
+  const reservedUsd = Number(r.reserved_usd);
+  return { scope: r.scope, limitUsd, actualUsd, reservedUsd, availableUsd: Math.round((limitUsd - actualUsd - reservedUsd) * 1e10) / 1e10 };
+};
+
+interface SpendReservationRow {
+  id: string; inference_id: string; user_id: string | null; plan: string; task: string; provider: string; model: string | null;
+  reserved_usd: string | number; actual_usd: string | number | null; status: SpendReservationRecord["status"];
+  created_at: Date | string; expires_at: Date | string; finished_at: Date | string | null;
+}
+const toSpendReservation = (r: SpendReservationRow): SpendReservationRecord => ({
+  id: r.id, inferenceId: r.inference_id, userId: r.user_id, plan: r.plan, task: r.task, provider: r.provider, model: r.model,
+  reservedUsd: Number(r.reserved_usd), actualUsd: r.actual_usd === null ? null : Number(r.actual_usd), status: r.status,
+  createdAt: iso(r.created_at), expiresAt: iso(r.expires_at), finishedAt: r.finished_at === null ? null : iso(r.finished_at),
+});
+
+/** USD amounts go to numeric(20, 10): rounded up (ignoring float noise), so a hold is never smaller than what was asked. */
+const holdAmount = (usd: number): string => (Math.ceil(Math.max(0, usd) * 1e10 - 1e-6) / 1e10).toFixed(10);
 const toNotification = (r: NotificationRow): NotificationRecord => ({
   id: r.id, userId: r.user_id, kind: r.kind as NotificationKind, automationId: r.automation_id, runId: r.run_id,
   createdAt: iso(r.created_at), readAt: isoOrNull(r.read_at),
@@ -1263,6 +1360,121 @@ export class PostgresStore implements Store {
     );
     const r = rows[0]!;
     return { attempts: Number(r.attempts), costUsd: Number(r.cost ?? 0), tokens: Number(r.tokens ?? 0) };
+  }
+
+  // ---- spend reservations ------------------------------------------------------------------------
+
+  async spendUsage(limits: readonly SpendLimit[]): Promise<SpendUsage[]> {
+    if (limits.length === 0) return [];
+    const params: unknown[] = [];
+    const { rows } = await this.pool.query<SpendUsageRow>(`WITH ${spendUsageCtes(limits, params)} SELECT * FROM usage ORDER BY ord`, params);
+    return rows.map(toSpendUsage);
+  }
+
+  /**
+   * One READ COMMITTED transaction: the advisory lock of every scope with a limit (deduplicated, taken
+   * in one total order so admissions never deadlock each other), then ONE statement that reads every
+   * scope's actual and outstanding spend from a single snapshot and inserts the hold only if all fit.
+   * The snapshot is taken after the locks, so it sees every hold committed by earlier lock holders.
+   * Ledger writes and settlements need no lock: they only move cost from outstanding to actual, or
+   * drop a hold, so they can never make an admitted state exceed a limit.
+   */
+  async reserveSpend(input: ReserveSpendInput): Promise<ReserveSpendResult> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.tx(async (client) => {
+          await client.query(`SET LOCAL lock_timeout = '${SPEND_LOCK_TIMEOUT}'`);
+          const keys = spendLockKeys(input.limits);
+          if (keys.length > 0) {
+            await client.query(
+              `SELECT pg_advisory_xact_lock(${SPEND_LOCK_CLASS}, h)
+                 FROM (SELECT DISTINCT hashtext(k) AS h FROM unnest($1::text[]) AS k ORDER BY 1) AS locks`,
+              [keys],
+            );
+          }
+          const params: unknown[] = [];
+          const amount = (v: string) => `$${params.push(v)}`;
+          const usage = input.limits.length > 0 ? spendUsageCtes(input.limits, params) : null;
+          const amt = amount(holdAmount(input.amountUsd));
+          const values = [input.id, input.inferenceId, input.userId, input.plan, input.task, input.provider, input.model].map((v) => `$${params.push(v)}`);
+          const lease = `$${params.push(Math.max(1, Math.round(input.leaseMs)))}`;
+          const fits = usage ? `(SELECT COALESCE(bool_and(actual_usd + reserved_usd + ${amt}::numeric <= limit_usd), true) FROM usage)` : "true";
+          const { rows } = await client.query<{ usage: SpendUsageRow[] | null; reservation: SpendReservationRow | null }>(
+            `WITH ${usage ? `${usage},` : ""}
+             ins AS (
+               INSERT INTO spend_reservations (id, inference_id, user_id, plan, task, provider, model, reserved_usd, status, created_at, expires_at)
+               SELECT ${values.join(", ")}, ${amt}::numeric, 'active', statement_timestamp(),
+                      statement_timestamp() + ${lease}::double precision * interval '1 millisecond'
+                WHERE ${fits}
+               RETURNING *)
+             SELECT ${usage ? "(SELECT json_agg(u ORDER BY u.ord) FROM usage u)" : "NULL::json"} AS usage,
+                    (SELECT row_to_json(ins) FROM ins) AS reservation`,
+            params,
+          );
+          const row = rows[0]!;
+          const used = (row.usage ?? []).map(toSpendUsage);
+          if (row.reservation) return { ok: true as const, reservation: toSpendReservation(row.reservation), usage: used };
+          const amountUsd = Number(holdAmount(input.amountUsd));
+          const blocked = used.find((u) => Math.round((u.actualUsd + u.reservedUsd + amountUsd) * 1e10) > Math.round(u.limitUsd * 1e10)) ?? used[0]!;
+          return { ok: false as const, blockedBy: blocked.scope, usage: used };
+        });
+      } catch (err) {
+        const code = (err as { code?: string }).code;
+        if (attempt < SPEND_TX_ATTEMPTS && code && RETRYABLE_TX.has(code)) {
+          await new Promise((resolve) => setTimeout(resolve, 5 + Math.random() * 20 * attempt));
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
+  /**
+   * Records the request's paid ledger cost as the hold's actual and ends it: settled (> 0), released
+   * (0), or expired when its lease had already run out (a late settlement). Only an active hold, or an
+   * expired one not yet given its actual, changes; anything else is returned as already finished.
+   */
+  async settleSpendReservation(id: string): Promise<SettleSpendResult | undefined> {
+    const { rows } = await this.pool.query<SpendReservationRow>(
+      `WITH spent AS (
+         SELECT COALESCE(sum(${LEDGER_COST}), 0) AS usd FROM inference_attempts
+          WHERE pricing = 'paid' AND inference_id = (SELECT inference_id FROM spend_reservations WHERE id = $1))
+       UPDATE spend_reservations r
+          SET actual_usd = spent.usd,
+              finished_at = COALESCE(r.finished_at, statement_timestamp()),
+              status = CASE WHEN r.status = 'expired' OR r.expires_at <= statement_timestamp() THEN 'expired'
+                            WHEN spent.usd > 0 THEN 'settled' ELSE 'released' END
+         FROM spent
+        WHERE r.id = $1 AND (r.status = 'active' OR (r.status = 'expired' AND r.actual_usd IS NULL))
+       RETURNING r.*`,
+      [id],
+    );
+    if (rows[0]) return { reservation: toSpendReservation(rows[0]), alreadyFinished: false };
+    const existing = await this.getSpendReservation(id);
+    return existing && { reservation: existing, alreadyFinished: true };
+  }
+
+  async getSpendReservation(id: string): Promise<SpendReservationRecord | undefined> {
+    const { rows } = await this.pool.query<SpendReservationRow>("SELECT * FROM spend_reservations WHERE id = $1", [id]);
+    return rows[0] && toSpendReservation(rows[0]);
+  }
+
+  async sweepSpendReservations(limit: number, retentionMs: number): Promise<{ expired: number; purged: number }> {
+    const expired = await this.pool.query(
+      `UPDATE spend_reservations SET status = 'expired', finished_at = statement_timestamp()
+        WHERE id IN (SELECT id FROM spend_reservations WHERE status = 'active' AND expires_at <= statement_timestamp()
+                      ORDER BY expires_at LIMIT $1 FOR UPDATE SKIP LOCKED)
+          AND status = 'active'`,
+      [limit],
+    );
+    const purged = await this.pool.query(
+      `DELETE FROM spend_reservations
+        WHERE id IN (SELECT id FROM spend_reservations
+                      WHERE status <> 'active' AND finished_at < statement_timestamp() - $2::double precision * interval '1 millisecond'
+                      ORDER BY finished_at LIMIT $1 FOR UPDATE SKIP LOCKED)`,
+      [limit, Math.max(0, Math.round(retentionMs))],
+    );
+    return { expired: expired.rowCount ?? 0, purged: purged.rowCount ?? 0 };
   }
 
 }

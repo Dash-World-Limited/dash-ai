@@ -3,6 +3,12 @@ import {
   type InferenceAttemptRow,
   type InferenceSpend,
   type InferenceSpendQuery,
+  type ReserveSpendInput,
+  type ReserveSpendResult,
+  type SettleSpendResult,
+  type SpendLimit,
+  type SpendReservationRecord,
+  type SpendUsage,
   type AutomationRecord,
   type AutomationRunRecord,
   type FinishRunInput,
@@ -52,6 +58,8 @@ export class MemoryStore implements Store {
   private readonly syncCounters = new Map<string, number>();
   private usage: UsageRow[] = [];
   private attempts: InferenceAttemptRow[] = [];
+  /** Insertion order is creation order. */
+  private readonly reservations = new Map<string, SpendReservationRecord>();
   private readonly pluginSettings = new Map<string, Map<string, PluginSettingRecord>>();
   private toolInvocations: ToolInvocationRow[] = [];
   private readonly toolExecutions = new Map<string, { userId: string; status: string }>();
@@ -64,6 +72,9 @@ export class MemoryStore implements Store {
   private readonly pushDeliveries = new Map<string, PushDeliveryRecord>();
   /** Users who turned Automates pushes off (on is the default). */
   private readonly pushOff = new Set<string>();
+
+  /** The clock spend reservation leases read (PostgreSQL uses the database clock). */
+  constructor(private readonly clock: () => number = Date.now) {}
 
   private bump(conversation: StoredConversation): void {
     const next = (this.syncCounters.get(conversation.record.userId) ?? 0) + 1;
@@ -121,6 +132,7 @@ export class MemoryStore implements Store {
     this.usage = this.usage.filter((u) => u.userId !== userId);
     // The ledger keeps its accounting records; only the account link goes.
     this.attempts = this.attempts.map((a) => (a.userId === userId ? { ...a, userId: null } : a));
+    for (const r of this.reservations.values()) if (r.userId === userId) r.userId = null;
     this.pluginSettings.delete(userId);
     this.toolInvocations = this.toolInvocations.filter((t) => t.userId !== userId);
     for (const [key, e] of this.toolExecutions) if (e.userId === userId) this.toolExecutions.delete(key);
@@ -379,6 +391,104 @@ export class MemoryStore implements Store {
       costUsd: rows.reduce((n, a) => n + (a.providerCostUsd ?? a.estimatedCostUsd ?? 0), 0),
       tokens: rows.reduce((n, a) => n + (a.inputTokens ?? a.estimatedInputTokens) + (a.outputTokens ?? a.estimatedOutputTokens), 0),
     };
+  }
+
+  // ---- spend reservations ------------------------------------------------------------------------
+  // Same rules as PostgresStore. Every check-and-insert below runs without an await in between, so it
+  // is atomic within this one process; cross-process guarantees exist only on PostgreSQL.
+
+  /** Paid ledger cost already recorded for one request. */
+  private recordedUsd(inferenceId: string): number {
+    return this.attempts
+      .filter((a) => a.inferenceId === inferenceId && a.pricing === "paid")
+      .reduce((n, a) => n + (a.providerCostUsd ?? a.estimatedCostUsd ?? 0), 0);
+  }
+
+  private usageNow(limits: readonly SpendLimit[]): SpendUsage[] {
+    const now = this.clock();
+    const holds = [...this.reservations.values()]
+      .filter((r) => r.status === "active" && Date.parse(r.expiresAt) > now)
+      .map((r) => ({ r, held: Math.max(0, r.reservedUsd - this.recordedUsd(r.inferenceId)) }));
+    return limits.map((l) => {
+      const since = Date.parse(l.since);
+      const inScope = (row: { plan: string; userId: string | null }) =>
+        l.scope === "plan_daily" ? row.plan === l.plan : l.scope === "user_daily" ? row.userId === l.userId : true;
+      const actualUsd = round10(
+        this.attempts
+          .filter((a) => a.pricing === "paid" && Date.parse(a.createdAt) >= since && inScope(a))
+          .reduce((n, a) => n + (a.providerCostUsd ?? a.estimatedCostUsd ?? 0), 0),
+      );
+      const reservedUsd = round10(holds.filter((h) => inScope(h.r)).reduce((n, h) => n + h.held, 0));
+      return { scope: l.scope, limitUsd: l.limitUsd, actualUsd, reservedUsd, availableUsd: round10(l.limitUsd - actualUsd - reservedUsd) };
+    });
+  }
+
+  async spendUsage(limits: readonly SpendLimit[]): Promise<SpendUsage[]> {
+    return this.usageNow(limits);
+  }
+
+  async reserveSpend(input: ReserveSpendInput): Promise<ReserveSpendResult> {
+    const amountUsd = Math.ceil(Math.max(0, input.amountUsd) * 1e10 - 1e-6) / 1e10;
+    const usage = this.usageNow(input.limits);
+    const blocked = usage.find((u) => Math.round((u.actualUsd + u.reservedUsd + amountUsd) * 1e10) > Math.round(u.limitUsd * 1e10));
+    if (blocked) return { ok: false, blockedBy: blocked.scope, usage };
+    if ([...this.reservations.values()].some((r) => r.inferenceId === input.inferenceId)) throw new Error("duplicate spend reservation");
+    if (input.userId !== null && !this.users.has(input.userId)) throw new Error("spend reservation for an unknown account");
+    const now = this.clock();
+    const reservation: SpendReservationRecord = {
+      id: input.id,
+      inferenceId: input.inferenceId,
+      userId: input.userId,
+      plan: input.plan,
+      task: input.task,
+      provider: input.provider,
+      model: input.model,
+      reservedUsd: amountUsd,
+      actualUsd: null,
+      status: "active",
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + Math.max(1, Math.round(input.leaseMs))).toISOString(),
+      finishedAt: null,
+    };
+    this.reservations.set(reservation.id, reservation);
+    return { ok: true, reservation: { ...reservation }, usage };
+  }
+
+  async settleSpendReservation(id: string): Promise<SettleSpendResult | undefined> {
+    const r = this.reservations.get(id);
+    if (!r) return undefined;
+    if (!(r.status === "active" || (r.status === "expired" && r.actualUsd === null))) return { reservation: { ...r }, alreadyFinished: true };
+    const now = this.clock();
+    const actual = round10(this.recordedUsd(r.inferenceId));
+    r.actualUsd = actual;
+    r.status = r.status === "expired" || Date.parse(r.expiresAt) <= now ? "expired" : actual > 0 ? "settled" : "released";
+    r.finishedAt ??= new Date(now).toISOString();
+    return { reservation: { ...r }, alreadyFinished: false };
+  }
+
+  async getSpendReservation(id: string): Promise<SpendReservationRecord | undefined> {
+    const r = this.reservations.get(id);
+    return r && { ...r };
+  }
+
+  async sweepSpendReservations(limit: number, retentionMs: number): Promise<{ expired: number; purged: number }> {
+    const now = this.clock();
+    let expired = 0;
+    let purged = 0;
+    for (const r of this.reservations.values()) {
+      if (expired < limit && r.status === "active" && Date.parse(r.expiresAt) <= now) {
+        r.status = "expired";
+        r.finishedAt = new Date(now).toISOString();
+        expired += 1;
+      }
+    }
+    for (const [id, r] of this.reservations) {
+      if (purged < limit && r.status !== "active" && r.finishedAt !== null && Date.parse(r.finishedAt) < now - retentionMs) {
+        this.reservations.delete(id);
+        purged += 1;
+      }
+    }
+    return { expired, purged };
   }
 
   async getPluginSettings(userId: string): Promise<PluginSettingRecord[]> {
@@ -700,3 +810,5 @@ export class MemoryStore implements Store {
 
   async close(): Promise<void> {}
 }
+
+const round10 = (usd: number): number => Math.round(usd * 1e10) / 1e10;

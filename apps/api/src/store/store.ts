@@ -164,6 +164,83 @@ export interface InferenceSpendQuery {
   pricing?: ReadonlyArray<InferenceAttemptRow["pricing"]>;
 }
 
+/** Which aggregate spend limit a total belongs to (most specific last). */
+export type SpendScope = "system_monthly" | "system_daily" | "plan_daily" | "user_daily";
+
+/** One configured aggregate limit to check: paid ledger cost since `since`, for everyone, one plan or one account. */
+export interface SpendLimit {
+  scope: SpendScope;
+  limitUsd: number;
+  since: string;
+  /** plan_daily only. */
+  plan?: string;
+  /** user_daily only. */
+  userId?: string;
+}
+
+/**
+ * One limit's state. ACTUAL is paid ledger cost in the window; RESERVED is what active, unexpired
+ * reservations in the scope may still spend (each one's hold minus its own ledger rows so far, never
+ * below zero); AVAILABLE = limit − actual − reserved.
+ */
+export interface SpendUsage {
+  scope: SpendScope;
+  limitUsd: number;
+  actualUsd: number;
+  reservedUsd: number;
+  availableUsd: number;
+}
+
+/**
+ * A temporary hold on a request's worst-case paid cost (INTERNAL; never in consumer responses). Not a
+ * charge: the inference ledger stays the record of actual spend. active: counted while unexpired.
+ * settled: finished, paid ledger cost > 0 recorded in actualUsd. released: finished with no paid cost.
+ * expired: the lease ran out before settlement (a late settlement still fills actualUsd).
+ */
+export interface SpendReservationRecord {
+  id: string;
+  /** The answer or run the hold covers; every attempt of it (retries, rounds, fallbacks) charges against it. */
+  inferenceId: string;
+  userId: string | null;
+  plan: string;
+  task: string;
+  /** Internal provider and model of the first choice (diagnostics only). */
+  provider: string;
+  model: string | null;
+  reservedUsd: number;
+  actualUsd: number | null;
+  status: "active" | "settled" | "released" | "expired";
+  createdAt: string;
+  expiresAt: string;
+  finishedAt: string | null;
+}
+
+export interface ReserveSpendInput {
+  id: string;
+  inferenceId: string;
+  userId: string | null;
+  plan: string;
+  task: string;
+  provider: string;
+  model: string | null;
+  amountUsd: number;
+  /** How long the hold lives (from the store's clock) unless settled first. */
+  leaseMs: number;
+  /** Every configured aggregate limit the request falls under. */
+  limits: readonly SpendLimit[];
+}
+
+export type ReserveSpendResult =
+  | { ok: true; reservation: SpendReservationRecord; usage: SpendUsage[] }
+  /** Nothing was reserved: the first limit (in `limits` order) the amount does not fit, and fresh usage of all. */
+  | { ok: false; blockedBy: SpendScope; usage: SpendUsage[] };
+
+export interface SettleSpendResult {
+  reservation: SpendReservationRecord;
+  /** True when it had already been settled (settlement is idempotent). */
+  alreadyFinished: boolean;
+}
+
 /**
  * One conversation as seen by sync. `seq` is a per-user, strictly increasing change counter that
  * is bumped by every conversation, message or deletion change. A deleted conversation is kept as
@@ -426,6 +503,29 @@ export interface Store {
   listInferenceAttempts(inferenceId: string): Promise<InferenceAttemptRow[]>;
   /** Totals over the ledger since a time, optionally for one account, plan, provider or pricing class. */
   sumInferenceSpend(query: InferenceSpendQuery): Promise<InferenceSpend>;
+
+  /**
+   * Usage of each limit right now (actual + outstanding reservations), without locking. For routing
+   * hints and the operator view; never the basis of an admission.
+   */
+  spendUsage(limits: readonly SpendLimit[]): Promise<SpendUsage[]>;
+  /**
+   * Atomically admits a hold of `amountUsd` only if it fits every limit together with actual spend and
+   * every other active reservation (PostgreSQL: per-scope advisory locks and one snapshot, safe across
+   * instances; memory: atomic within its process). Throws when the check cannot be made (fail closed).
+   */
+  reserveSpend(input: ReserveSpendInput): Promise<ReserveSpendResult>;
+  /**
+   * Ends a hold, recording the request's paid ledger cost as its actual. Idempotent; undefined when the
+   * reservation does not exist (purged).
+   */
+  settleSpendReservation(id: string): Promise<SettleSpendResult | undefined>;
+  getSpendReservation(id: string): Promise<SpendReservationRecord | undefined>;
+  /**
+   * Housekeeping (idempotent, safe across instances): marks up to `limit` lapsed holds expired and
+   * deletes up to `limit` finished ones older than `retentionMs`. Counting never depends on it.
+   */
+  sweepSpendReservations(limit: number, retentionMs: number): Promise<{ expired: number; purged: number }>;
 
   /** The user's plugin choices (only plugins they have ever configured). */
   getPluginSettings(userId: string): Promise<PluginSettingRecord[]>;

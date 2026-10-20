@@ -8,8 +8,8 @@ import { buildSystemPrompt } from "../providers/instructions.js";
 import type { ProviderRegistry } from "../providers/registry.js";
 import { ProviderError, toProviderError, type ProviderAdapter, type ProviderChunk, type ProviderRequest } from "../providers/types.js";
 import { requestChars, type InferenceContext } from "./ledger.js";
-import type { AiPlatform } from "./platform.js";
-import type { RoutePreference, TaskType } from "./policy.js";
+import { SpendAdmissionError, type Admission, type AiPlatform } from "./platform.js";
+import type { RoutePreference, Sensitivity, TaskType } from "./policy.js";
 import { estimateTokens, type IntelligenceRouter } from "./router.js";
 
 export interface GenerateDeps {
@@ -32,6 +32,12 @@ export interface GenerateRequest {
   /** The account the work is for (spend limits and the ledger), and the id its ledger rows share. */
   userId: string | null;
   inferenceId: string;
+  /**
+   * The most time the whole generation (every retry and fallback) may take; enforced here, and the
+   * basis of its spend reservation's lease. Default: every configured provider at every retry, each
+   * at PROVIDER_TIMEOUT_MS.
+   */
+  maxDurationMs?: number;
 }
 
 export interface GenerateResult {
@@ -69,17 +75,54 @@ export async function generateText(deps: GenerateDeps, request: GenerateRequest)
   const estimatedInputTokens = estimateTokens(inputChars);
   // Background work carries the person's own words: it is classified like any other request.
   const sensitivity = deps.ai.classify({ documents: 0, toolsOffered: false });
-  const spend = await deps.ai.admit(request.userId);
-  const decision = deps.router.route({
-    task: request.task,
-    mode: request.mode,
-    preference: request.preference,
-    estimatedInputTokens,
-    sensitivity,
-    plan: deps.ai.plan,
-    inputModalities: ["text"],
-    ...deps.ai.costFields(spend, inputChars),
-  });
+  const { config } = deps;
+  const maxDurationMs =
+    request.maxDurationMs ?? Math.max(1, deps.providers.configured().size) * (config.providerRetry.maxRetries + 1) * config.providerTimeoutMs;
+  let admission: Admission;
+  try {
+    // Routed on the spend estimate, then the worst case is held atomically against every spend limit
+    // (requests already in flight included) before anything is sent; see ADR 0015.
+    admission = await deps.ai.admitAndReserve({
+      userId: request.userId,
+      inferenceId: request.inferenceId,
+      task: request.task,
+      maxDurationMs,
+      inputChars,
+      loop: null,
+      route: (costFields) =>
+        deps.router.route({
+          task: request.task,
+          mode: request.mode,
+          preference: request.preference,
+          estimatedInputTokens,
+          sensitivity,
+          plan: deps.ai.plan,
+          inputModalities: ["text"],
+          ...costFields,
+        }),
+    });
+  } catch (err) {
+    if (err instanceof SpendAdmissionError) throw new GenerationError("rate_limited", true);
+    throw err;
+  }
+  try {
+    // No provider request outlives the reservation's bound (every attempt's signal derives from this).
+    const signal = request.signal ? AbortSignal.any([request.signal, AbortSignal.timeout(maxDurationMs)]) : AbortSignal.timeout(maxDurationMs);
+    return await generateAdmitted(deps, { ...request, signal }, admission, estimatedInputTokens, sensitivity);
+  } finally {
+    // After every attempt is in the ledger, whatever the outcome.
+    await deps.ai.settle(admission.reservation);
+  }
+}
+
+async function generateAdmitted(
+  deps: GenerateDeps,
+  request: GenerateRequest,
+  admission: Admission,
+  estimatedInputTokens: number,
+  sensitivity: Sensitivity,
+): Promise<GenerateResult> {
+  const { decision, spend } = admission;
   deps.ai.noteSpendLimit(decision, spend);
   if (!decision.ok) {
     deps.metrics?.routerUnavailable.inc({ task: request.task, reason: decision.reason });

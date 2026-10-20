@@ -379,4 +379,44 @@ ALTER TABLE inference_attempts
     AND (provider_cost_usd IS NULL OR provider_cost_usd >= 0));
 `,
   },
+  {
+    id: 12,
+    name: "spend_reservations",
+    sql: `
+-- In-flight spend reservations: a temporary hold on a request's worst-case paid cost, taken atomically at
+-- admission (under per-scope advisory locks) and settled against the inference ledger when the request
+-- ends. A hold is never a charge: the ledger stays the only record of actual spend, and while a request
+-- runs only the part of its hold not yet matched by its own ledger rows is counted. One row per logical
+-- request (inference_id). Operational accounting metadata only: no prompt, answer, tool content or
+-- credential. Deleting an account removes the account link (SET NULL), like the ledger.
+CREATE TABLE spend_reservations (
+  id           text PRIMARY KEY,
+  inference_id text NOT NULL,
+  user_id      text REFERENCES users (id) ON DELETE SET NULL,
+  plan         text NOT NULL,
+  task         text NOT NULL,
+  provider     text NOT NULL,
+  model        text,
+  reserved_usd numeric(20, 10) NOT NULL,
+  actual_usd   numeric(20, 10),
+  status       text NOT NULL,
+  created_at   timestamptz NOT NULL,
+  expires_at   timestamptz NOT NULL,
+  finished_at  timestamptz,
+  CONSTRAINT spend_reservations_status_check CHECK (status IN ('active', 'settled', 'released', 'expired')),
+  CONSTRAINT spend_reservations_amounts_check CHECK (reserved_usd >= 0 AND (actual_usd IS NULL OR actual_usd >= 0)),
+  CONSTRAINT spend_reservations_lease_check CHECK (expires_at > created_at),
+  CONSTRAINT spend_reservations_finished_check CHECK ((status = 'active') = (finished_at IS NULL)),
+  CONSTRAINT spend_reservations_settled_check CHECK (status NOT IN ('settled', 'released') OR actual_usd IS NOT NULL)
+);
+CREATE UNIQUE INDEX spend_reservations_inference_key ON spend_reservations (inference_id);
+-- Admission reads only active rows: system scope by expiry, plan and person scopes by their key.
+CREATE INDEX spend_reservations_active_idx ON spend_reservations (expires_at) WHERE status = 'active';
+CREATE INDEX spend_reservations_active_user_idx ON spend_reservations (user_id) WHERE status = 'active';
+CREATE INDEX spend_reservations_active_plan_idx ON spend_reservations (plan) WHERE status = 'active';
+CREATE INDEX spend_reservations_finished_idx ON spend_reservations (finished_at) WHERE status <> 'active';
+-- Plan-limit sums read paid rows of one plan since the start of the UTC day.
+CREATE INDEX inference_attempts_paid_plan_created_idx ON inference_attempts (plan, created_at) WHERE pricing = 'paid';
+`,
+  },
 ];
