@@ -122,6 +122,7 @@ No `TODO`, `FIXME`, `HACK` or "not implemented" markers exist in production code
 | Web tab acting as another account after a sign-in in another tab | P1 | fixed |
 | Object ownership: conversations, messages (PK is `(conversation_id, id)`), documents, automations, runs, notifications, push devices, plugin settings are all scoped by user | – | verified by reading; covered by existing suites |
 | Push token ownership: registered only for the calling session; removed with the session (FK cascade) | – | verified |
+| Dependency advisories (`pnpm audit`, also flagged by GitHub): `source-map-js` < 1.2.2 (high, event-loop DoS) reaches only the Web *test* toolchain (`jsdom`), never the shipped bundle; `sprintf-js` ≤ 1.1.3 (moderate, no patched release) comes through `mammoth > argparse`, which only mammoth's command-line entry uses, and document parsing runs in the isolated, time- and memory-limited extractor | P3 | recorded; upgrade `jsdom` when a release carries `source-map-js` ≥ 1.2.2 |
 | Account deletion race: all owned rows cascade; late writes fail on FK (`finishRun`, `createAutomation`, `saveMessage`) | – | verified; streams on *other* instances keep running until they end (see §5) |
 
 ## 4. Resource-bound findings
