@@ -475,12 +475,14 @@ export class PostgresStore implements Store {
     }
   }
 
-  async claimQueuedRun(now: string, leaseUntil: string): Promise<AutomationRunRecord | undefined> {
+  async claimQueuedRun(now: string, leaseMs: number): Promise<AutomationRunRecord | undefined> {
+    // The lease is on the database clock: one clock for every instance (listStaleRuns uses it too).
     const { rows } = await this.pool.query<RunRow>(
-      `UPDATE automation_runs SET status = 'running', started_at = $1, lease_until = $2
+      `UPDATE automation_runs SET status = 'running', started_at = $1,
+         lease_until = statement_timestamp() + $2::double precision * interval '1 millisecond'
        WHERE id = (SELECT id FROM automation_runs WHERE status = 'queued' ORDER BY position FOR UPDATE SKIP LOCKED LIMIT 1)
        RETURNING ${RUN_COLUMNS}`,
-      [now, leaseUntil],
+      [now, Math.max(1, Math.round(leaseMs))],
     );
     return rows[0] && this.toRun(rows[0]);
   }
@@ -535,10 +537,11 @@ export class PostgresStore implements Store {
     }
   }
 
-  async listStaleRuns(now: string, limit: number): Promise<AutomationRunRecord[]> {
+  async listStaleRuns(_now: string, limit: number): Promise<AutomationRunRecord[]> {
+    // Database clock, not the caller's: an instance whose clock runs fast cannot expire a healthy run.
     const { rows } = await this.pool.query<RunRow>(
-      `SELECT ${RUN_COLUMNS} FROM automation_runs WHERE status = 'running' AND lease_until < $1 ORDER BY lease_until LIMIT $2`,
-      [now, limit],
+      `SELECT ${RUN_COLUMNS} FROM automation_runs WHERE status = 'running' AND lease_until < statement_timestamp() ORDER BY lease_until LIMIT $1`,
+      [limit],
     );
     return rows.map((r) => this.toRun(r));
   }
@@ -671,16 +674,18 @@ export class PostgresStore implements Store {
     await this.pool.query("UPDATE users SET push_automates = $2 WHERE id = $1", [userId, prefs.automates]);
   }
 
-  async claimPushDeliveries(now: string, leaseUntil: string, limit: number): Promise<ClaimedPushDelivery[]> {
+  async claimPushDeliveries(now: string, leaseMs: number, limit: number): Promise<ClaimedPushDelivery[]> {
     return this.tx(async (client) => {
+      // Send leases are on the database clock (one clock for every instance); retry times stay the caller's.
       const claimed = await client.query<PushDeliveryRow>(
-        `UPDATE push_deliveries SET status = 'sending', attempts = attempts + 1, lease_until = $2, updated_at = $1
+        `UPDATE push_deliveries SET status = 'sending', attempts = attempts + 1,
+           lease_until = statement_timestamp() + $2::double precision * interval '1 millisecond', updated_at = $1
          WHERE id IN (
            SELECT id FROM push_deliveries
-           WHERE (status = 'pending' AND next_attempt_at <= $1) OR (status = 'sending' AND lease_until < $1)
+           WHERE (status = 'pending' AND next_attempt_at <= $1) OR (status = 'sending' AND lease_until < statement_timestamp())
            ORDER BY coalesce(next_attempt_at, created_at) LIMIT $3 FOR UPDATE SKIP LOCKED)
          RETURNING *`,
-        [now, leaseUntil, limit],
+        [now, Math.max(1, Math.round(leaseMs)), limit],
       );
       if (claimed.rows.length === 0) return [];
       const deviceIds = [...new Set(claimed.rows.map((r) => r.device_id))];
@@ -1088,6 +1093,18 @@ export class PostgresStore implements Store {
     return rows[0] ? Number(rows[0].sync_counter) : 0;
   }
 
+  async listMessagesFor(userId: string, conversationIds: string[]): Promise<Map<string, MessageRecord[]>> {
+    const out = new Map<string, MessageRecord[]>(conversationIds.map((id) => [id, []]));
+    if (conversationIds.length === 0) return out;
+    const { rows } = await this.pool.query<MessageRow>(
+      `SELECT m.* FROM messages m JOIN conversations c ON c.id = m.conversation_id
+       WHERE m.conversation_id = ANY($1) AND c.user_id = $2 AND c.deleted_at IS NULL ORDER BY m.conversation_id, m.position`,
+      [conversationIds, userId],
+    );
+    for (const r of rows) out.get(r.conversation_id)?.push(this.toMessage(r));
+    return out;
+  }
+
   async listMessages(conversationId: string): Promise<MessageRecord[]> {
     const { rows } = await this.pool.query<MessageRow>(
       `SELECT m.* FROM messages m JOIN conversations c ON c.id = m.conversation_id
@@ -1241,6 +1258,25 @@ export class PostgresStore implements Store {
     );
   }
 
+  async addDocument(d: DocumentRecord, maxPerAccount: number): Promise<"ok" | "limit" | "gone"> {
+    const enc = this.cipher.encrypt(d.extractedText, documentAad(d.userId, d.id));
+    return this.tx(async (client) => {
+      // The account row lock serializes this account's uploads, so the count cannot be raced.
+      const user = await client.query("SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE", [d.userId]);
+      if (user.rowCount === 0) return "gone";
+      const { rows } = await client.query<{ n: number }>("SELECT count(*)::int AS n FROM documents WHERE user_id = $1", [d.userId]);
+      if (rows[0]!.n >= maxPerAccount) return "limit";
+      await client.query(
+        `INSERT INTO documents (id, user_id, name, kind, mime_type, size_bytes, status, status_detail, extracted_chars,
+           extracted_text_enc, enc_key_id, page_count, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [d.id, d.userId, d.name, d.kind, d.mimeType, d.sizeBytes, d.status, d.statusDetail, d.extractedText.length,
+          enc.payload, enc.keyId, d.pageCount, d.createdAt],
+      );
+      return "ok";
+    });
+  }
+
   async getDocument(userId: string, id: string): Promise<DocumentRecord | undefined> {
     const { rows } = await this.pool.query<DocumentRow & { extracted_text_enc: Buffer; enc_key_id: string }>(
       "SELECT * FROM documents WHERE id = $1 AND user_id = $2",
@@ -1315,6 +1351,13 @@ export class PostgresStore implements Store {
     return rows.map(toToolInvocation);
   }
 
+  async listToolInvocationsFor(userId: string, conversationIds: string[]): Promise<Map<string, ToolInvocationRow[]>> {
+    const out = new Map<string, ToolInvocationRow[]>(conversationIds.map((id) => [id, []]));
+    if (conversationIds.length === 0) return out;
+    for (const t of await this.readTools(this.pool, userId, conversationIds)) out.get(t.conversationId)?.push(t);
+    return out;
+  }
+
   async listConversationToolInvocations(userId: string, conversationId: string): Promise<ToolInvocationRow[]> {
     return this.readTools(this.pool, userId, [conversationId]);
   }
@@ -1339,6 +1382,28 @@ export class PostgresStore implements Store {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [u.userId, u.conversationId, u.messageId, u.provider, u.model, u.demo, u.inputTokens, u.outputTokens, u.estimatedCostUsd ?? null, u.createdAt],
     );
+  }
+
+  async usageSummary(userId: string, recent: number) {
+    const [totals, latest] = await Promise.all([
+      this.pool.query<{ provider: string; requests: string; input_tokens: string | null; output_tokens: string | null }>(
+        `SELECT provider, count(*) AS requests, sum(input_tokens) AS input_tokens, sum(output_tokens) AS output_tokens
+         FROM usage_records WHERE user_id = $1 GROUP BY provider ORDER BY min(id)`,
+        [userId],
+      ),
+      this.pool.query<{
+        user_id: string; conversation_id: string; message_id: string; provider: string; model: string; demo: boolean;
+        input_tokens: string | null; output_tokens: string | null; estimated_cost_usd: number | null; created_at: Date;
+      }>("SELECT * FROM usage_records WHERE user_id = $1 ORDER BY id DESC LIMIT $2", [userId, recent]),
+    ]);
+    return {
+      totals: totals.rows.map((t) => ({ provider: t.provider as ProviderId, requests: Number(t.requests), inputTokens: Number(t.input_tokens ?? 0), outputTokens: Number(t.output_tokens ?? 0) })),
+      recent: latest.rows.map((r) => ({
+        userId: r.user_id, conversationId: r.conversation_id, messageId: r.message_id, provider: r.provider as ProviderId,
+        model: r.model, demo: r.demo, inputTokens: num(r.input_tokens), outputTokens: num(r.output_tokens),
+        estimatedCostUsd: r.estimated_cost_usd, createdAt: iso(r.created_at),
+      })),
+    };
   }
 
   async listUsage(userId: string): Promise<UsageRow[]> {

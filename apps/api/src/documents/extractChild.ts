@@ -13,6 +13,12 @@ try {
   // Not Linux: the parent's memory watchdog still applies where it can.
 }
 
+// Never outlive the API server: if it dies (even SIGKILL), this process is re-parented; stop then.
+const parent = process.ppid;
+setInterval(() => {
+  if (process.ppid !== parent) process.exit(3);
+}, 500).unref();
+
 const kind = process.argv[2];
 if (kind !== "pdf" && kind !== "docx") process.exit(2);
 

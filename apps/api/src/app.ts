@@ -4,6 +4,7 @@ import Fastify, { type FastifyError, type FastifyInstance, type FastifyRequest }
 import { makeRequireAuth } from "./auth/requireAuth.js";
 import type { RedisStreamControl } from "./chat/streamControl.js";
 import { StreamRegistry } from "./chat/streamRegistry.js";
+import { ExtractionGate } from "./documents/gate.js";
 import type { AppConfig } from "./config.js";
 import { AppError, busyError } from "./errors.js";
 import { loggerOptions, type LogStream } from "./logging.js";
@@ -181,7 +182,19 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
       },
       onActiveChange: (active) => metrics.activeStreams.set({}, active),
     }),
-    lifecycle: { draining: false },
+    lifecycle: { draining: false, stopped: new AbortController() },
+    extraction: new ExtractionGate(
+      {
+        maxActive: config.documentExtraction.concurrency,
+        maxWaiting: config.documentExtraction.queue,
+        maxPerAccount: config.documentExtraction.perAccount,
+        maxWaitMs: config.documentExtraction.queueWaitMs,
+      },
+      (state) => {
+        metrics.extractionActive.set({}, state.active);
+        metrics.extractionWaiting.set({}, state.waiting);
+      },
+    ),
     rateLimits,
     metrics,
     requireAuth: makeRequireAuth(store, now),
@@ -259,6 +272,11 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   app.addHook("preClose", async () => {
     context.lifecycle.draining = true;
     context.streams.cancelAll("shutdown");
+    context.extraction.close();
+    context.lifecycle.stopped.abort("shutdown");
+    // What was stopped writes its last event within milliseconds; after that, any connection still
+    // open (a stuck client, an idle keep-alive) is closed so close() can never hang on it.
+    setTimeout(() => app.server.closeAllConnections(), 1_500).unref();
     automations.beginDrain();
     push.beginDrain();
   });

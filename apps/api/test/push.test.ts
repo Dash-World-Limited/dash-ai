@@ -404,11 +404,13 @@ describe("delivery, retry and failure", () => {
     await runNow(app, context, user.auth, (await createAutomation(app, user.auth)).id);
     clock.t += 60_000;
     // Another instance claims it and disappears before recording the outcome.
-    expect(await context.store.claimPushDeliveries(new Date(clock.t).toISOString(), new Date(clock.t + 1_000).toISOString(), 10)).toHaveLength(1);
+    // (A 400 ms lease: PostgreSQL measures it on the database clock, so it must really pass.)
+    expect(await context.store.claimPushDeliveries(new Date(clock.t).toISOString(), 400, 10)).toHaveLength(1);
     fake.script = () => ({ ok: true });
     await context.push.tick();
     expect(fake.sent).toEqual([]);
     clock.t += 2_000;
+    await new Promise((r) => setTimeout(r, 450));
     await context.push.tick();
     expect(fake.sent).toHaveLength(1);
   });

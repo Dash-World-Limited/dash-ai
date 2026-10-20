@@ -35,6 +35,7 @@ import {
   type UsageRow,
   type UserRecord,
 } from "./store.js";
+import type { ProviderId } from "@dash-ai/contracts";
 import { newId } from "../security/crypto.js";
 import type { PluginSettingRecord, ToolInvocationRow } from "../tools/types.js";
 
@@ -312,6 +313,15 @@ export class MemoryStore implements Store {
     return (this.messages.get(conversationId) ?? []).map((m) => ({ ...m, attachmentIds: [...m.attachmentIds] }));
   }
 
+  async listMessagesFor(userId: string, conversationIds: string[]): Promise<Map<string, MessageRecord[]>> {
+    const out = new Map<string, MessageRecord[]>();
+    for (const id of conversationIds) {
+      const c = this.live(id);
+      out.set(id, c && c.record.userId === userId ? this.cloneMessages(id) : []);
+    }
+    return out;
+  }
+
   async listMessages(conversationId: string): Promise<MessageRecord[]> {
     return this.live(conversationId) ? this.cloneMessages(conversationId) : [];
   }
@@ -343,6 +353,15 @@ export class MemoryStore implements Store {
     this.documents.set(document.id, { ...document });
   }
 
+  async addDocument(document: DocumentRecord, maxPerAccount: number): Promise<"ok" | "limit" | "gone"> {
+    if (!this.owned(document.userId)) return "gone";
+    let n = 0;
+    for (const d of this.documents.values()) if (d.userId === document.userId) n++;
+    if (n >= maxPerAccount) return "limit";
+    this.documents.set(document.id, { ...document });
+    return "ok";
+  }
+
   async getDocument(userId: string, id: string): Promise<DocumentRecord | undefined> {
     const d = this.documents.get(id);
     return d && d.userId === userId ? { ...d } : undefined;
@@ -365,6 +384,19 @@ export class MemoryStore implements Store {
   async recordUsage(row: UsageRow): Promise<void> {
     if (!this.owned(row.userId)) return;
     this.usage.push({ ...row, estimatedCostUsd: row.estimatedCostUsd ?? null });
+  }
+
+  async usageSummary(userId: string, recent: number) {
+    const rows = this.usage.filter((u) => u.userId === userId);
+    const totals = new Map<ProviderId, { provider: ProviderId; requests: number; inputTokens: number; outputTokens: number }>();
+    for (const r of rows) {
+      const t = totals.get(r.provider) ?? { provider: r.provider, requests: 0, inputTokens: 0, outputTokens: 0 };
+      t.requests += 1;
+      t.inputTokens += r.inputTokens ?? 0;
+      t.outputTokens += r.outputTokens ?? 0;
+      totals.set(r.provider, t);
+    }
+    return { totals: [...totals.values()], recent: rows.slice(-recent).reverse().map((u) => ({ ...u })) };
   }
 
   async listUsage(userId: string): Promise<UsageRow[]> {
@@ -553,6 +585,10 @@ export class MemoryStore implements Store {
     return this.toolInvocations.filter((t) => t.userId === userId).slice(-limit).reverse().map((t) => ({ ...t }));
   }
 
+  async listToolInvocationsFor(userId: string, conversationIds: string[]): Promise<Map<string, ToolInvocationRow[]>> {
+    return new Map(conversationIds.map((id) => [id, this.conversationTools(userId, id)]));
+  }
+
   async listConversationToolInvocations(userId: string, conversationId: string): Promise<ToolInvocationRow[]> {
     return this.conversationTools(userId, conversationId);
   }
@@ -640,12 +676,12 @@ export class MemoryStore implements Store {
     return true;
   }
 
-  async claimQueuedRun(now: string, leaseUntil: string): Promise<AutomationRunRecord | undefined> {
+  async claimQueuedRun(now: string, leaseMs: number): Promise<AutomationRunRecord | undefined> {
     for (const r of this.runs.values()) {
       if (r.status !== "queued") continue;
       r.status = "running";
       r.startedAt = now;
-      r.leaseUntil = leaseUntil;
+      r.leaseUntil = new Date(Date.parse(now) + leaseMs).toISOString();
       return structuredClone(r);
     }
     return undefined;
@@ -800,8 +836,9 @@ export class MemoryStore implements Store {
     else this.pushOff.add(userId);
   }
 
-  async claimPushDeliveries(now: string, leaseUntil: string, limit: number): Promise<ClaimedPushDelivery[]> {
+  async claimPushDeliveries(now: string, leaseMs: number, limit: number): Promise<ClaimedPushDelivery[]> {
     const t = Date.parse(now);
+    const leaseUntil = new Date(t + leaseMs).toISOString();
     const due = [...this.pushDeliveries.values()]
       .filter(
         (d) =>

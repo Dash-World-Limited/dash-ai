@@ -104,6 +104,16 @@ const EnvSchema = z.object({
   FAKE_STREAM_DELAY_MS: int(25, 0, 5_000),
   /** Wall-clock limit for parsing one PDF or DOCX in the isolated extraction process. */
   DOCUMENT_EXTRACTION_TIMEOUT_MS: int(20_000, 1_000, 120_000),
+  /** Extraction processes running at once per instance. */
+  DOCUMENT_EXTRACTION_CONCURRENCY: int(2, 1, 16),
+  /** Uploads that may wait for an extraction process per instance (their bodies are in memory); more are refused as busy. */
+  DOCUMENT_EXTRACTION_QUEUE: int(6, 0, 100),
+  /** Uploads one account may have in progress per instance (receiving, waiting or extracting). */
+  DOCUMENT_UPLOADS_PER_ACCOUNT: int(4, 1, 100),
+  /** How long an upload may wait for an extraction process before it is refused as busy. */
+  DOCUMENT_EXTRACTION_QUEUE_WAIT_MS: int(15_000, 100, 120_000),
+  /** Documents one account may keep (each holds at most 200,000 extracted characters). */
+  DOCUMENTS_MAX_PER_ACCOUNT: int(200, 1, 10_000),
   RATE_LIMIT_CHAT_PER_MINUTE: int(20, 1, 10_000),
   RATE_LIMIT_SYNC_PER_MINUTE: int(60, 1, 10_000),
   RATE_LIMIT_AUTH_PER_MINUTE: int(10, 1, 10_000),
@@ -246,6 +256,8 @@ export interface AppConfig {
   maxOutputTokens: number;
   fakeStreamDelayMs: number;
   documentExtractionTimeoutMs: number;
+  documentExtraction: { concurrency: number; queue: number; queueWaitMs: number; perAccount: number };
+  documentsMaxPerAccount: number;
   rateLimits: {
     chatPerMinute: number;
     authPerMinute: number;
@@ -459,6 +471,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     maxOutputTokens: e.MAX_OUTPUT_TOKENS,
     fakeStreamDelayMs: e.FAKE_STREAM_DELAY_MS,
     documentExtractionTimeoutMs: e.DOCUMENT_EXTRACTION_TIMEOUT_MS,
+    documentExtraction: { concurrency: e.DOCUMENT_EXTRACTION_CONCURRENCY, queue: e.DOCUMENT_EXTRACTION_QUEUE, queueWaitMs: e.DOCUMENT_EXTRACTION_QUEUE_WAIT_MS, perAccount: e.DOCUMENT_UPLOADS_PER_ACCOUNT },
+    documentsMaxPerAccount: e.DOCUMENTS_MAX_PER_ACCOUNT,
     rateLimits: {
       chatPerMinute: e.RATE_LIMIT_CHAT_PER_MINUTE,
       syncPerMinute: e.RATE_LIMIT_SYNC_PER_MINUTE,

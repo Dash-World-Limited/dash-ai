@@ -149,6 +149,7 @@ export class Metrics {
   readonly routerDecisions = new Counter("dash_router_decisions_total", "Requests the DASH Intelligence Router routed, by task and first-choice provider.", ["task", "provider"]);
   readonly routerUnavailable = new Counter("dash_router_unavailable_total", "Requests the router could not route, by task and reason.", ["task", "reason"]);
   readonly automationRuns = new Counter("dash_automation_runs_total", "Automation runs finished, by trigger and status.", ["trigger", "status"]);
+  readonly automationLeaseRecoveries = new Counter("dash_automation_lease_recoveries_total", "Running automation runs whose lease expired (their instance stopped) and were marked interrupted.", []);
   readonly automationRunSeconds = new Histogram("dash_automation_run_seconds", "Duration of one automation run, from start to final status.", ["status"], SECONDS);
   readonly pushDeliveries = new Counter("dash_push_deliveries_total", "Push delivery attempts by outcome (sent, retry, failed, invalid_token, signed_out, disabled, already_read, expired, no_transport).", ["outcome"]);
   readonly toolInvocations = new Counter("dash_tool_invocations_total", "Tool calls by outcome (ok, denied, invalid_arguments, timeout, error, cancelled, unknown_tool, replayed).", ["plugin", "tool", "status"]);
@@ -165,6 +166,9 @@ export class Metrics {
   readonly busyRejections = new Counter("dash_busy_rejections_total", "Requests refused as temporarily busy, by reason (draining, stream_control, extraction_saturated).", ["reason"]);
   readonly draining = new Gauge("dash_draining", "1 while this instance is shutting down (not ready, finishing work in progress).", []);
   readonly shutdownDrains = new Counter("dash_shutdown_drains_total", "Shutdown drains by outcome (drained = all work finished in the window, deadline = remaining work was stopped).", ["outcome"]);
+  readonly extractionActive = new Gauge("dash_document_extraction_active", "Document extraction processes running on this instance.", []);
+  readonly extractionWaiting = new Gauge("dash_document_extraction_waiting", "Uploads waiting for an extraction process on this instance.", []);
+  readonly extractionRejections = new Counter("dash_document_extraction_rejections_total", "Uploads refused as busy by the extraction gate (saturated, account, wait_timeout, closed).", ["reason"]);
   readonly databaseUp = new Gauge("dash_database_up", "1 when the last database health check succeeded, else 0.", ["store"]);
   readonly rateLimitBackendUp = new Gauge("dash_rate_limit_backend_up", "1 when the shared rate-limit backend answered its last health check, else 0.", ["backend"]);
 

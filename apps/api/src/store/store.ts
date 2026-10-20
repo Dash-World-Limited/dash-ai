@@ -510,18 +510,27 @@ export interface Store {
   latestSyncSeq(userId: string): Promise<number>;
 
   listMessages(conversationId: string): Promise<MessageRecord[]>;
+  /** listMessages for several of this account's conversations in one read (export), by conversation id. */
+  listMessagesFor(userId: string, conversationIds: string[]): Promise<Map<string, MessageRecord[]>>;
   /** Creates or replaces by id within the conversation. A no-op if the conversation was deleted. */
   saveMessage(message: MessageRecord): Promise<void>;
   /** Removes the message with this id and every later message in the conversation. */
   truncateMessagesFrom(conversationId: string, messageId: string): Promise<void>;
 
   saveDocument(document: DocumentRecord): Promise<void>;
+  /**
+   * Stores a NEW document unless the account already has `maxPerAccount` (checked and inserted
+   * atomically per account): "ok", "limit", or "gone" when the account no longer exists.
+   */
+  addDocument(document: DocumentRecord, maxPerAccount: number): Promise<"ok" | "limit" | "gone">;
   getDocument(userId: string, id: string): Promise<DocumentRecord | undefined>;
   listDocuments(userId: string): Promise<DocumentSummary[]>;
   deleteDocument(userId: string, id: string): Promise<boolean>;
 
   recordUsage(row: UsageRow): Promise<void>;
   listUsage(userId: string): Promise<UsageRow[]>;
+  /** Per-provider totals over every usage row, and the newest `recent` rows (newest first), computed in the store. */
+  usageSummary(userId: string, recent: number): Promise<{ totals: Array<{ provider: ProviderId; requests: number; inputTokens: number; outputTokens: number }>; recent: UsageRow[] }>;
 
   /** Append one provider attempt to the inference ledger. */
   recordInferenceAttempt(row: InferenceAttemptRow): Promise<void>;
@@ -580,6 +589,8 @@ export interface Store {
    * exist (a regenerated or truncated message takes its tool calls with it).
    */
   listConversationToolInvocations(userId: string, conversationId: string): Promise<ToolInvocationRow[]>;
+  /** listConversationToolInvocations for several conversations in one read (export), by conversation id. */
+  listToolInvocationsFor(userId: string, conversationIds: string[]): Promise<Map<string, ToolInvocationRow[]>>;
 
   // ---- DASH Automates ----
   countAutomations(userId: string): Promise<number>;
@@ -602,13 +613,17 @@ export interface Store {
   scheduleRun(input: ScheduleRunInput): Promise<"queued" | "skipped" | "lost">;
   /** Queues a manual or regenerate run unless one is already queued or running. */
   enqueueRun(run: AutomationRunRecord): Promise<boolean>;
-  /** Claims the oldest queued run (any user): it becomes running with a lease. */
-  claimQueuedRun(now: string, leaseUntil: string): Promise<AutomationRunRecord | undefined>;
+  /**
+   * Claims the oldest queued run (any user): it becomes running with a lease of `leaseMs`. PostgreSQL
+   * measures the lease on the DATABASE clock (as listStaleRuns does), so instances whose clocks
+   * disagree can never expire each other's healthy runs; `now` is only the recorded start time.
+   */
+  claimQueuedRun(now: string, leaseMs: number): Promise<AutomationRunRecord | undefined>;
   /** Records the outcome of a running run and its notification; prunes old runs. False if the run is gone. */
   finishRun(input: FinishRunInput): Promise<boolean>;
   /** Drops a running run without a result or notification (a scheduled run whose automation was paused). */
   discardRun(runId: string): Promise<void>;
-  /** Running runs whose lease expired before `now` (their instance stopped). */
+  /** Running runs whose lease expired (their instance stopped): by the database clock on PostgreSQL, `now` in memory. */
   listStaleRuns(now: string, limit: number): Promise<AutomationRunRecord[]>;
   getRun(userId: string, automationId: string, runId: string): Promise<AutomationRunRecord | undefined>;
   /** Most recent first. */
@@ -644,7 +659,7 @@ export interface Store {
    * first, across all users: each becomes "sending" with a lease and one more attempt. Safe across
    * instances (each delivery is claimed by one).
    */
-  claimPushDeliveries(now: string, leaseUntil: string, limit: number): Promise<ClaimedPushDelivery[]>;
+  claimPushDeliveries(now: string, leaseMs: number, limit: number): Promise<ClaimedPushDelivery[]>;
   /** Records the outcome of a claimed delivery. False when it is gone or no longer sending. */
   finishPushDelivery(input: FinishPushDeliveryInput): Promise<boolean>;
   /** The user's deliveries, oldest first (diagnostics and tests; never returned to clients). */

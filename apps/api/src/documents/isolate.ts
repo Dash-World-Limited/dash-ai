@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -7,7 +7,7 @@ import { LIMITS } from "@dash-ai/contracts";
 import { z } from "zod";
 import { TOO_LARGE_DETAIL, type Extraction, type ExtractionReason } from "./inspect.js";
 
-/** Extraction processes running at once; further uploads wait their turn. */
+/** Default extraction processes running at once per instance (DOCUMENT_EXTRACTION_CONCURRENCY; see gate.ts). */
 export const MAX_CONCURRENT_EXTRACTIONS = 2;
 /** Resident memory at which an extraction process is stopped (checked every 100 ms on Linux). */
 export const MAX_EXTRACTION_RSS_BYTES = 640 * 1024 * 1024;
@@ -31,17 +31,9 @@ export function childEnvironment(): NodeJS.ProcessEnv {
   return {};
 }
 
-let running = 0;
-const waiting: Array<() => void> = [];
-
-async function acquire(): Promise<() => void> {
-  if (running >= MAX_CONCURRENT_EXTRACTIONS) await new Promise<void>((resolve) => waiting.push(resolve));
-  running += 1;
-  return () => {
-    running -= 1;
-    waiting.shift()?.();
-  };
-}
+/** Extraction processes alive right now in this process (tests and load checks: none may leak). */
+const children = new Set<ChildProcess>();
+export const activeExtractionProcesses = (): number => children.size;
 
 const ChildResult = z.object({
   status: z.enum(["ready", "unsupported"]),
@@ -70,15 +62,14 @@ async function residentBytes(pid: number): Promise<number | undefined> {
  * resident-memory watchdog, a wall-clock limit and a raised OOM score (the kernel kills it before
  * this server). Whatever happens inside, the server gets back a bounded, validated result.
  */
-export async function extractIsolated(kind: "pdf" | "docx", buf: Buffer, timeoutMs: number): Promise<Extraction> {
-  const release = await acquire();
-  try {
-    return await new Promise<Extraction>((resolve) => {
+export async function extractIsolated(kind: "pdf" | "docx", buf: Buffer, timeoutMs: number, signal?: AbortSignal): Promise<Extraction> {
+  return new Promise<Extraction>((resolve) => {
       const child = spawn(process.execPath, childCommand(kind), {
         env: childEnvironment(),
         stdio: ["pipe", "pipe", "ignore"],
         windowsHide: true,
       });
+      children.add(child);
       const maxOutput = LIMITS.maxExtractedChars * 8 + 64 * 1024;
       const out: Buffer[] = [];
       let outBytes = 0;
@@ -88,6 +79,10 @@ export async function extractIsolated(kind: "pdf" | "docx", buf: Buffer, timeout
         child.kill("SIGKILL");
       };
       const timer = setTimeout(() => stop(failure(TIMED_OUT, "timeout")), timeoutMs);
+      // The client went away: nobody will read the result.
+      const onAbort = () => stop(failure(CRASHED, "crashed"));
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener("abort", onAbort, { once: true });
       const watchdog = setInterval(() => {
         if (child.pid === undefined) return;
         void residentBytes(child.pid).then((rss) => {
@@ -102,8 +97,10 @@ export async function extractIsolated(kind: "pdf" | "docx", buf: Buffer, timeout
       child.stdin.on("error", () => undefined); // the child may exit before reading everything
       child.on("error", () => stop(failure(CRASHED, "crashed")));
       child.on("close", (code) => {
+        children.delete(child);
         clearTimeout(timer);
         clearInterval(watchdog);
+        signal?.removeEventListener("abort", onAbort);
         if (verdict) return resolve(verdict);
         if (code !== 0) return resolve(failure(CRASHED, "crashed"));
         try {
@@ -114,8 +111,5 @@ export async function extractIsolated(kind: "pdf" | "docx", buf: Buffer, timeout
         }
       });
       child.stdin.end(buf);
-    });
-  } finally {
-    release();
-  }
+  });
 }

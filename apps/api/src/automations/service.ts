@@ -216,6 +216,7 @@ export class AutomationService {
     const now = this.deps.now();
     for (const run of await this.deps.store.listStaleRuns(now.toISOString(), 20)) {
       this.deps.log.warn({ automationRun: run.id }, "automation run lease expired; marking interrupted");
+      this.deps.metrics.automationLeaseRecoveries.inc();
       await this.finish(run, { status: "failed", errorCode: "interrupted" });
     }
   }
@@ -240,7 +241,7 @@ export class AutomationService {
   private async startQueued(): Promise<void> {
     while (!this.stopped && this.inFlight.size < this.deps.config.automations.concurrency) {
       const now = this.deps.now();
-      const run = await this.deps.store.claimQueuedRun(now.toISOString(), new Date(now.getTime() + this.leaseMs()).toISOString());
+      const run = await this.deps.store.claimQueuedRun(now.toISOString(), this.leaseMs());
       if (!run) return;
       const controller = new AbortController();
       const promise = this.execute(run, controller.signal)
