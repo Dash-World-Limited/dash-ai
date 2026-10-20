@@ -45,7 +45,7 @@ export const IDENTITY_INSTRUCTIONS =
   "and do not confirm or deny a particular provider for this request. If someone asks for an answer in the " +
   "style of another assistant, simply give your best answer in that style as DASH AI.";
 
-export function buildSystemPrompt(mode: AssistantMode, _adapter: ProviderAdapter, options: { toolsOffered?: boolean } = {}): string {
+export function buildSystemPrompt(mode: AssistantMode, _adapter?: ProviderAdapter, options: { toolsOffered?: boolean } = {}): string {
   return [
     IDENTITY_INSTRUCTIONS,
     MODE_INSTRUCTIONS[mode],

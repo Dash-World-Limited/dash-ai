@@ -111,8 +111,10 @@ describe("store selection (createStore)", () => {
   });
 
   it("refuses the in-memory store in production unless explicitly allowed", async () => {
-    await expect(createStore(testConfig({ NODE_ENV: "production" }))).rejects.toThrow(ConfigError);
-    const allowed = await createStore(testConfig({ NODE_ENV: "production", ALLOW_MEMORY_STORE: "true" }));
+    const prodNoDb = testConfig({ NODE_ENV: "production", PROVIDER_DETAILS: "hidden" });
+    await expect(createStore(prodNoDb)).rejects.toBeInstanceOf(ConfigError);
+    await expect(createStore(prodNoDb)).rejects.toThrow(/DATABASE_URL is required in production/);
+    const allowed = await createStore(testConfig({ NODE_ENV: "production", PROVIDER_DETAILS: "hidden", ALLOW_MEMORY_STORE: "true" }));
     expect(allowed.kind).toBe("memory");
   });
 
@@ -125,7 +127,7 @@ describe("store selection (createStore)", () => {
   });
 
   it("defaults database TLS to require and manual migrations in production", () => {
-    const prod = testConfig({ NODE_ENV: "production", DATABASE_URL: "postgres://h/db" });
+    const prod = testConfig({ NODE_ENV: "production", PROVIDER_DETAILS: "hidden", DATABASE_URL: "postgres://h/db" });
     expect(prod.database.ssl).toBe("require");
     expect(prod.database.autoMigrate).toBe(false);
     const dev = testConfig({ DATABASE_URL: "postgres://h/db" });

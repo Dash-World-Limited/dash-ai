@@ -1,7 +1,8 @@
 # Security and privacy
 
 ## Credentials
-- **AI-provider keys exist only on the server** (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`). The Android
+- **AI-provider keys exist only on the server** (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `BEDROCK_API_KEY`, and each
+  compatible provider's `<NAME>_API_KEY`; document parsing runs with an empty environment, so it sees none). The Android
   app has no provider SDK, no provider hostnames and no keys; CI fails if the APK contains
   provider key patterns or provider API hosts (`scripts/check-apk.sh`), and the tracked-file scan
   fails if Android sources reference a provider API.
@@ -129,6 +130,36 @@ recorded as `other`, so free text cannot leak into metrics. `GET /ready` reports
 - Conversation and document deletion are available in the app and API.
 - Push device tokens are encrypted at rest, never logged or returned, excluded from the export and
   deleted with the session or the account ([push-notifications.md](push-notifications.md)).
+
+## Public repository and CI
+
+The source is public; credentials, production configuration and data are not. Vulnerabilities are
+reported privately ([SECURITY.md](../SECURITY.md)).
+
+What the repository itself enforces:
+- **No credentials in the repository or its history.** Every push runs the tracked-file scan
+  (`scripts/scan-secrets.mjs`) and gitleaks over the full history and the working tree. `.gitignore`
+  also excludes `.env*` (except the empty `.env.example`), keystores, private keys, certificates with
+  keys, service-account files and Terraform state.
+- **Least-privilege workflows.** Every workflow sets `permissions: contents: read` and nothing grants
+  more. No workflow uses `pull_request_target` or `workflow_run`, so code from a pull request (forks
+  included) only ever runs with a read-only token and without repository secrets. Checkouts do not keep
+  the token (`persist-credentials: false`). No job downloads another job's artifacts.
+- **Pinned supply chain.** Every action is pinned to a full commit SHA (version in a comment, kept
+  current by Dependabot), and the gitleaks and actionlint downloads are checked against their published
+  SHA-256. Dependencies install from the committed lockfile (`--frozen-lockfile`); pnpm runs no
+  dependency install scripts.
+- **No paid or privileged run from a pull request.** Live provider calls (`live-smoke.yml`) and release
+  builds (`release.yml`) run only on manual dispatch, which needs write access; the live run's secrets
+  live in the `live-smoke` environment. Ordinary CI uses demonstration providers, throwaway databases and
+  per-run generated keys. No workflow deploys, migrates a real database or rotates secrets.
+- **Workflow inputs never reach a shell as code**: inputs are passed through `env:` and quoted.
+
+What must be configured in GitHub (repository settings; not visible in the repository, so verify them
+there): branch protection or a ruleset on `claude/mvp-foundation` (pull requests only, required CI
+checks, no force push or deletion), required reviewers and branch restrictions on the `live-smoke`
+environment, approval for workflow runs from outside contributors, private vulnerability reporting,
+secret scanning with push protection, and Dependabot security updates.
 
 ## Known limitations
 See [roadmap.md](roadmap.md#security-follow-ups) and the residual risks in

@@ -164,7 +164,7 @@ describe("consumer responses never name a provider or model", () => {
       });
       const operator = await providers(app, `Bearer ${OPERATOR}`);
       expect(operator.statusCode).toBe(200);
-      expect(operator.json().providers.map((p: { id: string; model: string }) => [p.id, p.model])).toEqual([["openai", "m1"], ["anthropic", "m2"]]);
+      expect(operator.json().providers.map((p: { id: string; model: string }) => [p.id, p.model])).toEqual([["openai", "m1"], ["anthropic", "m2"], ["bedrock", null]]);
       // The operator credential is not a metrics credential either.
       expect((await app.inject({ method: "GET", url: "/metrics", headers: { authorization: `Bearer ${OPERATOR}` } })).statusCode).toBe(401);
     });

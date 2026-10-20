@@ -6,6 +6,18 @@
 *.jks
 local.properties
 google-services.json
+# Keys, certificates with keys, cloud credentials (none belong in the repository)
+*.pem
+*.p12
+*.pfx
+*.key
+id_rsa*
+id_ed25519*
+*service-account*.json
+*-credentials.json
+.netrc
+*.tfstate
+*.tfstate.*
 
 # Node / TypeScript
 node_modules/

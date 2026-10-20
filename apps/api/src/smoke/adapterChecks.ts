@@ -1,3 +1,4 @@
+import { BedrockAdapter } from "../providers/bedrock.js";
 import type { ProviderChunk, ProviderAdapter, ProviderTurn } from "../providers/types.js";
 import { ProviderError } from "../providers/types.js";
 import { ToolExecutor } from "../tools/executor.js";
@@ -21,7 +22,7 @@ interface Collected {
   continuation?: unknown;
 }
 
-async function collect(adapter: ProviderAdapter, messages: ProviderTurn[], extra: Pick<Parameters<ProviderAdapter["stream"]>[0], "tools" | "toolChoice"> & { maxOutputTokens?: number } = {}): Promise<Collected> {
+async function collect(adapter: ProviderAdapter, messages: ProviderTurn[], extra: Pick<Parameters<ProviderAdapter["stream"]>[0], "tools" | "toolChoice" | "routing"> & { maxOutputTokens?: number } = {}): Promise<Collected> {
   const started = Date.now();
   const out: Collected = { text: "", chunks: 0, firstTextMs: null, totalMs: 0, finish: undefined, calls: [] };
   for await (const chunk of adapter.stream({
@@ -30,6 +31,7 @@ async function collect(adapter: ProviderAdapter, messages: ProviderTurn[], extra
     maxOutputTokens: extra.maxOutputTokens ?? SMOKE_MAX_OUTPUT_TOKENS,
     signal: AbortSignal.timeout(60_000),
     ...(extra.tools ? { tools: extra.tools, ...(extra.toolChoice ? { toolChoice: extra.toolChoice } : {}) } : {}),
+    ...(extra.routing ? { routing: extra.routing } : {}),
   })) {
     if (chunk.type === "text") {
       out.text += chunk.text;
@@ -123,6 +125,26 @@ export async function runAdapterChecks(adapter: ProviderAdapter, options: Adapte
       throw new CheckFailure("the response finished before cancellation could be exercised");
     }),
   );
+
+  if (adapter instanceof BedrockAdapter) {
+    // Each configured Amazon Nova tier answers once, chosen the way DASH routes to it.
+    const hints = { micro: "economy", lite: "balanced", nova2Lite: "quality" } as const;
+    for (const tier of Object.keys(hints) as Array<keyof typeof hints>) {
+      const model = adapter.models[tier];
+      results.push(
+        model
+          ? await timed(id, `nova tier ${tier}`, async () => {
+              const r = await collect(adapter, [{ role: "user", content: "Reply with exactly one word: pong" }], {
+                routing: { task: "chat", preference: hints[tier], estimatedInputTokens: 50 },
+              });
+              check(r.finish?.servedModel === model, `the ${tier} tier was not the one that answered`);
+              check(r.text.toLowerCase().includes("pong"), "the answer did not follow the instruction");
+              return `in=${r.finish.usage.inputTokens} out=${r.finish.usage.outputTokens}`;
+            })
+          : skipped(id, `nova tier ${tier}`, "this tier is not configured"),
+      );
+    }
+  }
 
   if (options.skipTools) {
     results.push(skipped(id, "tool round trip", "skipped by --skip-tools"));

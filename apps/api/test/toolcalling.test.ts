@@ -141,7 +141,8 @@ describe("end-to-end tool calling through the real provider adapters", () => {
 
     // Persisted: the visible answer, the model label, and an audit row with no arguments or results.
     const detail = ConversationDetailResponse.parse((await app.inject({ method: "GET", url: `/v1/conversations/${body.conversationId}`, headers: user.auth })).json());
-    expect(detail.messages.at(-1)).toMatchObject({ origin: "openai", model: "cfg-openai", status: "complete", content: "Let me check.\n\nSummary for openai: two mocked issues." });
+    // The stored model is the one the provider reports serving (here the scripted server's id).
+    expect(detail.messages.at(-1)).toMatchObject({ origin: "openai", model: "served-openai", status: "complete", content: "Let me check.\n\nSummary for openai: two mocked issues." });
     const activity = ToolActivityResponse.parse((await app.inject({ method: "GET", url: "/v1/tools/activity", headers: user.auth })).json());
     expect(activity.activity).toHaveLength(1);
     expect(activity.activity[0]).toMatchObject({ provider: "openai", plugin: "mock-github", tool: "list_issues", status: "ok", conversationId: body.conversationId, messageId });

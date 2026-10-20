@@ -9,7 +9,9 @@ import {
 } from "@dash-ai/contracts";
 import type { FastifyBaseLogger } from "fastify";
 import type { AppConfig } from "../config.js";
+import { estimateAnswerCostUsd } from "../intelligence/cost.js";
 import { GenerationError, generateText } from "../intelligence/generate.js";
+import type { AiPlatform } from "../intelligence/platform.js";
 import type { IntelligenceRouter } from "../intelligence/router.js";
 import type { Metrics } from "../observability/metrics.js";
 import type { ProviderRegistry } from "../providers/registry.js";
@@ -21,6 +23,8 @@ export interface AutomationDeps {
   store: Store;
   providers: ProviderRegistry;
   router: IntelligenceRouter;
+  /** Provider and cost controls (spend limits, quotas, the inference ledger). */
+  ai: AiPlatform;
   config: AppConfig;
   log: FastifyBaseLogger;
   metrics: Metrics;
@@ -54,6 +58,8 @@ export function runErrorMessage(code: string | null): string {
       return "DASH AI was unavailable when this ran.";
     case "interrupted":
       return "This run was interrupted before it finished.";
+    case "limit_reached":
+      return "A DASH AI usage limit stopped this run. It can run again later.";
     default:
       return "DASH AI couldn't complete this run.";
   }
@@ -250,8 +256,10 @@ export class AutomationService {
     const budget = AbortSignal.any([signal, AbortSignal.timeout(Math.max(1_000, this.leaseMs() - 30_000))]);
     try {
       const result = await generateText(
-        { providers: this.deps.providers, router: this.deps.router, config: this.deps.config, log, metrics },
+        { providers: this.deps.providers, router: this.deps.router, ai: this.deps.ai, config: this.deps.config, log, metrics },
         {
+          userId: run.userId,
+          inferenceId: run.id,
           task: "automation",
           mode: automation.mode,
           instructions: automationInstructions(automation.timeZone, this.deps.now()),
@@ -260,6 +268,8 @@ export class AutomationService {
         },
       );
       const content = result.content.slice(0, AUTOMATION_LIMITS.maxResultChars);
+      const estimatedCostUsd = estimateAnswerCostUsd(this.deps.config.modelPrices, { ...result, servedModel: result.model });
+      if (estimatedCostUsd) metrics.estimatedCostUsd.inc({ provider: result.provider }, estimatedCostUsd);
       await this.finish(run, { status: "ready", content, provider: result.provider, model: result.model, demo: result.demo });
       await store
         .recordUsage({
@@ -271,6 +281,7 @@ export class AutomationService {
           demo: result.demo,
           inputTokens: result.usage.inputTokens,
           outputTokens: result.usage.outputTokens,
+          estimatedCostUsd,
           createdAt: this.deps.now().toISOString(),
         })
         .catch((err: unknown) => log.warn({ err }, "could not record automation usage"));

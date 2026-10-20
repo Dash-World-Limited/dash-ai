@@ -16,6 +16,9 @@ import type { ProviderRegistry } from "../providers/registry.js";
 import {
   failoverAllowed,
   toProviderError,
+  type ProviderChunk,
+  type ProviderError,
+  type ProviderRequest,
   type ProviderAdapter,
   type ProviderToolResult,
   type ProviderTurn,
@@ -27,7 +30,12 @@ import { DUPLICATE_TEXT } from "../tools/executor.js";
 import type { ToolRuntime } from "../tools/runtime.js";
 import type { ModelToolCall } from "../tools/types.js";
 import type { Metrics } from "../observability/metrics.js";
-import { estimateTokens, type IntelligenceRouter } from "../intelligence/router.js";
+import { estimateAnswerCostUsd } from "../intelligence/cost.js";
+import { estimateTokens, type IntelligenceRouter, type RouteDecision } from "../intelligence/router.js";
+import { estimateTokensForLedger, requestChars, type InferenceContext } from "../intelligence/ledger.js";
+import type { AiPlatform, Refusal } from "../intelligence/platform.js";
+import type { Sensitivity } from "../intelligence/policy.js";
+import type { ToolLoop } from "../intelligence/worstCase.js";
 import { hideProviders, neutralErrorMessage, NEUTRAL_ROUTING_REASON, NEUTRAL_UNAVAILABLE } from "./publicSurface.js";
 import { withIdleTimeout } from "./timeouts.js";
 import { DEFAULT_TITLE, generateTitle } from "./titles.js";
@@ -42,6 +50,7 @@ export interface ChatContext {
   store: Store;
   providers: ProviderRegistry;
   router: IntelligenceRouter;
+  ai: AiPlatform;
   tools: ToolRuntime;
   config: AppConfig;
   log: FastifyBaseLogger;
@@ -51,6 +60,13 @@ export interface ChatContext {
 
 /** A model may ask for many calls in one step; beyond this they are refused, not run. */
 export const MAX_TOOL_CALLS_PER_ROUND = 8;
+
+/**
+ * The most tool-result characters one round can add to the next request: every call that may run, at
+ * its result bound plus room for its name and a truncation note. Calls beyond the limit get short
+ * refusals; a round that still grows past its budget is answered without tools (see runChat).
+ */
+export const toolResultCharsPerRound = (maxResultChars: number): number => MAX_TOOL_CALLS_PER_ROUND * (maxResultChars + 200);
 const SAFE_CALL_ID = /^[A-Za-z0-9_.:-]{1,64}$/;
 
 export interface PreparedTarget {
@@ -73,6 +89,17 @@ export interface PreparedChat {
   documents: DocumentRecord[];
   /** Tools this user has enabled and granted. Empty when none (the usual case). */
   offered: OfferedTools;
+  /** The account plan and the request's sensitivity (they decided which providers were eligible). */
+  plan: string;
+  sensitivity: Sensitivity;
+  /** Routing metadata recorded with every ledger attempt (internal; never content). */
+  route: Record<string, unknown>;
+  /**
+   * What a paid provider was admitted on under a spend limit or ceiling (DASH AI routing only): the
+   * first request's estimated input tokens and the tool loop. Each provider request of the answer is
+   * then held to its round's input budget (see AiPlatform.inputBudgets). Null when nothing is bounded.
+   */
+  costBudget: { firstInputTokens: number; loop: ToolLoop | null } | null;
 }
 
 /**
@@ -118,34 +145,60 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
   const offered = await ctx.tools.offeredFor(userId);
   // Consumers never choose a provider: with provider details hidden every request is DASH AI routed.
   const hidden = hideProviders(ctx.config);
+  if (!ctx.config.ai.enabled) {
+    throw new AppError("no_provider_available", hidden ? NEUTRAL_UNAVAILABLE : "AI is switched off on this server (AI_ENABLED=false).");
+  }
   const choice = hidden ? "smart" : request.modelChoice;
   const configured = ctx.providers.configured();
+  const plan = ctx.ai.plan;
+  const sensitivity = ctx.ai.classify({ documents: documents.length, toolsOffered: offered.size > 0 });
+  const spend = await ctx.ai.admit(userId);
   let targets: PreparedTarget[];
   let routingReason: string;
+  let costBudget: PreparedChat["costBudget"] = null;
+  let route: Record<string, unknown>;
   if (choice === "smart") {
     // The DASH Intelligence Router decides. A provider the person named in their own words is a
     // preference, applied silently when available.
     const inputChars =
       historyChars + request.message.content.length + documents.reduce((n, d) => n + d.extractedText.length, 0);
+    // The first provider request exactly as it will be sent (documents rendered, history trimmed; the
+    // turns are the same for every provider), and never less than the plain estimate above.
+    const firstInputChars =
+      Math.max(inputChars, requestChars({ system: "", messages: buildProviderMessages("dash", request.history, request.message.content, documents) })) +
+      requestChars({
+        system: buildSystemPrompt(request.mode, undefined, { toolsOffered: offered.size > 0 }),
+        messages: [],
+        ...(offered.size > 0 ? { tools: offered.list() } : {}),
+      });
+    const loop: ToolLoop | null =
+      offered.size > 0 ? { toolRounds: ctx.tools.maxRounds, resultCharsPerRound: toolResultCharsPerRound(ctx.tools.maxResultChars) } : null;
+    costBudget = ctx.ai.costBounded(spend) ? { firstInputTokens: estimateTokensForLedger(firstInputChars), loop } : null;
     const decision = ctx.router.route({
       task: "chat",
       mode: request.mode,
       hint: providerHint(request.message.content),
       estimatedInputTokens: estimateTokens(inputChars),
       requires: offered.size > 0 ? ["tool_use"] : [],
+      sensitivity,
+      plan,
+      inputModalities: ["text"],
+      // Cost limits compare against everything sent (system prompt and tool schemas included), for
+      // every provider request a tool-using answer may make (its tool rounds, then a final answer).
+      ...ctx.ai.costFields(spend, firstInputChars, loop),
     });
+    ctx.ai.noteSpendLimit(decision, spend);
     if (!decision.ok) {
       ctx.metrics?.routerUnavailable.inc({ task: "chat", reason: decision.reason });
-      if (decision.reason === "context_too_large") {
-        throw new AppError("payload_too_large", "This conversation and its documents are too long to answer. Start a new chat or attach fewer documents.");
-      }
-      throw new AppError("no_provider_available", hidden ? NEUTRAL_UNAVAILABLE : "No AI provider is configured on this server.");
+      ctx.log.info({ reason: decision.reason, rejected: decision.rejected, spend: spend.blockedBy }, "no provider for this request");
+      throw refusalError(ctx.ai.refusal(decision, spend), hidden, decision.reason);
     }
     const adapters = decision.providers.map((p) => ctx.providers.get(p)).filter((a): a is ProviderAdapter => a !== undefined);
     if (adapters.length === 0) throw new AppError("no_provider_available", hidden ? NEUTRAL_UNAVAILABLE : "No AI provider is configured on this server.");
     ctx.metrics?.routerDecisions.inc({ task: "chat", provider: adapters[0]!.id });
     ctx.log.debug({ routeKey: decision.routeKey, candidates: decision.candidates, rejected: decision.rejected }, "routing decision");
     targets = [{ adapter: adapters[0]!, messageId: newId(), fallbacks: adapters.slice(1) }];
+    route = routeMetadata(decision, sensitivity, spend.blockedBy);
     const legacy = resolveProviders("smart", request.mode, configured);
     routingReason = hidden
       ? NEUTRAL_ROUTING_REASON
@@ -153,14 +206,17 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
         ? legacy.reason
         : `DASH AI routed this request to ${adapters[0]!.displayName} (${decision.routeKey}).`;
   } else {
+    // Engineering routes (PROVIDER_DETAILS=exposed only): the spend limits still apply.
     const routing = resolveProviders(choice, request.mode, configured);
     if (!routing.ok) throw new AppError(routing.code, routing.message);
     targets = routing.providers.map((p) => {
       const adapter = ctx.providers.get(p);
       if (!adapter) throw new AppError("provider_not_configured", "The selected provider is not configured.");
+      if (!adapter.demo && !spend.paidAllowed) throw new AppError("rate_limited", `A spend limit (${spend.blockedBy}) stops paid providers.`, { retryable: false });
       return { adapter, messageId: newId(), fallbacks: [] };
     });
     routingReason = routing.reason;
+    route = { routeKey: `explicit:${choice}`, order: routing.providers, sensitivity };
   }
 
   return {
@@ -172,7 +228,39 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
     compareGroupId: choice === "compare" ? request.message.id : null,
     documents,
     offered,
+    plan,
+    sensitivity,
+    route,
+    costBudget,
   };
+}
+
+/** Internal routing metadata for the ledger: order, rejections and why. No content. */
+function routeMetadata(decision: Extract<RouteDecision, { ok: true }>, sensitivity: Sensitivity, spendBlockedBy: string | null): Record<string, unknown> {
+  return {
+    routeKey: decision.routeKey,
+    order: decision.providers,
+    candidates: decision.candidates.map((c) => ({ provider: c.provider, score: c.score, pricing: c.pricing, freePreferred: c.freePreferred, circuitOpen: c.circuitOpen, quota: c.quota })),
+    rejected: decision.rejected.filter((r) => r.reason !== "not_configured"),
+    sensitivity,
+    spendBlockedBy,
+  };
+}
+
+/** A request nobody may serve → an error in DASH AI's own words (details only in engineering mode). */
+function refusalError(refusal: Refusal, hidden: boolean, reason: string): AppError {
+  switch (refusal.kind) {
+    case "context_too_large":
+      return new AppError("payload_too_large", "This conversation and its documents are too long to answer. Start a new chat or attach fewer documents.");
+    case "too_large":
+      return new AppError("payload_too_large", "This request is too large for DASH AI right now. Try a shorter message or fewer documents.");
+    case "user_limit":
+      return new AppError("rate_limited", "You've reached today's DASH AI usage limit. Please try again tomorrow.", { retryable: false });
+    case "busy":
+      return new AppError("rate_limited", "DASH AI is very busy right now. Please try again in a moment.");
+    default:
+      return new AppError("no_provider_available", hidden ? NEUTRAL_UNAVAILABLE : `No AI provider may serve this request (${reason}).`);
+  }
 }
 
 export interface TargetOutcome {
@@ -267,10 +355,33 @@ async function runTarget(
   let content = "";
   let status: MessageStatus = "complete";
   let usage: Usage = { inputTokens: null, outputTokens: null };
+  /** The model id the provider reports for the answer kept (an adaptive provider picks one per request). */
+  let served: string | undefined;
+  // Internal hints for adapters that choose between models they own; the router already chose the provider.
+  const routing = {
+    task: "chat",
+    mode: prepared.request.mode,
+    estimatedInputTokens: estimateTokens(
+      prepared.request.history.reduce((n, m) => n + m.content.length, 0) +
+        prepared.request.message.content.length +
+        prepared.documents.reduce((n, d) => n + d.extractedText.length, 0),
+    ),
+  };
+
+  // Every provider attempt (retries, tool rounds, fallbacks) goes to the inference ledger.
+  const inference: InferenceContext = {
+    inferenceId: messageId,
+    userId: prepared.userId,
+    plan: prepared.plan,
+    task: "chat",
+    mode: prepared.request.mode,
+    route: prepared.route,
+  };
 
   /** One complete answer from `provider`; throws on failure. Text and tool calls stream as they come. */
-  const generate = async (provider: ProviderAdapter): Promise<"stop" | "length" | "refusal"> => {
+  const generate = async (provider: ProviderAdapter, fallbackIndex: number): Promise<"stop" | "length" | "refusal"> => {
     const adapter = provider;
+    served = undefined;
     const turns: ProviderTurn[] = buildProviderMessages(
       adapter.id,
       prepared.request.history,
@@ -281,6 +392,12 @@ async function runTarget(
     const system = buildSystemPrompt(prepared.request.mode, adapter, { toolsOffered: offered.size > 0 });
     let finishReason: "stop" | "length" | "refusal" = "stop";
     let servedModel: string | null | undefined;
+    // A paid provider admitted on its worst case is held to it: no request of this answer may send
+    // more than its round's input budget (null: nothing to enforce).
+    const budgets =
+      prepared.costBudget && ctx.ai.isPaid(adapter.id)
+        ? ctx.ai.inputBudgets(adapter.id, prepared.costBudget.firstInputTokens, prepared.costBudget.loop)
+        : null;
 
     for (let round = 0; ; round++) {
       // A cancel or timeout during a tool call must end the response, not start another round.
@@ -288,7 +405,23 @@ async function runTarget(
       // The tool list stays identical every round (see ProviderRequest.toolChoice). On the last
       // allowed round tool use is switched off, so the model must answer with what it has.
       const tools = offered.size > 0 ? offered.list() : undefined;
-      const toolUse = tools !== undefined && round < ctx.tools.maxRounds;
+      let toolUse = tools !== undefined && round < ctx.tools.maxRounds;
+      if (budgets) {
+        const sending = estimateTokensForLedger(requestChars({ system, messages: turns, ...(tools ? { tools } : {}) }));
+        const budget = budgets[Math.min(round, budgets.length - 1)]!;
+        if (sending > budget) {
+          // Tool results grew past what was admitted. If the final answer's budget still covers this
+          // request, answer now without tools (the answer then makes fewer requests than admitted);
+          // otherwise stop here rather than spend past the reservation.
+          if (sending > budgets[budgets.length - 1]!) {
+            ctx.log.warn({ provider: adapter.id, round, sending, budget }, "answer stopped at its spend reservation");
+            finishReason = "length";
+            break;
+          }
+          ctx.log.info({ provider: adapter.id, round, sending, budget }, "final answer early: tool results reached the spend reservation");
+          toolUse = false;
+        }
+      }
       let roundText = "";
       let calls: ModelToolCall[] = [];
       let continuation: unknown;
@@ -305,14 +438,32 @@ async function runTarget(
         if (controller.signal.aborted) onTargetAbort();
         else controller.signal.addEventListener("abort", onTargetAbort, { once: true });
         let produced = false;
-        try {
-          const source = adapter.stream({
-            system,
-            messages: turns,
-            ...(tools ? { tools, toolChoice: toolUse ? ("auto" as const) : ("none" as const) } : {}),
-            maxOutputTokens: ctx.config.maxOutputTokens,
-            signal: attemptController.signal,
+        const attemptStarted = Date.now();
+        let attemptChars = 0;
+        let attemptFinish: Extract<ProviderChunk, { type: "finish" }> | undefined;
+        const providerRequest: ProviderRequest = {
+          system,
+          messages: turns,
+          ...(tools ? { tools, toolChoice: toolUse ? ("auto" as const) : ("none" as const) } : {}),
+          maxOutputTokens: ctx.config.maxOutputTokens,
+          signal: attemptController.signal,
+          routing,
+        };
+        const report = (error?: ProviderError) =>
+          ctx.ai.attempts.record(inference, {
+            adapter,
+            fallbackIndex,
+            round,
+            retry: attempt,
+            startedAt: attemptStarted,
+            endedAt: Date.now(),
+            requestChars: requestChars(providerRequest),
+            outputChars: attemptChars,
+            finish: attemptFinish,
+            error,
           });
+        try {
+          const source = adapter.stream(providerRequest);
           for await (const chunk of withIdleTimeout(source, ctx.config.providerIdleTimeoutMs, () =>
             attemptController.abort("timeout"),
           )) {
@@ -324,6 +475,7 @@ async function runTarget(
               }
               content += chunk.text;
               roundText += chunk.text;
+              attemptChars += chunk.text.length;
               sink.send({ event: "message.delta", data: { messageId, text: chunk.text } });
             } else if (chunk.type === "tool_calls") {
               calls = chunk.calls;
@@ -332,17 +484,22 @@ async function runTarget(
               roundFinish = chunk.finishReason;
               usage = addUsage(usage, chunk.usage);
               servedModel = chunk.servedModel ?? servedModel;
+              attemptFinish = chunk;
             }
           }
+          await report();
           break;
         } catch (err) {
+          const error = toProviderError(adapter.displayName, err, attemptController.signal);
+          await report(error);
           // The target's own abort (user cancel, overall timeout) is never retried.
           if (controller.signal.aborted) throw err;
-          const error = toProviderError(adapter.displayName, err, attemptController.signal);
           ctx.metrics?.providerFailures.inc({ provider: adapter.id, code: error.code, retryable: error.retryable });
-          const delay = retryDelayMs(ctx.config.providerRetry, attempt, error);
+          // A provider that asked for a longer wait than the backoff gets it, or is not retried at all.
+          const delay = Math.max(retryDelayMs(ctx.config.providerRetry, attempt, error), error.retryAfterMs ?? 0);
           const remaining = ctx.config.providerTimeoutMs - (Date.now() - started);
-          if (produced || !error.retryable || attempt >= ctx.config.providerRetry.maxRetries || delay >= remaining) {
+          const paused = ctx.ai.quota.status(adapter.id).state === "paused";
+          if (produced || !error.retryable || error.quotaExhausted || paused || attempt >= ctx.config.providerRetry.maxRetries || delay >= remaining) {
             throw error;
           }
           ctx.metrics?.providerRetries.inc({ provider: adapter.id, code: error.code });
@@ -370,6 +527,7 @@ async function runTarget(
     if (servedModel && servedModel !== adapter.model) {
       ctx.log.info({ provider: adapter.id, configuredModel: adapter.model, servedModel }, "provider served a different model id");
     }
+    served = servedModel ?? undefined;
     return finishReason;
   };
 
@@ -379,7 +537,7 @@ async function runTarget(
       adapter = candidates[c]!;
       const attemptStarted = Date.now();
       try {
-        finishReason = await generate(adapter);
+        finishReason = await generate(adapter, c);
         ctx.router.recordSuccess(adapter.id, Date.now() - attemptStarted);
         break;
       } catch (err) {
@@ -430,13 +588,16 @@ async function runTarget(
 
   ctx.metrics?.aiRequestSeconds.observe({ provider: adapter.id, status }, (Date.now() - started) / 1000);
   const now = ctx.now().toISOString();
+  const model = served ?? adapter.model;
+  const estimatedCostUsd = estimateAnswerCostUsd(ctx.config.modelPrices, { provider: adapter.id, servedModel: model, configuredModel: adapter.model, demo: adapter.demo, usage });
+  if (estimatedCostUsd) ctx.metrics?.estimatedCostUsd.inc({ provider: adapter.id }, estimatedCostUsd);
   await ctx.store.saveMessage({
     id: messageId,
     conversationId: prepared.conversation.id,
     role: "assistant",
     content,
     origin: adapter.id,
-    model: adapter.model,
+    model,
     demo: adapter.demo,
     status,
     compareGroupId: prepared.compareGroupId,
@@ -448,10 +609,11 @@ async function runTarget(
     conversationId: prepared.conversation.id,
     messageId,
     provider: adapter.id,
-    model: adapter.model,
+    model,
     demo: adapter.demo,
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
+    estimatedCostUsd,
     createdAt: now,
   });
   return { provider: adapter.id, status, usage };

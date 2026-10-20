@@ -19,7 +19,7 @@ Tools and plugins are user capabilities ("Tools & Connections"), unrelated to pr
 
 `PROVIDER_DETAILS=exposed` restores the engineering view (provider and model in responses, explicit
 routes, Compare). It exists for the API test suite and the live provider smoke run
-([provider-verification.md](provider-verification.md)); production config warns if it is set.
+([provider-verification.md](provider-verification.md)); production refuses to start with it.
 
 ## Routing (server)
 
@@ -40,6 +40,10 @@ routes, Compare). It exists for the API test suite and the live provider smoke r
    provider: "I'm DASH AI. DASH AI may use third-party AI infrastructure to help process requests."
 6. **History.** Earlier answers are DASH AI's turns, sent as plain text to whichever provider answers.
    Thinking blocks and tool-call continuations never cross providers.
+
+Amazon Bedrock (Amazon Nova) is one more internal provider behind the same router, under the same
+rules. Its names ("Bedrock", "Amazon Nova", model ids) are in the leak list (`PROVIDER_NAMES`) the tests
+check consumer output against, and the estimated cost recorded per answer never leaves the server.
 
 Clients send `modelChoice: "smart"` (or nothing). Older clients sending `openai`, `claude` or `compare`
 are routed the same way in hidden mode.

@@ -6,11 +6,17 @@ export type Id = z.infer<typeof Id>;
 
 export const IsoDateTime = z.iso.datetime({ offset: true });
 
+/** The AI infrastructure providers DASH ships adapters for. */
+export const BUILTIN_PROVIDER_IDS = ["openai", "anthropic", "bedrock"] as const;
+export type BuiltinProviderId = (typeof BUILTIN_PROVIDER_IDS)[number];
+
 /**
- * The AI infrastructure providers the backend can talk to. INTERNAL: consumer clients never show
- * them. Production servers omit provider identity from consumer responses (PROVIDER_DETAILS=hidden).
+ * Internal id of an AI infrastructure provider the backend can talk to: a built-in one, or one an
+ * operator registers (for example an approved OpenAI-compatible API) under its own id. INTERNAL:
+ * consumer clients never show them, and production servers omit provider identity from consumer
+ * responses (PROVIDER_DETAILS=hidden).
  */
-export const ProviderId = z.enum(["openai", "anthropic"]);
+export const ProviderId = z.string().regex(/^[a-z][a-z0-9-]{1,31}$/, "Invalid provider id");
 export type ProviderId = z.infer<typeof ProviderId>;
 
 /**

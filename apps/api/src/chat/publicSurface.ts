@@ -25,9 +25,20 @@ export function neutralErrorMessage(code: string): string {
 }
 
 /** Provider and product names that must never appear in consumer-facing text. Used by tests and checks. */
-export const PROVIDER_NAMES: readonly string[] = ["OpenAI", "ChatGPT", "GPT-", "Anthropic", "Claude", "Gemini"];
+export const PROVIDER_NAMES: readonly string[] = [
+  "OpenAI",
+  "ChatGPT",
+  "GPT-",
+  "Anthropic",
+  "Claude",
+  "Gemini",
+  "Bedrock",
+  "Amazon Nova",
+  "amazon.nova",
+  "amazonaws",
+];
 
 export const containsProviderName = (text: string): boolean =>
-  PROVIDER_NAMES.some((n) => text.toLowerCase().includes(n.toLowerCase())) || /\b(openai|anthropic)\b/i.test(text);
+  PROVIDER_NAMES.some((n) => text.toLowerCase().includes(n.toLowerCase())) || /\b(openai|anthropic|bedrock|nova-(micro|lite|pro|2))\b/i.test(text);
 
 export type { ProviderId };

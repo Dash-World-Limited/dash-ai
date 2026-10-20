@@ -50,7 +50,7 @@ export function chatRoutes(app: FastifyInstance, ctx: RouteContext): void {
         throw new AppError("too_many_streams", "Too many responses are generating at once. Wait for one to finish.");
       }
       const prepared = await prepareChat(
-        { store: ctx.store, providers: ctx.providers, router: ctx.router, tools: ctx.tools, config: ctx.config, log: request.log, now: ctx.now, metrics: ctx.metrics },
+        { store: ctx.store, providers: ctx.providers, router: ctx.router, ai: ctx.ai, tools: ctx.tools, config: ctx.config, log: request.log, now: ctx.now, metrics: ctx.metrics },
         user.id,
         body,
       );
@@ -83,7 +83,7 @@ export function chatRoutes(app: FastifyInstance, ctx: RouteContext): void {
       let outcome = "ok";
       try {
         const results = await runChat(
-          { store: ctx.store, providers: ctx.providers, router: ctx.router, tools: ctx.tools, config: ctx.config, log: request.log, now: ctx.now, metrics: ctx.metrics },
+          { store: ctx.store, providers: ctx.providers, router: ctx.router, ai: ctx.ai, tools: ctx.tools, config: ctx.config, log: request.log, now: ctx.now, metrics: ctx.metrics },
           prepared,
           streamId,
           sink,

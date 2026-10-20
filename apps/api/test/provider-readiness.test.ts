@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
 import { AnthropicAdapter } from "../src/providers/anthropic.js";
+import { BedrockAdapter } from "../src/providers/bedrock.js";
 import { OpenAIAdapter } from "../src/providers/openai.js";
 import { looksLikePlaceholder, ProviderRegistry } from "../src/providers/registry.js";
 import { chatBody, register, sse, testConfig } from "./helpers.js";
@@ -11,42 +12,77 @@ import { registryFor, scriptedProvider } from "./providerServer.js";
 
 // Production providers are configured only through the environment (secrets), never in code. These
 // tests use made-up keys and scripted provider servers behind the real SDKs: no network, no cost.
-// Live verification against OpenAI and Anthropic still needs real keys (pnpm smoke:live / live-smoke.yml).
+// Live verification against a configured external provider still needs an explicit smoke run.
 
 const OPENAI_KEY = "sk-proj-TESTONLY0000000000000000000000";
 const ANTHROPIC_KEY = "sk-ant-api03-TESTONLY000000000000000000";
+const BEDROCK_KEY = "ABSKTESTONLY0000000000000000000000000000";
 
 const liveEnv = (extra: Record<string, string> = {}) =>
   loadConfig({ NODE_ENV: "test", LOG_LEVEL: "silent", PROVIDER_MODE: "live", ...extra });
 
 describe("provider configuration comes from the environment only", () => {
-  it("both providers become live with the configured models; keys never appear in what clients see", () => {
+  it("OpenAI and Anthropic become live with configured models; unconfigured Bedrock stays internal and off", () => {
     const registry = ProviderRegistry.fromConfig(
       liveEnv({ OPENAI_API_KEY: `${OPENAI_KEY}\n`, OPENAI_MODEL: "openai-model-from-env", ANTHROPIC_API_KEY: ` ${ANTHROPIC_KEY} `, ANTHROPIC_MODEL: "claude-model-from-env" }),
     );
     expect(registry.warnings).toEqual([]);
     expect(registry.get("openai")).toBeInstanceOf(OpenAIAdapter);
     expect(registry.get("anthropic")).toBeInstanceOf(AnthropicAdapter);
+    expect(registry.get("bedrock")).toBeUndefined();
     expect(registry.status()).toEqual([
       { id: "openai", displayName: "OpenAI", configured: true, model: "openai-model-from-env", mode: "live" },
       { id: "anthropic", displayName: "Claude", configured: true, model: "claude-model-from-env", mode: "live" },
+      { id: "bedrock", displayName: "Amazon Bedrock", configured: false, model: null, mode: "unconfigured" },
     ]);
     expect(JSON.stringify(registry.status())).not.toContain("TESTONLY");
   });
 
-  it("a half-configured provider stays off with a warning that names the variable, never the value", () => {
-    const registry = ProviderRegistry.fromConfig(liveEnv({ OPENAI_API_KEY: OPENAI_KEY, ANTHROPIC_MODEL: "claude-model" }));
+  it("Bedrock becomes a live adapter only when key, region and at least one model are configured", () => {
+    const registry = ProviderRegistry.fromConfig(
+      liveEnv({
+        BEDROCK_API_KEY: BEDROCK_KEY,
+        BEDROCK_REGION: "eu-west-1",
+        BEDROCK_MODEL_LITE: "eu.amazon.nova-lite-v1:0",
+      }),
+    );
+    expect(registry.warnings).toEqual([]);
+    expect(registry.get("bedrock")).toBeInstanceOf(BedrockAdapter);
+    expect([...registry.configured()]).toEqual(["bedrock"]);
+    expect(registry.status().find((s) => s.id === "bedrock")).toEqual({
+      id: "bedrock",
+      displayName: "Amazon Bedrock",
+      configured: true,
+      model: "eu.amazon.nova-lite-v1:0",
+      mode: "live",
+    });
+    expect(JSON.stringify(registry.status())).not.toContain("TESTONLY");
+  });
+
+  it("a half-configured provider stays off with warnings that name variables, never values", () => {
+    const registry = ProviderRegistry.fromConfig(
+      liveEnv({ OPENAI_API_KEY: OPENAI_KEY, ANTHROPIC_MODEL: "claude-model", BEDROCK_MODEL_LITE: "eu.amazon.nova-lite-v1:0" }),
+    );
     expect([...registry.configured()]).toEqual([]);
     expect(registry.warnings).toContain("OpenAI needs both OPENAI_API_KEY and OPENAI_MODEL.");
     expect(registry.warnings).toContain("Claude needs both ANTHROPIC_API_KEY and ANTHROPIC_MODEL.");
+    expect(registry.warnings).toContain("Amazon Bedrock: BEDROCK_API_KEY is required when Bedrock is configured with BEDROCK_AUTH=api_key.");
+    expect(registry.warnings).toContain("Amazon Bedrock: BEDROCK_REGION is required when Bedrock is configured.");
     expect(registry.warnings).toContain("No AI provider is configured. Chat requests will fail until one is configured.");
-    expect(registry.warnings.join(" ")).not.toContain("TESTONLY");
+    expect(registry.warnings.join(" ")).not.toMatch(/TESTONLY|nova-lite/);
   });
 
-  it("one provider is enough to run; the other is reported as not configured", () => {
+  it("a Region on its own (as templates preset it) is not a half-configured Bedrock", () => {
+    const registry = ProviderRegistry.fromConfig(liveEnv({ ANTHROPIC_API_KEY: ANTHROPIC_KEY, ANTHROPIC_MODEL: "claude-model", BEDROCK_REGION: "eu-west-1" }));
+    expect([...registry.configured()]).toEqual(["anthropic"]);
+    expect(registry.warnings).toEqual([]);
+  });
+
+  it("one provider is enough to run; the others are reported as not configured", () => {
     const registry = ProviderRegistry.fromConfig(liveEnv({ ANTHROPIC_API_KEY: ANTHROPIC_KEY, ANTHROPIC_MODEL: "claude-model" }));
     expect([...registry.configured()]).toEqual(["anthropic"]);
     expect(registry.status().find((s) => s.id === "openai")).toMatchObject({ configured: false, mode: "unconfigured", model: null });
+    expect(registry.status().find((s) => s.id === "bedrock")).toMatchObject({ configured: false, mode: "unconfigured", model: null });
     expect(registry.warnings).toEqual([]);
   });
 
@@ -56,13 +92,14 @@ describe("provider configuration comes from the environment only", () => {
     }
     expect(looksLikePlaceholder(OPENAI_KEY)).toBe(false);
     expect(looksLikePlaceholder(ANTHROPIC_KEY)).toBe(false);
+    expect(looksLikePlaceholder(BEDROCK_KEY)).toBe(false);
     const registry = ProviderRegistry.fromConfig(liveEnv({ OPENAI_API_KEY: "your-api-key", OPENAI_MODEL: "m" }));
     expect(registry.warnings).toContain("OPENAI_API_KEY looks like a placeholder, not a real key: OpenAI will refuse requests.");
   });
 
-  it("fake mode needs no keys and is labelled; it is the default in the example configuration only", () => {
+  it("fake mode needs no keys and is labelled; Bedrock remains unconfigured", () => {
     const registry = ProviderRegistry.fromConfig(testConfig());
-    expect(registry.status().map((s) => s.mode)).toEqual(["fake", "fake"]);
+    expect(registry.status().map((s) => s.mode)).toEqual(["fake", "fake", "unconfigured"]);
     expect(loadConfig({ NODE_ENV: "test" }).providerMode).toBe("live");
   });
 });
@@ -82,7 +119,11 @@ describe("both real SDK adapters through the whole API", () => {
     const user = await register(app);
 
     const providers = ProvidersResponse.parse((await app.inject({ method: "GET", url: "/v1/providers", headers: user.auth })).json());
-    expect(providers.providers.map((p) => [p.id, p.configured, p.mode])).toEqual([["openai", true, "live"], ["anthropic", true, "live"]]);
+    expect(providers.providers.map((p) => [p.id, p.configured, p.mode])).toEqual([
+      ["openai", true, "live"],
+      ["anthropic", true, "live"],
+      ["bedrock", false, "unconfigured"],
+    ]);
 
     const body = chatBody({ modelChoice: "compare", message: { id: "55555555-5555-4555-8555-555555555555", content: "How should I price a kiosk?", attachmentIds: [] } });
     const res = await app.inject({ method: "POST", url: "/v1/chat/stream", headers: user.auth, payload: body });

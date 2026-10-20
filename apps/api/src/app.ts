@@ -6,6 +6,7 @@ import { StreamRegistry } from "./chat/streamRegistry.js";
 import type { AppConfig } from "./config.js";
 import { AppError } from "./errors.js";
 import { loggerOptions, type LogStream } from "./logging.js";
+import { AiPlatform } from "./intelligence/platform.js";
 import { IntelligenceRouter } from "./intelligence/router.js";
 import { ProviderRegistry } from "./providers/registry.js";
 import { AutomationService } from "./automations/service.js";
@@ -92,7 +93,6 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   const now = deps.now ?? (() => new Date());
   const store = deps.store ?? new MemoryStore();
   const providers = deps.providers ?? ProviderRegistry.fromConfig(config);
-  const router = new IntelligenceRouter(config.routerPolicy, () => providers.configured());
 
   const app = Fastify({
     logger: loggerOptions(config.logLevel, deps.logStream),
@@ -111,6 +111,12 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   app.decorateRequest("authTokenHash", null);
 
   const metrics = deps.metrics ?? new Metrics();
+  const ai = new AiPlatform({ config, store, providers, log: app.log, metrics, now: () => now().getTime() });
+  await ai.seedQuotas();
+  const router = new IntelligenceRouter(config.routerPolicy, () => providers.configured(), Date.now, {
+    quota: ai.quota,
+    controls: () => ai.controls(),
+  });
   const minute = 60_000;
   const rateLimits = new RateLimitService(
     deps.rateLimitStore ?? new MemoryRateLimitStore(),
@@ -130,12 +136,13 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
     });
 
   const push = new PushService({ store, transports: deps.pushTransports ?? pushTransportsFor(config), config, log: app.log, metrics, now });
-  const automations = new AutomationService({ store, providers, router, config, log: app.log, metrics, now, push });
+  const automations = new AutomationService({ store, providers, router, ai, config, log: app.log, metrics, now, push });
   const context: RouteContext = {
     config,
     store,
     providers,
     router,
+    ai,
     automations,
     push,
     tools: ToolRuntime.fromConfig(config, store, deps.plugins),

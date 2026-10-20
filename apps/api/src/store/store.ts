@@ -89,7 +89,79 @@ export interface UsageRow {
   demo: boolean;
   inputTokens: number | null;
   outputTokens: number | null;
+  /**
+   * Estimated USD cost of the answer (INTERNAL: never in consumer responses). 0 for demonstrations,
+   * null when the model's price or a token count is unknown. Optional so rows written before this
+   * column existed read back as unknown.
+   */
+  estimatedCostUsd?: number | null;
   createdAt: string;
+}
+
+/**
+ * One provider attempt in the inference ledger (INTERNAL accounting; never in consumer responses).
+ * Append-only: rows are never updated, except that deleting an account removes the account link
+ * (userId becomes null) while the accounting record stays. Holds no prompt, answer or tool content.
+ */
+export interface InferenceAttemptRow {
+  id: string;
+  /** The answer or automation run this attempt served (several attempts per answer: retries, fallbacks, tool rounds). */
+  inferenceId: string;
+  userId: string | null;
+  plan: string;
+  task: string;
+  mode: string | null;
+  provider: ProviderId;
+  /** The model that served the attempt (as the provider reported it), else the configured one. */
+  model: string;
+  /** The model the adapter was configured with; its price is used when the served id has none. Null on rows written before migration 11. */
+  configuredModel: string | null;
+  /** free / promotional / paid, or demo for demonstration adapters. Spend limits count paid rows only. */
+  pricing: "free" | "promotional" | "paid" | "demo";
+  createdAt: string;
+  latencyMs: number;
+  outcome: "success" | "failure" | "cancelled";
+  /** Normalized code (provider_error, provider_timeout, rate_limited, quota_exhausted, cancelled); never provider text. */
+  errorCode: string | null;
+  httpStatus: number | null;
+  /** Retry number on this provider for this request (0 = first try). */
+  retry: number;
+  /** Tool round within the answer (0 = first request). */
+  round: number;
+  /** Position of this provider in the route (0 = first choice; higher = fallback). */
+  fallbackIndex: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cachedInputTokens: number | null;
+  /** Conservative estimates, always recorded; used for cost only when the provider reported no usage. */
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+  /** provider: the token counts are the provider's; estimated: they are DASH's estimates. */
+  tokenSource: "provider" | "estimated";
+  /** Estimated cost from the price table (null when the price is unknown; 0 for demonstrations). */
+  estimatedCostUsd: number | null;
+  /** The provider's own reported cost, when its API returns one. */
+  providerCostUsd: number | null;
+  currency: "USD";
+  /** Routing metadata for internal debugging (route key, candidates, reasons). Never content. */
+  route: Record<string, unknown>;
+}
+
+/** Totals over ledger rows, for spend limits and quotas. */
+export interface InferenceSpend {
+  attempts: number;
+  /** Provider-reported cost where available, else the estimate; unknown costs count as 0. */
+  costUsd: number;
+  /** Provider-reported tokens where available, else the estimates. */
+  tokens: number;
+}
+
+export interface InferenceSpendQuery {
+  since: string;
+  userId?: string;
+  plan?: string;
+  provider?: ProviderId;
+  pricing?: ReadonlyArray<InferenceAttemptRow["pricing"]>;
 }
 
 /**
@@ -347,6 +419,13 @@ export interface Store {
 
   recordUsage(row: UsageRow): Promise<void>;
   listUsage(userId: string): Promise<UsageRow[]>;
+
+  /** Append one provider attempt to the inference ledger. */
+  recordInferenceAttempt(row: InferenceAttemptRow): Promise<void>;
+  /** Ledger rows for one answer or run, oldest first (internal debugging and tests). */
+  listInferenceAttempts(inferenceId: string): Promise<InferenceAttemptRow[]>;
+  /** Totals over the ledger since a time, optionally for one account, plan, provider or pricing class. */
+  sumInferenceSpend(query: InferenceSpendQuery): Promise<InferenceSpend>;
 
   /** The user's plugin choices (only plugins they have ever configured). */
   getPluginSettings(userId: string): Promise<PluginSettingRecord[]>;

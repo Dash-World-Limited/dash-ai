@@ -1,5 +1,8 @@
 import {
   summarizeDocument,
+  type InferenceAttemptRow,
+  type InferenceSpend,
+  type InferenceSpendQuery,
   type AutomationRecord,
   type AutomationRunRecord,
   type FinishRunInput,
@@ -48,6 +51,7 @@ export class MemoryStore implements Store {
   private readonly documents = new Map<string, DocumentRecord>();
   private readonly syncCounters = new Map<string, number>();
   private usage: UsageRow[] = [];
+  private attempts: InferenceAttemptRow[] = [];
   private readonly pluginSettings = new Map<string, Map<string, PluginSettingRecord>>();
   private toolInvocations: ToolInvocationRow[] = [];
   private readonly toolExecutions = new Map<string, { userId: string; status: string }>();
@@ -115,6 +119,8 @@ export class MemoryStore implements Store {
     }
     for (const [id, d] of this.documents) if (d.userId === userId) this.documents.delete(id);
     this.usage = this.usage.filter((u) => u.userId !== userId);
+    // The ledger keeps its accounting records; only the account link goes.
+    this.attempts = this.attempts.map((a) => (a.userId === userId ? { ...a, userId: null } : a));
     this.pluginSettings.delete(userId);
     this.toolInvocations = this.toolInvocations.filter((t) => t.userId !== userId);
     for (const [key, e] of this.toolExecutions) if (e.userId === userId) this.toolExecutions.delete(key);
@@ -342,11 +348,37 @@ export class MemoryStore implements Store {
 
   async recordUsage(row: UsageRow): Promise<void> {
     if (!this.owned(row.userId)) return;
-    this.usage.push({ ...row });
+    this.usage.push({ ...row, estimatedCostUsd: row.estimatedCostUsd ?? null });
   }
 
   async listUsage(userId: string): Promise<UsageRow[]> {
     return this.usage.filter((u) => u.userId === userId).map((u) => ({ ...u }));
+  }
+
+  async recordInferenceAttempt(row: InferenceAttemptRow): Promise<void> {
+    if (this.attempts.some((a) => a.id === row.id)) throw new Error("duplicate inference attempt");
+    this.attempts.push(structuredClone(row));
+  }
+
+  async listInferenceAttempts(inferenceId: string): Promise<InferenceAttemptRow[]> {
+    return this.attempts.filter((a) => a.inferenceId === inferenceId).map((a) => structuredClone(a));
+  }
+
+  async sumInferenceSpend(q: InferenceSpendQuery): Promise<InferenceSpend> {
+    const since = Date.parse(q.since);
+    const rows = this.attempts.filter(
+      (a) =>
+        Date.parse(a.createdAt) >= since &&
+        (q.userId === undefined || a.userId === q.userId) &&
+        (q.plan === undefined || a.plan === q.plan) &&
+        (q.provider === undefined || a.provider === q.provider) &&
+        (q.pricing === undefined || q.pricing.includes(a.pricing)),
+    );
+    return {
+      attempts: rows.length,
+      costUsd: rows.reduce((n, a) => n + (a.providerCostUsd ?? a.estimatedCostUsd ?? 0), 0),
+      tokens: rows.reduce((n, a) => n + (a.inputTokens ?? a.estimatedInputTokens) + (a.outputTokens ?? a.estimatedOutputTokens), 0),
+    };
   }
 
   async getPluginSettings(userId: string): Promise<PluginSettingRecord[]> {

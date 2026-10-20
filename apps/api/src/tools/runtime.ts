@@ -16,9 +16,12 @@ export class ToolRuntime {
   ) {
     this.executor = new ToolExecutor(registry, options, store);
     this.maxRounds = options.maxRounds;
+    this.maxResultChars = options.maxResultChars;
   }
 
   readonly maxRounds: number;
+  /** The bound on one tool result's characters (longer results are truncated). */
+  readonly maxResultChars: number;
 
   /** Plugins shipped with Dash AI. External plugins (GitHub, Gmail, ...) are added by code, never by default. */
   static defaultRegistry(): PluginRegistry {

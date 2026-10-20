@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MemoryStore } from "../src/store/memoryStore.js";
-import type { ConversationRecord, DocumentRecord, MessageRecord, Store, UserRecord } from "../src/store/store.js";
+import type { ConversationRecord, DocumentRecord, InferenceAttemptRow, MessageRecord, Store, UserRecord } from "../src/store/store.js";
 import { TEST_DATABASE_URL, createTestPgStore, type TestPgStore } from "./pgTestStore.js";
 
 // CI sets REQUIRE_DB_TESTS=1 so a missing database fails loudly instead of silently skipping.
@@ -25,6 +25,14 @@ const message = (conversationId: string, over: Partial<MessageRecord> = {}): Mes
 const document = (userId: string, over: Partial<DocumentRecord> = {}): DocumentRecord => ({
   id: uid("doc"), userId, name: "plan.txt", kind: "txt", mimeType: "text/plain", sizeBytes: 12, status: "ready",
   statusDetail: "", extractedText: "Quarterly plan — ünïcode ✓", pageCount: null, createdAt: t(), ...over,
+});
+
+const attempt = (over: Partial<InferenceAttemptRow> = {}): InferenceAttemptRow => ({
+  id: uid("att"), inferenceId: uid("inf"), userId: null, plan: "standard", task: "chat", mode: "general", provider: "openai",
+  model: "m-1", configuredModel: "m-1", pricing: "paid", createdAt: t(), latencyMs: 120, outcome: "success", errorCode: null, httpStatus: null,
+  retry: 0, round: 0, fallbackIndex: 0, inputTokens: 1_000, outputTokens: 500, cachedInputTokens: 200,
+  estimatedInputTokens: 900, estimatedOutputTokens: 450, tokenSource: "provider", estimatedCostUsd: 0.025,
+  providerCostUsd: null, currency: "USD", route: { routeKey: "chat:general", order: ["openai"] }, ...over,
 });
 
 /** Behaviour every Store implementation must share. */
@@ -285,9 +293,12 @@ function storeContract(name: string, make: () => Promise<Store>, teardown?: () =
       };
       await store.recordUsage(row);
       await store.recordUsage({ ...row, provider: "anthropic", inputTokens: 1, outputTokens: 2 });
+      await store.recordUsage({ ...row, provider: "bedrock", model: "eu.amazon.nova-lite-v1:0", inputTokens: 1_000, outputTokens: 500, estimatedCostUsd: 0.00018 });
       const rows = await store.listUsage(u.id);
-      expect(rows.map((r) => r.provider)).toEqual(["openai", "anthropic"]);
-      expect(rows[0]).toEqual(row);
+      expect(rows.map((r) => r.provider)).toEqual(["openai", "anthropic", "bedrock"]);
+      // A row written without a cost estimate reads back as unknown, never as zero.
+      expect(rows[0]).toEqual({ ...row, estimatedCostUsd: null });
+      expect(rows[2]).toMatchObject({ provider: "bedrock", model: "eu.amazon.nova-lite-v1:0", estimatedCostUsd: 0.00018 });
     });
 
     it("tracks a title revision that changes only when the title changes", async () => {
@@ -383,6 +394,71 @@ function storeContract(name: string, make: () => Promise<Store>, teardown?: () =
       expect((await store.listToolInvocations(a.id, 1)).map((r) => r.callId)).toEqual(["c2"]);
       expect(await store.listToolInvocations(a.id, 10)).toContainEqual(row("c1", "ok"));
       expect((await store.listToolInvocations(b.id, 10)).map((r) => r.callId)).toEqual(["c3"]);
+    });
+
+    it("keeps an append-only inference ledger and sums spend by window, account, plan, provider and pricing", async () => {
+      const u = user();
+      await store.createUser(u);
+      // A provider id of its own keeps the sums independent of other tests sharing the database.
+      const provider = uid("ledger");
+      const inferenceId = uid("inf");
+      const failed = attempt({
+        inferenceId, userId: u.id, provider, createdAt: t(100), outcome: "failure", errorCode: "rate_limited", httpStatus: 429,
+        inputTokens: null, outputTokens: null, cachedInputTokens: null, estimatedInputTokens: 0, estimatedOutputTokens: 0,
+        tokenSource: "estimated", estimatedCostUsd: 0,
+      });
+      const answered = attempt({
+        inferenceId, userId: u.id, provider, createdAt: t(101), fallbackIndex: 1, providerCostUsd: 0.5,
+        route: { routeKey: "chat:general", rejected: [{ provider: "x", reason: "privacy" }], sensitivity: "sensitive" },
+      });
+      const estimated = attempt({
+        userId: u.id, provider, createdAt: t(102), inputTokens: null, outputTokens: null, cachedInputTokens: null,
+        tokenSource: "estimated", estimatedCostUsd: 0.01, plan: "pro",
+      });
+      const free = attempt({ provider, createdAt: t(103), pricing: "free", estimatedCostUsd: 0 });
+      const unpriced = attempt({ provider, createdAt: t(104), estimatedCostUsd: null });
+      const old = attempt({ provider, createdAt: t(-86_400), estimatedCostUsd: 7 });
+      for (const row of [failed, answered, estimated, free, unpriced, old]) await store.recordInferenceAttempt(row);
+      // Immutable: the same attempt cannot be written twice.
+      await expect(store.recordInferenceAttempt(answered)).rejects.toThrow();
+
+      expect(await store.listInferenceAttempts(inferenceId)).toEqual([failed, answered]);
+      expect(await store.listInferenceAttempts("no-such-inference")).toEqual([]);
+
+      const since = t(0);
+      // The provider's own charge wins over the estimate; unknown costs count as 0, tokens fall back to estimates.
+      const all = await store.sumInferenceSpend({ since, provider });
+      expect(all.attempts).toBe(5);
+      expect(all.costUsd).toBeCloseTo(0.5 + 0.01, 10);
+      expect(all.tokens).toBe(0 + 1_500 + 1_350 + 1_500 + 1_500);
+      const paid = await store.sumInferenceSpend({ since, provider, pricing: ["paid"] });
+      expect(paid.attempts).toBe(4);
+      expect((await store.sumInferenceSpend({ since, provider, pricing: ["free", "promotional"] })).attempts).toBe(1);
+      expect((await store.sumInferenceSpend({ since, provider, userId: u.id })).costUsd).toBeCloseTo(0.51, 10);
+      expect((await store.sumInferenceSpend({ since, provider, plan: "pro" })).costUsd).toBeCloseTo(0.01, 10);
+      expect((await store.sumInferenceSpend({ since: t(-100_000), provider })).costUsd).toBeCloseTo(7.51, 10);
+      expect(await store.sumInferenceSpend({ since: t(10_000), provider })).toEqual({ attempts: 0, costUsd: 0, tokens: 0 });
+
+      // Deleting the account keeps the accounting and removes the link to the person.
+      await store.deleteUserData(u.id);
+      expect((await store.listInferenceAttempts(inferenceId)).map((r) => r.userId)).toEqual([null, null]);
+      expect((await store.sumInferenceSpend({ since, provider })).costUsd).toBeCloseTo(0.51, 10);
+      expect((await store.sumInferenceSpend({ since, provider, userId: u.id })).attempts).toBe(0);
+    });
+
+    it.runIf(name === "postgres")("the database refuses ledger rows that would corrupt spend totals (migration 11)", async () => {
+      for (const bad of [
+        attempt({ estimatedCostUsd: -1 }),
+        attempt({ providerCostUsd: -0.5 }),
+        attempt({ inputTokens: -10 }),
+        attempt({ pricing: "gratis" as never }),
+        attempt({ outcome: "maybe" as never }),
+        attempt({ tokenSource: "guessed" as never }),
+        attempt({ currency: "EUR" as never }),
+        attempt({ latencyMs: -1 }),
+      ]) {
+        await expect(store.recordInferenceAttempt(bad), JSON.stringify(bad)).rejects.toThrow(/check constraint/);
+      }
     });
 
     it("deletes everything a user owns and nothing else", async () => {

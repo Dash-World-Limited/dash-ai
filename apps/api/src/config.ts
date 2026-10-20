@@ -1,10 +1,18 @@
 import { z } from "zod";
+import { ModelPrices } from "./intelligence/cost.js";
 import { loadPolicy, PolicyError, type RouterPolicy } from "./intelligence/policy.js";
-import { liveProviderCount, liveProviderProblems } from "./providers/credentials.js";
+import { costControlProblems, liveProviderCount, liveProviderProblems, type BedrockCredentials } from "./providers/credentials.js";
+import { compatibleProfile } from "./providers/compatible.js";
+import { parseCompatibleProviders, parsePlanLimits, parseQuotas, SettingsError, type AiControls, type CompatibleProviderSettings } from "./intelligence/settings.js";
+import type { ProviderQuotas } from "./intelligence/quota.js";
 import { FcmConfigError, parseServiceAccount, type FcmServiceAccount } from "./push/fcm.js";
 
 const emptyToUndefined = (v: unknown) => (typeof v === "string" && v.trim() === "" ? undefined : v);
 const optionalString = z.preprocess(emptyToUndefined, z.string().trim().min(1).optional());
+const bool = (def: "true" | "false") => z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default(def));
+const optionalBool = z.preprocess(emptyToUndefined, z.enum(["true", "false"]).optional());
+/** A USD amount; empty or absent = not set. */
+const usd = z.preprocess(emptyToUndefined, z.coerce.number().nonnegative().max(1_000_000).optional());
 const int = (def: number, min: number, max: number) =>
   z.preprocess(emptyToUndefined, z.coerce.number().int().min(min).max(max).default(def));
 
@@ -17,8 +25,8 @@ const EnvSchema = z.object({
     z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
   ),
   /**
-   * live — use real providers for which both a key and a model are configured.
-   * fake — use the fake demonstration adapters for both providers (no network, no cost).
+   * live — use real providers whose required settings are complete.
+   * fake — use demonstration adapters only (no external inference, no cost).
    */
   PROVIDER_MODE: z.preprocess(emptyToUndefined, z.enum(["live", "fake"]).default("live")),
   // hidden (default): consumer responses never name the AI provider or model; explicit provider
@@ -30,6 +38,50 @@ const EnvSchema = z.object({
   OPENAI_ENCRYPTED_REASONING: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("false")),
   ANTHROPIC_API_KEY: optionalString,
   ANTHROPIC_MODEL: optionalString,
+  /**
+   * Amazon Bedrock (Converse streaming API, Amazon Nova models). Server-side only.
+   * api_key (default): BEDROCK_API_KEY is a Bedrock API key sent as a bearer token.
+   * iam: credentials come from the AWS SDK default chain (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY,
+   * a shared profile, or a container or instance role); AWS recommends this for production.
+   */
+  BEDROCK_AUTH: z.preprocess(emptyToUndefined, z.enum(["api_key", "iam"]).default("api_key")),
+  BEDROCK_API_KEY: optionalString,
+  BEDROCK_REGION: optionalString,
+  BEDROCK_MODEL_MICRO: optionalString,
+  BEDROCK_MODEL_LITE: optionalString,
+  BEDROCK_MODEL_NOVA2_LITE: optionalString,
+  /**
+   * Optional USD prices per million tokens for the cost estimate in usage records, as JSON:
+   * {"<provider>:<model id or prefix>": {"inputPerMillion": n, "outputPerMillion": n}}. Overrides the
+   * built-in Amazon Nova estimates; OpenAI/Anthropic costs stay unknown unless listed here.
+   */
+  MODEL_PRICES: optionalString,
+  /**
+   * AI cost and provider controls (docs/provider-platform.md). Defaults keep today's behaviour: AI on,
+   * the free pool and Bedrock off, paid providers allowed when configured, no limit enforced unless set
+   * (production in live mode refuses to start without the daily and monthly limits).
+   */
+  AI_ENABLED: bool("true"),
+  FREE_POOL_ENABLED: bool("false"),
+  PAID_PROVIDERS_ENABLED: bool("true"),
+  /**
+   * BEDROCK_ENABLED (default false): Bedrock may serve requests. BEDROCK_FALLBACK_ENABLED is its
+   * deprecated former name, still read; when both are set they must agree (see bedrockSwitch).
+   */
+  BEDROCK_ENABLED: optionalBool,
+  BEDROCK_FALLBACK_ENABLED: optionalBool,
+  MAX_DAILY_AI_SPEND: usd,
+  MAX_MONTHLY_AI_SPEND: usd,
+  MAX_REQUEST_AI_COST: usd,
+  MAX_USER_DAILY_AI_SPEND: usd,
+  /** JSON {"<plan>": usd}: daily paid spend per account plan. */
+  AI_PLAN_DAILY_SPEND: optionalString,
+  AI_DEFAULT_PLAN: z.preprocess(emptyToUndefined, z.string().regex(/^[a-z0-9][a-z0-9_-]{0,39}$/).default("standard")),
+  AI_DEFAULT_SENSITIVITY: z.preprocess(emptyToUndefined, z.enum(["sensitive", "standard"]).default("sensitive")),
+  /** JSON array of approved OpenAI-compatible providers (keys are read from the variables they name). */
+  COMPATIBLE_PROVIDERS: optionalString,
+  /** JSON {"<provider>": {windows: [...], softThreshold}}: quota windows per provider. */
+  PROVIDER_QUOTAS: optionalString,
   PROVIDER_TIMEOUT_MS: int(120_000, 1_000, 600_000),
   PROVIDER_IDLE_TIMEOUT_MS: int(45_000, 500, 300_000),
   /** Extra attempts after a retryable provider failure that happened before any output (0 = none). */
@@ -123,6 +175,8 @@ export type Env = z.infer<typeof EnvSchema>;
 
 /** Every environment variable the API reads (kept in sync with .env.example by a test). */
 export const ENV_KEYS: readonly string[] = Object.keys(EnvSchema.shape);
+/** Deprecated names still read for compatibility; templates leave them out so new environments use the new name. */
+export const DEPRECATED_ENV_KEYS: readonly string[] = ["BEDROCK_FALLBACK_ENABLED"];
 
 export interface ProviderConfig {
   apiKey: string | undefined;
@@ -135,10 +189,21 @@ export interface AppConfig {
   port: number;
   logLevel: Env["LOG_LEVEL"];
   providerMode: Env["PROVIDER_MODE"];
-  /** Whether consumer responses may carry provider identity (never in production). */
+  /** Whether consumer responses may carry provider identity (production refuses to start with exposed). */
   providerDetails: Env["PROVIDER_DETAILS"];
   openai: ProviderConfig & { encryptedReasoning: boolean };
   anthropic: ProviderConfig;
+  bedrock: BedrockCredentials;
+  /** Operator prices for estimated USD cost (MODEL_PRICES); built-in estimates fill the gaps. */
+  modelPrices: ModelPrices;
+  /** Global AI switches and spend limits. */
+  ai: AiControls;
+  /** Deprecated environment variables in use, with what replaces them (logged at start-up in every environment). */
+  deprecations: string[];
+  /** Approved OpenAI-compatible providers registered by configuration. */
+  compatibleProviders: CompatibleProviderSettings[];
+  /** Quota windows per provider (PROVIDER_QUOTAS, plus those declared with compatible providers). */
+  providerQuotas: ProviderQuotas;
   providerTimeoutMs: number;
   providerIdleTimeoutMs: number;
   providerRetry: { maxRetries: number; baseMs: number };
@@ -210,21 +275,109 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       throw err;
     }
   }
+  let modelPrices: ModelPrices = {};
+  if (e.MODEL_PRICES) {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(e.MODEL_PRICES);
+    } catch {
+      throw new ConfigError("Invalid configuration: MODEL_PRICES is not valid JSON.");
+    }
+    const parsedPrices = ModelPrices.safeParse(raw);
+    if (!parsedPrices.success) {
+      // Field names only: the keys are operator text and are not echoed.
+      const where = parsedPrices.error.issues
+        .slice(0, 3)
+        .map((i) =>
+          i.code === "invalid_key"
+            ? `has an invalid key: ${i.issues[0]?.message ?? i.message}`
+            : i.path.length > 1
+              ? `an entry's ${String(i.path.at(-1))}: ${i.message}`
+              : i.message,
+        )
+        .join("; ");
+      throw new ConfigError(`Invalid configuration: MODEL_PRICES ${where}`);
+    }
+    modelPrices = parsedPrices.data;
+  }
+  let compatibleProviders: CompatibleProviderSettings[];
+  let providerQuotas: ProviderQuotas;
+  let planDailyUsd: Record<string, number>;
+  try {
+    compatibleProviders = parseCompatibleProviders(e.COMPATIBLE_PROVIDERS, env, ENV_KEYS, e.NODE_ENV === "production");
+    providerQuotas = {
+      ...Object.fromEntries(compatibleProviders.filter((p) => p.quota).map((p) => [p.id, p.quota!])),
+      ...parseQuotas(e.PROVIDER_QUOTAS),
+    };
+    planDailyUsd = parsePlanLimits(e.AI_PLAN_DAILY_SPEND);
+  } catch (err) {
+    if (err instanceof SettingsError) throw new ConfigError(`Invalid configuration: ${err.message}`);
+    throw err;
+  }
+  // A compatible provider's declared prices price its model, unless MODEL_PRICES says otherwise.
+  const declaredPrices: ModelPrices = Object.fromEntries(
+    compatibleProviders
+      .filter((p) => p.inputPerMillion !== null && p.outputPerMillion !== null)
+      .map((p) => [`${p.id}:${p.model}`, { inputPerMillion: p.inputPerMillion!, outputPerMillion: p.outputPerMillion! }]),
+  );
+  modelPrices = { ...declaredPrices, ...modelPrices };
   let routerPolicy: RouterPolicy;
   try {
-    routerPolicy = loadPolicy(e.ROUTER_POLICY);
+    routerPolicy = loadPolicy(e.ROUTER_POLICY, Object.fromEntries(compatibleProviders.map((p) => [p.id, compatibleProfile(p)])));
   } catch (err) {
     if (err instanceof PolicyError) throw new ConfigError(`Invalid configuration: ${err.message}`);
     throw err;
   }
+  const bedrockSwitched = bedrockSwitch(e.BEDROCK_ENABLED, e.BEDROCK_FALLBACK_ENABLED);
+  const bedrockEnabled = bedrockSwitched.enabled;
+  // Bedrock serves traffic only when BEDROCK_ENABLED is on, whatever ROUTER_POLICY says.
+  if (!bedrockEnabled && routerPolicy.providers.bedrock) {
+    routerPolicy = { ...routerPolicy, providers: { ...routerPolicy.providers, bedrock: { ...routerPolicy.providers.bedrock, enabled: false } } };
+  }
+  const ai: AiControls = {
+    enabled: e.AI_ENABLED === "true",
+    freePoolEnabled: e.FREE_POOL_ENABLED === "true",
+    paidProvidersEnabled: e.PAID_PROVIDERS_ENABLED === "true",
+    bedrockEnabled,
+    defaultPlan: e.AI_DEFAULT_PLAN,
+    defaultSensitivity: e.AI_DEFAULT_SENSITIVITY,
+    limits: {
+      requestUsd: e.MAX_REQUEST_AI_COST ?? null,
+      userDailyUsd: e.MAX_USER_DAILY_AI_SPEND ?? null,
+      systemDailyUsd: e.MAX_DAILY_AI_SPEND ?? null,
+      systemMonthlyUsd: e.MAX_MONTHLY_AI_SPEND ?? null,
+      planDailyUsd,
+    },
+  };
   // Production with real providers must be able to answer: a missing, half-set or example key is a
   // deployment mistake, so the server refuses to start instead of failing every chat and automation.
   // Development and tests keep starting (the registry warns). Variable names only, never values.
+  const bedrock: BedrockCredentials = {
+    auth: e.BEDROCK_AUTH,
+    apiKey: e.BEDROCK_API_KEY,
+    region: e.BEDROCK_REGION,
+    models: { micro: e.BEDROCK_MODEL_MICRO, lite: e.BEDROCK_MODEL_LITE, nova2Lite: e.BEDROCK_MODEL_NOVA2_LITE },
+  };
+  // The engineering view opens the operator routes (/v1/providers, /v1/router: provider settings,
+  // prices, spend) without the operator token and lets requests pick a provider directly, outside
+  // worst-case spend admission. It is for tests and diagnostics, never a production server.
+  if (e.NODE_ENV === "production" && e.PROVIDER_DETAILS === "exposed") {
+    throw new ConfigError(
+      "Invalid configuration: PROVIDER_DETAILS=exposed is not allowed in production (it opens the operator views without " +
+        "OPERATOR_TOKEN and lets requests choose a provider directly). Use PROVIDER_DETAILS=hidden.",
+    );
+  }
   if (e.NODE_ENV === "production" && e.PROVIDER_MODE === "live") {
-    const problems = liveProviderProblems({
-      openai: { apiKey: e.OPENAI_API_KEY, model: e.OPENAI_MODEL },
-      anthropic: { apiKey: e.ANTHROPIC_API_KEY, model: e.ANTHROPIC_MODEL },
-    });
+    const problems = [
+      ...liveProviderProblems({
+        openai: { apiKey: e.OPENAI_API_KEY, model: e.OPENAI_MODEL },
+        anthropic: { apiKey: e.ANTHROPIC_API_KEY, model: e.ANTHROPIC_MODEL },
+        bedrock,
+        bedrockEnabled,
+        compatible: compatibleProviders,
+      }),
+      ...costControlProblems({ ai, prices: modelPrices, openaiModel: e.OPENAI_MODEL, anthropicModel: e.ANTHROPIC_MODEL, bedrock, compatible: compatibleProviders }),
+    ];
     if (problems.length > 0) {
       throw new ConfigError(
         `Invalid configuration: PROVIDER_MODE=live needs real AI provider credentials in production. ${problems.join(" ")} ` +
@@ -241,6 +394,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     providerDetails: e.PROVIDER_DETAILS,
     openai: { apiKey: e.OPENAI_API_KEY, model: e.OPENAI_MODEL, encryptedReasoning: e.OPENAI_ENCRYPTED_REASONING === "true" },
     anthropic: { apiKey: e.ANTHROPIC_API_KEY, model: e.ANTHROPIC_MODEL },
+    bedrock,
+    modelPrices,
+    ai,
+    compatibleProviders,
+    providerQuotas,
     providerTimeoutMs: e.PROVIDER_TIMEOUT_MS,
     providerIdleTimeoutMs: e.PROVIDER_IDLE_TIMEOUT_MS,
     providerRetry: { maxRetries: e.PROVIDER_MAX_RETRIES, baseMs: e.PROVIDER_RETRY_BASE_MS },
@@ -296,7 +454,30 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       previousKeys: e.DATA_ENCRYPTION_PREVIOUS_KEYS,
     },
     version: "0.1.0",
+    deprecations: bedrockSwitched.deprecation ? [bedrockSwitched.deprecation] : [],
   };
+}
+
+/**
+ * The Bedrock switch. BEDROCK_ENABLED is the name; BEDROCK_FALLBACK_ENABLED, its former name, is still
+ * read so existing environments keep working. BEDROCK_ENABLED wins only by being the same: when both
+ * are set to different values the server refuses to start, so a half-finished rename can never
+ * switch Bedrock on or off silently.
+ */
+export function bedrockSwitch(current: "true" | "false" | undefined, deprecated: "true" | "false" | undefined): { enabled: boolean; deprecation: string | null } {
+  if (current !== undefined && deprecated !== undefined && current !== deprecated) {
+    throw new ConfigError(
+      `Invalid configuration: BEDROCK_ENABLED=${current} and the deprecated BEDROCK_FALLBACK_ENABLED=${deprecated} disagree. ` +
+        "Remove BEDROCK_FALLBACK_ENABLED and keep the value you want in BEDROCK_ENABLED.",
+    );
+  }
+  const deprecation =
+    deprecated === undefined
+      ? null
+      : current === undefined
+        ? `BEDROCK_FALLBACK_ENABLED is deprecated: rename it to BEDROCK_ENABLED (same value, ${deprecated}).`
+        : "BEDROCK_FALLBACK_ENABLED is deprecated and set to the same value as BEDROCK_ENABLED: remove it.";
+  return { enabled: (current ?? deprecated ?? "false") === "true", deprecation };
 }
 
 /**
@@ -305,8 +486,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
  * logged loudly at start-up instead.
  */
 export function configWarnings(config: AppConfig): string[] {
-  if (config.nodeEnv !== "production") return [];
-  const warnings: string[] = [];
+  if (config.nodeEnv !== "production") return [...config.deprecations];
+  const warnings: string[] = [...config.deprecations];
   if (config.database.url && config.database.ssl === "disable") {
     warnings.push("DATABASE_SSL=disable in production: database traffic (including session hashes and ciphertext) is not encrypted in transit.");
   }
@@ -322,17 +503,17 @@ export function configWarnings(config: AppConfig): string[] {
   if (config.rateLimits.redisUrl?.startsWith("redis://") && config.rateLimits.backend === "redis") {
     warnings.push("REDIS_URL uses redis:// in production: traffic to Redis is not encrypted in transit. Use rediss:// unless Redis is on a private network.");
   }
-  if (config.providerDetails === "exposed") {
-    warnings.push("PROVIDER_DETAILS=exposed in production: consumer responses name the AI provider and model. Use hidden.");
-  }
   if (config.push.transport === "fake") {
     warnings.push("PUSH_TRANSPORT=fake in production: push notifications are recorded but never delivered. Use fcm, or none.");
   }
   if (config.providerMode === "fake") {
     warnings.push("PROVIDER_MODE=fake in production: every answer is a labelled demonstration, not a real model.");
   }
-  if (config.providerMode === "live" && liveProviderCount(config) === 1) {
-    warnings.push("Only one AI provider is configured in production: if it fails, DASH AI has no second provider to fall back to. Configure both OPENAI_* and ANTHROPIC_* for failover.");
+  if (
+    config.providerMode === "live" &&
+    liveProviderCount({ ...config, bedrockEnabled: config.ai.bedrockEnabled, compatible: config.compatibleProviders }) === 1
+  ) {
+    warnings.push("Only one AI provider is configured in production: if it fails, DASH AI has no second provider to fall back to. Configure another live provider for failover.");
   }
   return warnings;
 }

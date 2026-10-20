@@ -53,7 +53,8 @@ describe("DASH Intelligence Router", () => {
     expect(r.route({ task: "chat", mode: "general", estimatedInputTokens: 150_000 })).toMatchObject({
       ok: true,
       providers: ["anthropic"],
-      rejected: [{ provider: "openai", reason: "context" }],
+      // Bedrock is in the default policy but not configured on this server.
+      rejected: [{ provider: "openai", reason: "context" }, { provider: "bedrock", reason: "not_configured" }],
     });
     expect(r.route({ task: "chat", mode: "general", estimatedInputTokens: 500_000 })).toMatchObject({ ok: false, reason: "context_too_large" });
   });
@@ -99,7 +100,10 @@ describe("DASH Intelligence Router", () => {
 
   it("is configurable: an operator can disable a provider or change a route's quality", () => {
     const disabled = router(both, loadPolicy('{"providers":{"openai":{"enabled":false}}}'));
-    expect(disabled.route({ task: "chat", mode: "general" })).toMatchObject({ providers: ["anthropic"], rejected: [{ provider: "openai", reason: "disabled" }] });
+    expect(disabled.route({ task: "chat", mode: "general" })).toMatchObject({
+      providers: ["anthropic"],
+      rejected: [{ provider: "openai", reason: "disabled" }, { provider: "bedrock", reason: "not_configured" }],
+    });
     const tuned = router(both, loadPolicy('{"providers":{"openai":{"quality":{"chat:writing":0.99}}}}'));
     expect(tuned.route({ task: "chat", mode: "writing" })).toMatchObject({ providers: ["openai", "anthropic"] });
     const images = router(both, loadPolicy('{"providers":{"openai":{"capabilities":["text","image_generation"]}}}'));

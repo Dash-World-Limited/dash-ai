@@ -1,15 +1,20 @@
-import { ProviderId, type AssistantMode } from "@dash-ai/contracts";
+import type { AssistantMode, ProviderId } from "@dash-ai/contracts";
 import { ProviderHealth } from "./health.js";
 import {
   qualityFor,
   routeKeys,
   type Capability,
+  type Modality,
+  type PricingClass,
+  type PrivacyClass,
   type RoutePreference,
   type RouterPolicy,
+  type Sensitivity,
   type TaskType,
   type Multipliers,
   type Weights,
 } from "./policy.js";
+import type { QuotaState, QuotaTracker } from "./quota.js";
 
 /** One request to route. Provider-neutral: nothing here names a provider except the internal hint. */
 export interface RouteRequest {
@@ -26,15 +31,74 @@ export interface RouteRequest {
   preference?: RoutePreference;
   /** Providers to leave out (for example ones that already failed this request). */
   exclude?: readonly ProviderId[];
+  /**
+   * How sensitive the content is. Absent means "sensitive": a request is never sent to a provider
+   * that is not approved for sensitive content unless DASH has classified it as standard.
+   */
+  sensitivity?: Sensitivity;
+  /** The account's plan, for providers limited to some plans (absent: the default plan). */
+  plan?: string;
+  /** What the request contains (absent: text only). */
+  inputModalities?: readonly Modality[];
+  /** Whether paid providers may serve this request now (from the spend limits; absent: allowed). */
+  paidAllowed?: boolean;
+  /**
+   * The tightest remaining spend allowance in USD (absent or null: no spend limit). A paid provider
+   * whose worst case does not fit, or whose price is unknown, is not used: spend limits fail closed.
+   */
+  paidHeadroomUsd?: number | null;
+  /** Per-request ceiling on a paid provider's worst-case cost, in USD (absent: no ceiling). */
+  maxCostUsd?: number | null;
+  /** A paid provider's worst-case USD cost for this request, or null when its price is unknown. */
+  worstCaseCostUsd?: (provider: ProviderId) => number | null;
 }
 
-export type RejectReason = "not_configured" | "disabled" | "capability" | "context" | "excluded";
+export type RejectReason =
+  | "not_configured"
+  | "disabled"
+  | "excluded"
+  | "capability"
+  | "context"
+  | "task"
+  | "plan"
+  | "modality"
+  /** Its privacy class does not allow this request's content. */
+  | "privacy"
+  /** Its pool (free or paid providers) is switched off on this server. */
+  | "pricing_disabled"
+  /** A spend limit stops paid inference for this request. */
+  | "spend_limit"
+  /** Its worst-case cost exceeds the per-request ceiling, or its price is unknown under a ceiling. */
+  | "cost_limit"
+  /** A quota window is exhausted. */
+  | "quota"
+  /** Temporarily disabled (the provider reported its quota exhausted or asked to wait). */
+  | "paused";
+
+/** Global switches the router applies to every request (see docs/provider-platform.md). */
+export interface RoutingControls {
+  /** AI_ENABLED: false refuses every request. */
+  aiEnabled: boolean;
+  /** FREE_POOL_ENABLED: free and promotional providers may serve requests. */
+  freePoolEnabled: boolean;
+  /** PAID_PROVIDERS_ENABLED: paid providers may serve requests. */
+  paidProvidersEnabled: boolean;
+  /** Demonstration adapters: never send content anywhere and cost nothing, so pool, spend, quota and privacy rules do not apply. */
+  demo: ReadonlySet<ProviderId>;
+}
+
+const OPEN_CONTROLS: RoutingControls = { aiEnabled: true, freePoolEnabled: true, paidProvidersEnabled: true, demo: new Set() };
 
 export interface ScoredCandidate {
   provider: ProviderId;
   score: number;
   circuitOpen: boolean;
   factors: { quality: number; reliability: number; latency: number; cost: number };
+  pricing: PricingClass;
+  privacy: PrivacyClass;
+  quota: QuotaState;
+  /** Free or promotional and clears the free-pool bars on this route: goes ahead of paid providers. */
+  freePreferred: boolean;
 }
 
 export type RouteDecision =
@@ -48,8 +112,21 @@ export type RouteDecision =
     }
   | {
       ok: false;
-      /** no_provider: nothing configured. capability_unavailable: nobody can do this yet. context_too_large: too big for every model. */
-      reason: "no_provider" | "capability_unavailable" | "context_too_large";
+      /**
+       * no_provider: nothing configured. capability_unavailable: nobody can do this yet.
+       * context_too_large: too big for every model. ai_disabled: AI_ENABLED is off.
+       * privacy_unavailable: no suitable provider may receive this content. limit_reached: spend
+       * limits or the per-request ceiling stop every suitable provider. quota_exhausted: every
+       * suitable provider is out of quota or paused.
+       */
+      reason:
+        | "no_provider"
+        | "capability_unavailable"
+        | "context_too_large"
+        | "ai_disabled"
+        | "privacy_unavailable"
+        | "limit_reached"
+        | "quota_exhausted";
       rejected: Array<{ provider: ProviderId; reason: RejectReason }>;
       routeKey: string;
     };
@@ -74,6 +151,7 @@ export class IntelligenceRouter {
     /** Providers configured on this server (an adapter exists), in a stable order. */
     private readonly configured: () => ReadonlySet<ProviderId>,
     now: () => number = Date.now,
+    private readonly options: { quota?: QuotaTracker; controls?: () => RoutingControls } = {},
   ) {
     this.health = new ProviderHealth(
       { smoothing: policy.smoothing, failureThreshold: policy.circuit.failureThreshold, cooldownMs: policy.circuit.cooldownMs },
@@ -87,35 +165,47 @@ export class IntelligenceRouter {
     const routeKey = keys[0]!;
     const required = new Set<Capability>([...taskPolicy.requires, ...(request.requires ?? [])]);
     const configured = this.configured();
+    const controls = this.options.controls?.() ?? OPEN_CONTROLS;
     const rejected: Array<{ provider: ProviderId; reason: RejectReason }> = [];
+    if (!controls.aiEnabled) return { ok: false, reason: "ai_disabled", rejected, routeKey };
+
+    const sensitivity = request.sensitivity ?? "sensitive";
+    const plan = request.plan ?? null;
+    const modalities = request.inputModalities ?? ["text"];
+    const order = this.providerOrder(configured);
     const eligible: ProviderId[] = [];
 
-    for (const provider of ProviderId.options) {
+    for (const provider of order) {
       const profile = this.policy.providers[provider];
-      if (!configured.has(provider) || !profile) rejected.push({ provider, reason: "not_configured" });
-      else if (!profile.enabled) rejected.push({ provider, reason: "disabled" });
-      else if (request.exclude?.includes(provider)) rejected.push({ provider, reason: "excluded" });
-      else if ([...required].some((c) => !profile.capabilities.includes(c))) rejected.push({ provider, reason: "capability" });
-      else if ((request.estimatedInputTokens ?? 0) > profile.contextTokens) rejected.push({ provider, reason: "context" });
+      const demo = controls.demo.has(provider);
+      const quota = this.options.quota?.status(provider).state ?? "unknown";
+      const reject = (reason: RejectReason) => rejected.push({ provider, reason });
+      if (!configured.has(provider) || !profile) reject("not_configured");
+      else if (!profile.enabled) reject("disabled");
+      else if (request.exclude?.includes(provider)) reject("excluded");
+      else if (!demo && (profile.pricing === "paid" ? !controls.paidProvidersEnabled : !controls.freePoolEnabled)) reject("pricing_disabled");
+      else if ([...required].some((c) => !profile.capabilities.includes(c))) reject("capability");
+      else if (profile.tasks && !profile.tasks.includes(request.task)) reject("task");
+      else if (modalities.some((m) => !profile.inputModalities.includes(m))) reject("modality");
+      else if ((request.estimatedInputTokens ?? 0) > profile.contextTokens) reject("context");
+      else if (profile.plans && (plan === null || !profile.plans.includes(plan))) reject("plan");
+      else if (!demo && !privacyAllows(profile.privacy, sensitivity)) reject("privacy");
+      else if (!demo && profile.pricing === "paid" && request.paidAllowed === false) reject("spend_limit");
+      else if (!demo && profile.pricing === "paid" && exceedsHeadroom(request, provider)) reject("spend_limit");
+      else if (!demo && profile.pricing === "paid" && exceedsCeiling(request, provider)) reject("cost_limit");
+      else if (!demo && quota === "paused") reject("paused");
+      else if (!demo && quota === "exhausted") reject("quota");
       else eligible.push(provider);
     }
 
-    if (eligible.length === 0) {
-      const considered = rejected.filter((r) => r.reason !== "not_configured" && r.reason !== "disabled" && r.reason !== "excluded");
-      const reason =
-        considered.length === 0
-          ? "no_provider"
-          : considered.every((r) => r.reason === "context")
-            ? "context_too_large"
-            : "capability_unavailable";
-      return { ok: false, reason, rejected, routeKey };
-    }
+    if (eligible.length === 0) return { ok: false, reason: failureReason(rejected), rejected, routeKey };
 
     const weights = normalize(taskPolicy.weights, this.policy.preferences[request.preference ?? "balanced"]);
     const latencies = eligible.map((p) => this.health.latencyMs(p)).filter((l): l is number => l !== null);
     const fastest = latencies.length ? Math.min(...latencies) : null;
     const costs = eligible.map((p) => blendedCost(this.policy, p)).filter((c): c is number => c !== null);
     const cheapest = costs.length ? Math.min(...costs) : null;
+    const free = this.policy.freePool;
 
     const candidates: ScoredCandidate[] = eligible.map((provider) => {
       const profile = this.policy.providers[provider]!;
@@ -134,18 +224,44 @@ export class IntelligenceRouter {
         factors.reliability * weights.reliability +
         factors.latency * weights.latency +
         factors.cost * weights.cost;
-      return { provider, score: Math.round(score * 10_000) / 10_000, circuitOpen: this.health.isOpen(provider), factors };
+      const circuitOpen = this.health.isOpen(provider);
+      const quota = this.options.quota?.status(provider).state ?? "unknown";
+      const freePreferred =
+        free.preferFree &&
+        profile.pricing !== "paid" &&
+        !circuitOpen &&
+        quota !== "soft" &&
+        factors.quality >= free.minQuality &&
+        factors.reliability >= free.minReliability;
+      return {
+        provider,
+        score: Math.round(score * 10_000) / 10_000,
+        circuitOpen,
+        factors,
+        pricing: profile.pricing,
+        privacy: profile.privacy,
+        quota,
+        freePreferred,
+      };
     });
 
     const hint = request.hint && eligible.includes(request.hint) ? request.hint : null;
-    const order = [...candidates].sort(
+    // A provider with an open circuit or approaching a quota limit goes to the back but stays a last resort.
+    const degraded = (c: ScoredCandidate) => Number(c.circuitOpen || c.quota === "soft");
+    const sorted = [...candidates].sort(
       (a, b) =>
-        Number(a.circuitOpen) - Number(b.circuitOpen) ||
+        degraded(a) - degraded(b) ||
         Number(b.provider === hint) - Number(a.provider === hint) ||
+        Number(b.freePreferred) - Number(a.freePreferred) ||
         b.score - a.score ||
-        ProviderId.options.indexOf(a.provider) - ProviderId.options.indexOf(b.provider),
+        order.indexOf(a.provider) - order.indexOf(b.provider),
     );
-    return { ok: true, providers: order.map((c) => c.provider), candidates: order, rejected, routeKey };
+    return { ok: true, providers: sorted.map((c) => c.provider), candidates: sorted, rejected, routeKey };
+  }
+
+  /** Every provider the policy or the registry knows, built-in ones first, in a stable order. */
+  private providerOrder(configured: ReadonlySet<ProviderId>): ProviderId[] {
+    return [...new Set([...Object.keys(this.policy.providers), ...configured])];
   }
 
   /** Report how a routed request went, so later decisions learn from it. */
@@ -160,6 +276,38 @@ export class IntelligenceRouter {
 }
 
 const LATENCY_SLACK_MS = 1_000;
+
+/** Never send sensitive content to a provider not approved for it; unapproved providers receive nothing. */
+export function privacyAllows(privacy: PrivacyClass, sensitivity: Sensitivity): boolean {
+  if (privacy === "approved_sensitive") return true;
+  if (privacy === "non_sensitive_only") return sensitivity === "standard";
+  return false;
+}
+
+/** Under a spend limit, a paid provider must fit its worst case in what is left; an unknown price never fits. */
+function exceedsHeadroom(request: RouteRequest, provider: ProviderId): boolean {
+  if (request.paidHeadroomUsd === undefined || request.paidHeadroomUsd === null) return false;
+  const worst = request.worstCaseCostUsd?.(provider) ?? null;
+  return worst === null || worst > request.paidHeadroomUsd;
+}
+
+function exceedsCeiling(request: RouteRequest, provider: ProviderId): boolean {
+  if (request.maxCostUsd === undefined || request.maxCostUsd === null) return false;
+  const worst = request.worstCaseCostUsd?.(provider) ?? null;
+  // A price nobody knows cannot be bounded: under a ceiling, an unpriced paid provider is not used.
+  return worst === null || worst > request.maxCostUsd;
+}
+
+/** Why nothing could serve a request, from what stopped the providers that were otherwise suitable. */
+function failureReason(rejected: ReadonlyArray<{ reason: RejectReason }>): Exclude<RouteDecision, { ok: true }>["reason"] {
+  const considered = rejected.filter((r) => !["not_configured", "disabled", "excluded", "pricing_disabled"].includes(r.reason));
+  if (considered.length === 0) return "no_provider";
+  const suitable = considered.filter((r) => ["privacy", "spend_limit", "cost_limit", "quota", "paused"].includes(r.reason));
+  if (suitable.length === 0) return considered.every((r) => r.reason === "context") ? "context_too_large" : "capability_unavailable";
+  if (suitable.some((r) => r.reason === "spend_limit" || r.reason === "cost_limit")) return "limit_reached";
+  if (suitable.some((r) => r.reason === "quota" || r.reason === "paused")) return "quota_exhausted";
+  return "privacy_unavailable";
+}
 
 function normalize(task: Weights, multiplier: Multipliers): Weights {
   const raw = {

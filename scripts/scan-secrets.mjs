@@ -19,7 +19,7 @@ const PATTERNS = [
 ];
 
 // The Android app must only talk to the Dash AI API, never to a provider directly.
-const PROVIDER_HOSTS = /\b(?:api\.openai\.com|api\.anthropic\.com)\b/;
+const PROVIDER_HOSTS = /\b(?:api\.openai\.com|api\.anthropic\.com|bedrock-runtime\.[A-Za-z0-9-]+\.amazonaws\.com)\b/;
 
 const BINARY = /\.(png|jpe?g|webp|gif|ico|jar|zip|apk|aab|pdf|docx|keystore|jks|ttf|otf|woff2?)$/i;
 

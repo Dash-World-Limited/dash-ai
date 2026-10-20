@@ -19,7 +19,7 @@ export async function runAppChecks(config: AppConfig, providers: ProviderRegistr
   const results: CheckResult[] = [];
   const store = new MemoryStore();
   // Engineering mode: the smoke run must verify which provider answered. Consumers never see this.
-  const { app } = await buildApp({ config: { ...config, logLevel: "silent", providerDetails: "exposed" }, providers, store });
+  const { app, context } = await buildApp({ config: { ...config, logLevel: "silent", providerDetails: "exposed" }, providers, store });
   await app.ready();
   try {
     const registered = await app.inject({
@@ -60,12 +60,17 @@ export async function runAppChecks(config: AppConfig, providers: ProviderRegistr
     for (const mode of ["general", "writing"] as const) {
       results.push(
         await timed("app", `dash smart (${mode})`, async () => {
-          const route = resolveProviders("smart", mode, configured);
-          check(route.ok, "no provider is configured");
+          // The DASH Intelligence Router decides; the answer must come from its first choice.
+          const decision = context.router.route({ task: "chat", mode });
+          check(decision.ok, "no provider is configured");
+          const first = decision.providers[0]!;
           const { events } = await chat("smart", mode, "Reply with exactly one word: pong");
-          const start = verifyTargets(events, route.providers);
-          check(start.routingReason === route.reason, "the routing explanation does not match the routing table");
-          return `routed to ${route.providers.join("+")}`;
+          const start = verifyTargets(events, [first]);
+          const legacy = resolveProviders("smart", mode, configured);
+          if (legacy.ok && legacy.providers[0] === first) {
+            check(start.routingReason === legacy.reason, "the routing explanation does not match the routing table");
+          }
+          return `routed to ${first}`;
         }),
       );
     }

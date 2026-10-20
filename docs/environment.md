@@ -8,17 +8,35 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `NODE_ENV` | `development` | `development`, `test` or `production`. |
 | `HOST` / `PORT` | `0.0.0.0` / `8787` | Listen address. |
 | `LOG_LEVEL` | `info` | Pino level (`silent` … `trace`). Logs never include prompts, documents or answers. `debug`/`trace` in production log a start-up warning. |
-| `PROVIDER_MODE` | `live` | `live` uses real providers that have **both** a key and a model; `fake` uses the demonstration adapters for both providers (no network, no cost; a start-up warning in production). In production, `live` **refuses to start** unless at least one provider has a key and a model, no provider has only one of the two, and no key looks like an example placeholder (the message names variables, never values). |
+| `PROVIDER_MODE` | `live` | `live` uses real providers whose settings are complete (OpenAI/Anthropic: key and model; Bedrock: Region, at least one Nova model and credentials); `fake` uses the two demonstration adapters (no network, no cost; a start-up warning in production; Bedrock settings are ignored). In production, `live` **refuses to start** unless at least one provider is complete, none is half-configured, and no key looks like an example placeholder (the message names variables, never values). |
 | `OPENAI_API_KEY` | — | OpenAI key (server only). |
 | `OPENAI_MODEL` | — | OpenAI model id, e.g. a current model from OpenAI's docs. Required with the key. |
 | `OPENAI_ENCRYPTED_REASONING` | `false` | Reasoning models only: request and replay encrypted reasoning items between tool rounds (`store` stays false). Enable only after the live smoke passes for your model. |
 | `ANTHROPIC_API_KEY` | — | Anthropic key (server only). |
 | `ANTHROPIC_MODEL` | — | Claude model id from Anthropic's docs. Required with the key. |
+| `BEDROCK_AUTH` | `api_key` | How the server authenticates to Amazon Bedrock. `api_key`: `BEDROCK_API_KEY` is sent as a bearer token. `iam`: the AWS SDK default credential chain (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` of a least-privilege IAM user, a shared profile, or a role), signed with SigV4 — AWS's recommendation for production. On its own it does not switch Bedrock on. |
+| `BEDROCK_API_KEY` | — | Bedrock API key (server only, secret). Only with `BEDROCK_AUTH=api_key`; set with `iam` it is refused. |
+| `BEDROCK_REGION` | — | AWS Region of Bedrock Runtime, e.g. `eu-west-1`. Required once Bedrock is configured; on its own it does not switch Bedrock on. |
+| `BEDROCK_MODEL_MICRO` / `BEDROCK_MODEL_LITE` / `BEDROCK_MODEL_NOVA2_LITE` | — | Model or inference-profile id for each Amazon Nova tier, e.g. `eu.amazon.nova-lite-v1:0`. At least one; each must be an id of its own tier (production refuses a mismatch). DASH picks the tier per request inside the Bedrock adapter ([intelligence-router.md](intelligence-router.md)). |
+| `MODEL_PRICES` | — | Optional JSON of USD prices per million tokens for the internal cost estimate: `{"<provider>:<model id or prefix>": {"inputPerMillion": n, "outputPerMillion": n}}`. Overrides the built-in Amazon Nova estimates and compatible providers' declared prices (longest prefix wins); OpenAI/Anthropic costs stay unknown (null) unless listed. Spend limits count only priced usage, so production with live paid providers requires a price for each paid model. Invalid JSON or entries stop start-up without echoing the content. |
+| `AI_ENABLED` | `true` | Global AI switch. `false` refuses every AI request, demonstrations included, with DASH AI's neutral "unavailable" message. See [provider-platform.md](provider-platform.md) for this and the following cost-control settings. |
+| `FREE_POOL_ENABLED` | `false` | Free and promotional providers (compatible providers with `pricing` `free`/`promotional`) may serve requests they are eligible for. |
+| `PAID_PROVIDERS_ENABLED` | `true` | Paid providers may serve requests. `false` stops all paid inference. |
+| `BEDROCK_ENABLED` | `false` | Amazon Bedrock may serve requests. Without it a configured Bedrock receives nothing. `BEDROCK_FALLBACK_ENABLED` is its deprecated former name: still read (with a start-up warning), and the server refuses to start if both are set to different values ([provider-platform.md](provider-platform.md#renamed-bedrock_enabled)). |
+| `MAX_DAILY_AI_SPEND` / `MAX_MONTHLY_AI_SPEND` | — | System-wide paid spend limits in USD per UTC day / month (provider-reported cost, else the estimate). A paid provider serves a request only if its worst-case cost (dearest model; every tool round and the final answer, each re-sending what came before up to the context window; each model's output cap) fits in what is left of every limit, and the answer is then held to that worst case, and a paid model with no price is never used under a limit; free providers are not affected. **Production with `PROVIDER_MODE=live` and a paid provider enabled refuses to start without both.** |
+| `MAX_USER_DAILY_AI_SPEND` | — | Paid spend per account per UTC day (USD). |
+| `AI_PLAN_DAILY_SPEND` | — | JSON `{"<plan>": usd}`: paid spend per plan per UTC day. |
+| `MAX_REQUEST_AI_COST` | — | Ceiling (USD) on a paid provider's worst-case cost for one request (tool rounds included); an unpriced paid model is not used under a ceiling. |
+| `AI_DEFAULT_PLAN` | `standard` | The plan every account is on (lowercase). |
+| `AI_DEFAULT_SENSITIVITY` | `sensitive` | `sensitive`: every request only goes to providers approved for sensitive content. `standard`: ordinary requests may also go to `non_sensitive_only` providers; requests with documents or tools stay sensitive. |
+| `COMPATIBLE_PROVIDERS` | — | JSON array of approved OpenAI-compatible providers. Each entry names the variable holding its key (`apiKeyEnv`, ending in `_API_KEY`); that variable is a **secret** set separately. Unapproved by default. Format in [provider-platform.md](provider-platform.md). |
+| `<NAME>_API_KEY` | — | **Secret.** The key of a compatible provider, under the name its `apiKeyEnv` gives. Not in `.env.example`. |
+| `PROVIDER_QUOTAS` | — | JSON quota windows per provider id (requests or tokens per minute/day/month, promotional balance, unknown, unlimited) and a soft threshold. |
 | `PROVIDER_TIMEOUT_MS` | `120000` | Maximum time for one provider answer. |
 | `PROVIDER_IDLE_TIMEOUT_MS` | `45000` | Maximum gap between streamed chunks. |
 | `PROVIDER_MAX_RETRIES` | `2` | Extra attempts after a retryable provider failure (429, 5xx, timeout, malformed stream) that happened **before any output**. 0 disables retries. See [ADR 0011](decisions/0011-provider-failures-retry-not-failover.md). |
 | `PROVIDER_RETRY_BASE_MS` | `500` | First retry delay; doubles per attempt with ±20 % jitter, ×4 after rate limiting, capped at 8 s and never past `PROVIDER_TIMEOUT_MS`. |
-| `MAX_OUTPUT_TOKENS` | `16000` | Output token limit per answer. Includes thinking/reasoning tokens on models that think, so leave room for both. |
+| `MAX_OUTPUT_TOKENS` | `16000` | Output token limit per provider request. Includes thinking/reasoning tokens on models that think, so leave room for both. Adapters that know a model's lower limit (Amazon Nova Micro/Lite: 5,000) send and reserve that instead. |
 | `FAKE_STREAM_DELAY_MS` | `25` | Delay between chunks of fake answers. |
 | `DOCUMENT_EXTRACTION_TIMEOUT_MS` | `20000` | Time limit for parsing one PDF or DOCX. Parsing runs in a separate process with no secrets in its environment, a memory cap and decompression budgets (see [security.md](security.md)); a file that exceeds any limit is stored as `unsupported` with an explanation. |
 | `RATE_LIMIT_CHAT_PER_MINUTE` | `20` | Chat requests per user per minute. |
@@ -53,16 +71,18 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `METRICS_TOKEN` | — | **Secret.** At least 24 characters. Enables `GET /metrics` (Prometheus text) for requests bearing this token; unset, the endpoint does not exist. |
 | `OPERATOR_TOKEN` | — | **Secret.** At least 32 characters and a different value from `METRICS_TOKEN` (the server refuses to start if they match). Opens the operator view `GET /v1/providers` while provider details are hidden; unset, there is no operator access. |
 
-`.env.example` lists exactly these variables (a test keeps the two in sync and checks that every
-credential slot in it is empty).
+`.env.example` lists exactly these variables except the compatible providers' own key variables (a
+test keeps the two in sync and checks that every credential slot in it is empty).
 
 ## Production checklist
 
 Production (`NODE_ENV=production`) **refuses to start** without `DATABASE_URL` (unless
 `ALLOW_MEMORY_STORE=true`), without a valid `DATA_ENCRYPTION_KEY`, with a key that does not match
 stored data, with a schema that is not migrated, or with `PROVIDER_MODE=live` (the default) and no
-usable provider credentials: no provider with both `*_API_KEY` and `*_MODEL`, a key without its model
-(or the reverse), or a key that looks copied from an example. Its defaults are the safe ones (`DATABASE_SSL=require`,
+usable provider credentials: no complete provider, a key without its model (or the reverse), a key
+that looks copied from an example, or Bedrock settings that are incomplete, use the wrong tier id, an
+invalid Region, or both an API key and `BEDROCK_AUTH=iam`; and, with a paid provider enabled, without
+`MAX_DAILY_AI_SPEND`, `MAX_MONTHLY_AI_SPEND` and a `MODEL_PRICES` price for every paid model. Its defaults are the safe ones (`DATABASE_SSL=require`,
 `DATABASE_AUTO_MIGRATE=false`). It **warns** at start-up about deliberate opt-outs: `DATABASE_SSL=disable`
 or `no-verify`, `LOG_LEVEL=debug`/`trace`, `PROVIDER_MODE=fake`, only one live provider
 (nothing to fail over to), `RATE_LIMIT_BACKEND=memory` (limits are per instance) and an unencrypted
@@ -74,7 +94,9 @@ start-up, in-memory store allowed).
 `PROVIDER_DETAILS` (`hidden`, the default and the production value, or `exposed`): with `hidden`, nothing
 a consumer receives names an AI provider or model, and every request is routed by DASH AI
 ([provider-neutrality.md](provider-neutrality.md)). `exposed` is the engineering view for tests and the
-live smoke run; production logs a warning if it is set.
+live smoke run. **Production refuses to start with `exposed`**: it opens the operator views
+(`/v1/providers`, `/v1/router`) without `OPERATOR_TOKEN` and lets requests choose a provider directly,
+outside worst-case spend admission.
 
 `GET /v1/assistant` tells the apps whether DASH AI can answer (`available`, `demo`, research note).
 `GET /v1/providers` (configured providers, `live`/`fake`/`unconfigured`, model ids) is operator-only: it
