@@ -24,7 +24,7 @@ import {
   type ProviderTurn,
 } from "../providers/types.js";
 import { newId } from "../security/crypto.js";
-import type { ConversationRecord, DocumentRecord, Store } from "../store/store.js";
+import type { ConversationRecord, DocumentRecord, SpendReservationRecord, Store } from "../store/store.js";
 import { OfferedTools } from "../tools/registry.js";
 import { DUPLICATE_TEXT } from "../tools/executor.js";
 import type { ToolRuntime } from "../tools/runtime.js";
@@ -33,7 +33,7 @@ import type { Metrics } from "../observability/metrics.js";
 import { estimateAnswerCostUsd } from "../intelligence/cost.js";
 import { estimateTokens, type IntelligenceRouter, type RouteDecision } from "../intelligence/router.js";
 import { estimateTokensForLedger, requestChars, type InferenceContext } from "../intelligence/ledger.js";
-import type { AiPlatform, Refusal } from "../intelligence/platform.js";
+import { SpendAdmissionError, type AiPlatform, type Refusal } from "../intelligence/platform.js";
 import type { Sensitivity } from "../intelligence/policy.js";
 import type { ToolLoop } from "../intelligence/worstCase.js";
 import { hideProviders, neutralErrorMessage, NEUTRAL_ROUTING_REASON, NEUTRAL_UNAVAILABLE } from "./publicSurface.js";
@@ -100,6 +100,11 @@ export interface PreparedChat {
    * then held to its round's input budget (see AiPlatform.inputBudgets). Null when nothing is bounded.
    */
   costBudget: { firstInputTokens: number; loop: ToolLoop | null } | null;
+  /**
+   * The in-flight spend hold taken at admission (ADR 0015), settled by runChat when the answer ends.
+   * Null when no aggregate spend limit or no paid provider applies.
+   */
+  reservation: SpendReservationRecord | null;
 }
 
 /**
@@ -152,11 +157,11 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
   const configured = ctx.providers.configured();
   const plan = ctx.ai.plan;
   const sensitivity = ctx.ai.classify({ documents: documents.length, toolsOffered: offered.size > 0 });
-  const spend = await ctx.ai.admit(userId);
   let targets: PreparedTarget[];
   let routingReason: string;
   let costBudget: PreparedChat["costBudget"] = null;
   let route: Record<string, unknown>;
+  let reservation: SpendReservationRecord | null = null;
   if (choice === "smart") {
     // The DASH Intelligence Router decides. A provider the person named in their own words is a
     // preference, applied silently when available.
@@ -173,20 +178,41 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
       });
     const loop: ToolLoop | null =
       offered.size > 0 ? { toolRounds: ctx.tools.maxRounds, resultCharsPerRound: toolResultCharsPerRound(ctx.tools.maxResultChars) } : null;
+    const messageId = newId();
+    let admission;
+    try {
+      // Routed on the spend estimate, then the worst case is held atomically against every spend limit
+      // (requests already in flight included) before anything is sent; see ADR 0015.
+      admission = await ctx.ai.admitAndReserve({
+        userId,
+        inferenceId: messageId,
+        task: "chat",
+        // The answer's own abort (runTarget) ends every provider request by then.
+        maxDurationMs: ctx.config.providerTimeoutMs,
+        inputChars: firstInputChars,
+        loop,
+        route: (costFields) =>
+          ctx.router.route({
+            task: "chat",
+            mode: request.mode,
+            hint: providerHint(request.message.content),
+            estimatedInputTokens: estimateTokens(inputChars),
+            requires: offered.size > 0 ? ["tool_use"] : [],
+            sensitivity,
+            plan,
+            inputModalities: ["text"],
+            // Cost limits compare against everything sent (system prompt and tool schemas included), for
+            // every provider request a tool-using answer may make (its tool rounds, then a final answer).
+            ...costFields,
+          }),
+      });
+    } catch (err) {
+      if (err instanceof SpendAdmissionError) throw refusalError({ kind: "busy" }, hidden, "spend_admission");
+      throw err;
+    }
+    const { decision, spend } = admission;
+    reservation = admission.reservation;
     costBudget = ctx.ai.costBounded(spend) ? { firstInputTokens: estimateTokensForLedger(firstInputChars), loop } : null;
-    const decision = ctx.router.route({
-      task: "chat",
-      mode: request.mode,
-      hint: providerHint(request.message.content),
-      estimatedInputTokens: estimateTokens(inputChars),
-      requires: offered.size > 0 ? ["tool_use"] : [],
-      sensitivity,
-      plan,
-      inputModalities: ["text"],
-      // Cost limits compare against everything sent (system prompt and tool schemas included), for
-      // every provider request a tool-using answer may make (its tool rounds, then a final answer).
-      ...ctx.ai.costFields(spend, firstInputChars, loop),
-    });
     ctx.ai.noteSpendLimit(decision, spend);
     if (!decision.ok) {
       ctx.metrics?.routerUnavailable.inc({ task: "chat", reason: decision.reason });
@@ -194,10 +220,13 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
       throw refusalError(ctx.ai.refusal(decision, spend), hidden, decision.reason);
     }
     const adapters = decision.providers.map((p) => ctx.providers.get(p)).filter((a): a is ProviderAdapter => a !== undefined);
-    if (adapters.length === 0) throw new AppError("no_provider_available", hidden ? NEUTRAL_UNAVAILABLE : "No AI provider is configured on this server.");
+    if (adapters.length === 0) {
+      await ctx.ai.settle(reservation);
+      throw new AppError("no_provider_available", hidden ? NEUTRAL_UNAVAILABLE : "No AI provider is configured on this server.");
+    }
     ctx.metrics?.routerDecisions.inc({ task: "chat", provider: adapters[0]!.id });
     ctx.log.debug({ routeKey: decision.routeKey, candidates: decision.candidates, rejected: decision.rejected }, "routing decision");
-    targets = [{ adapter: adapters[0]!, messageId: newId(), fallbacks: adapters.slice(1) }];
+    targets = [{ adapter: adapters[0]!, messageId, fallbacks: adapters.slice(1) }];
     route = routeMetadata(decision, sensitivity, spend.blockedBy);
     const legacy = resolveProviders("smart", request.mode, configured);
     routingReason = hidden
@@ -206,7 +235,9 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
         ? legacy.reason
         : `DASH AI routed this request to ${adapters[0]!.displayName} (${decision.routeKey}).`;
   } else {
-    // Engineering routes (PROVIDER_DETAILS=exposed only): the spend limits still apply.
+    // Engineering routes (PROVIDER_DETAILS=exposed only, refused in production): a limit already
+    // reached still applies; they are not reserved (see ADR 0015).
+    const spend = await ctx.ai.admit(userId);
     const routing = resolveProviders(choice, request.mode, configured);
     if (!routing.ok) throw new AppError(routing.code, routing.message);
     targets = routing.providers.map((p) => {
@@ -232,6 +263,7 @@ export async function prepareChat(ctx: ChatContext, userId: string, request: Cha
     sensitivity,
     route,
     costBudget,
+    reservation,
   };
 }
 
@@ -271,6 +303,21 @@ export interface TargetOutcome {
 
 /** Streams the prepared chat to the sink. Never writes prompt or response text to logs. */
 export async function runChat(
+  ctx: ChatContext,
+  prepared: PreparedChat,
+  streamId: string,
+  sink: SseSink,
+  signal: AbortSignal,
+): Promise<TargetOutcome[]> {
+  try {
+    return await streamChat(ctx, prepared, streamId, sink, signal);
+  } finally {
+    // After every attempt of the answer is in the ledger, whatever the outcome (ADR 0015).
+    await ctx.ai.settle(prepared.reservation);
+  }
+}
+
+async function streamChat(
   ctx: ChatContext,
   prepared: PreparedChat,
   streamId: string,

@@ -691,7 +691,7 @@ describe("the worst case of a tool-using answer", () => {
     expect(ai.outputTokenCap("openai", "any-model")).toBe(16_000);
 
     // The worst case is the dearer of the two tiers, each with its own cap (one request, 3,000 input tokens).
-    const { worstCaseCostUsd } = ai.costFields({ paidAllowed: true, blockedBy: null, headroom: null, totals: { systemDailyUsd: 0, systemMonthlyUsd: 0, planDailyUsd: null, userDailyUsd: null } }, 9_000);
+    const { worstCaseCostUsd } = ai.costFields({ paidAllowed: true, blockedBy: null, headroom: null, totals: { systemDailyUsd: 0, systemMonthlyUsd: 0, planDailyUsd: null, userDailyUsd: null }, usage: [] }, 9_000);
     const lite = (3_000 * 0.06 + 5_000 * 0.24) / 1e6;
     const nova2 = (3_000 * 0.33 + 16_000 * 2.75) / 1e6;
     expect(worstCaseCostUsd!("bedrock")).toBeCloseTo(Math.max(lite, nova2), 12);

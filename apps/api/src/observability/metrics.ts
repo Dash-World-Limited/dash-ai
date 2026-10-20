@@ -135,6 +135,12 @@ export class Metrics {
   readonly providerPauses = new Counter("dash_ai_provider_pauses_total", "Providers temporarily disabled after reporting an exhausted quota or a long wait.", ["provider", "reason"]);
   readonly ledgerWriteFailures = new Counter("dash_ai_ledger_write_failures_total", "Provider attempts that could not be written to the inference ledger (spend limits under-count until fixed).", []);
   readonly spendBlocked = new Counter("dash_ai_spend_blocked_total", "Requests for which a spend limit stopped paid providers.", ["scope"]);
+  readonly spendReservations = new Counter("dash_ai_spend_reservations_total", "Spend reservation attempts at admission (admitted, denied, error = could not check: refused).", ["outcome"]);
+  readonly spendReservationSettlements = new Counter("dash_ai_spend_reservation_settlements_total", "Spend reservations ended (settled, released, expired = settled after its lease ran out).", ["status"]);
+  readonly spendReservationOverage = new Counter("dash_ai_spend_reservation_overage_total", "INVARIANT VIOLATION: requests whose actual paid cost exceeded their reservation.", []);
+  readonly spendReservationOverageUsd = new Counter("dash_ai_spend_reservation_overage_usd_total", "USD by which settled requests exceeded their reservations.", []);
+  readonly spendReservationFailures = new Counter("dash_ai_spend_reservation_failures_total", "Spend reservation store errors, by stage (reserve, settle, sweep).", ["stage"]);
+  readonly spendReservationsExpired = new Counter("dash_ai_spend_reservations_expired_total", "Lapsed spend reservations marked expired by housekeeping (their request never settled).", []);
   readonly providerFallbacks = new Counter("dash_provider_fallbacks_total", "Answers DASH AI routed to another provider after a failure before any output.", ["from", "to", "code"]);
   readonly routerDecisions = new Counter("dash_router_decisions_total", "Requests the DASH Intelligence Router routed, by task and first-choice provider.", ["task", "provider"]);
   readonly routerUnavailable = new Counter("dash_router_unavailable_total", "Requests the router could not route, by task and reason.", ["task", "reason"]);
