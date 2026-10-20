@@ -489,7 +489,7 @@ describe.skipIf(!TEST_DATABASE_URL)("spend reservations on PostgreSQL", () => {
       await pool.query("CREATE TABLE spend_reservations (id text)");
       await expect(migrate(pool)).rejects.toThrow(/Migration 12 \(spend_reservations\) failed/);
       expect((await pool.query("SELECT max(id) AS id FROM schema_migrations")).rows[0].id).toBe(11);
-      expect((await pool.query("SELECT to_regclass('inference_attempts_paid_plan_created_idx') AS i")).rows[0].i).toBeNull();
+      expect((await pool.query("SELECT to_regclass('inference_spend_daily') AS t")).rows[0].t).toBeNull();
       await pool.query("DROP TABLE spend_reservations");
 
       expect((await migrate(pool)).applied).toEqual(["12_spend_reservations"]);
@@ -497,10 +497,12 @@ describe.skipIf(!TEST_DATABASE_URL)("spend reservations on PostgreSQL", () => {
       await assertMigrated(pool);
       const kept = await pool.query("SELECT inference_id, estimated_cost_usd FROM inference_attempts");
       expect(kept.rows).toEqual([{ inference_id: "baseline-inference", estimated_cost_usd: 0.25 }]);
+      // Existing paid spend was carried into the per-day totals.
+      expect((await pool.query("SELECT plan, paid_usd::float8 AS usd, attempts::int AS n FROM inference_spend_daily")).rows).toEqual([{ plan: "standard", usd: 0.25, n: 1 }]);
       const indexes = await pool.query("SELECT indexname FROM pg_indexes WHERE schemaname = $1 AND tablename IN ('spend_reservations', 'inference_attempts') ORDER BY 1", [schema]);
       expect(indexes.rows.map((r: { indexname: string }) => r.indexname)).toEqual(
         expect.arrayContaining([
-          "inference_attempts_paid_plan_created_idx", "spend_reservations_active_idx", "spend_reservations_active_plan_idx",
+          "spend_reservations_active_idx", "spend_reservations_active_plan_idx",
           "spend_reservations_active_user_idx", "spend_reservations_finished_idx", "spend_reservations_inference_key", "spend_reservations_pkey",
         ]),
       );
@@ -517,6 +519,39 @@ describe.skipIf(!TEST_DATABASE_URL)("spend reservations on PostgreSQL", () => {
       await admin.query(`DROP SCHEMA ${schema} CASCADE`);
       await admin.end();
     }
+  });
+
+  it("the per-day paid totals always equal the ledger (inserts, provider charges, free rows, account deletion, deletes)", async () => {
+    const { stores, raw } = await instances(1);
+    const store = stores[0]!;
+    const u = await addUser(store);
+    const yesterday = new Date(Date.parse(DAY) - 3_600_000).toISOString();
+    await Promise.all([
+      ...Array.from({ length: 40 }, (_, i) => store.recordInferenceAttempt(attempt(uid("inf"), 0.001 * (i + 1), { userId: u }))),
+      store.recordInferenceAttempt(attempt(uid("inf"), 0.01, { providerCostUsd: 0.5 })),
+      store.recordInferenceAttempt(attempt(uid("inf"), 0.4, { pricing: "free" })),
+      store.recordInferenceAttempt(attempt(uid("inf"), 0.3, { pricing: "demo" })),
+      store.recordInferenceAttempt(attempt(uid("inf"), 0.07, { plan: "pro" })),
+      store.recordInferenceAttempt(attempt(uid("inf"), 0.2, { createdAt: yesterday })),
+      store.recordInferenceAttempt(attempt(uid("inf"), 0.9, { estimatedCostUsd: null })),
+    ]);
+    const compare = async () => {
+      const ledger = await raw.query(
+        `SELECT (created_at AT TIME ZONE 'UTC')::date::text AS day, plan, sum(COALESCE(provider_cost_usd, estimated_cost_usd, 0)::numeric)::text AS usd, count(*)::int AS n
+           FROM inference_attempts WHERE pricing = 'paid' GROUP BY 1, 2 ORDER BY 1, 2`,
+      );
+      const totals = await raw.query("SELECT day::text AS day, plan, paid_usd::text AS usd, attempts::int AS n FROM inference_spend_daily WHERE attempts > 0 ORDER BY 1, 2");
+      expect(totals.rows.map((r: { usd: string }) => ({ ...r, usd: Number(r.usd) }))).toEqual(ledger.rows.map((r: { usd: string }) => ({ ...r, usd: Number(r.usd) })));
+      return ledger.rows.length;
+    };
+    expect(await compare()).toBe(3);
+    const usage = await store.spendUsage([systemMonthly(10), systemDaily(10), planDaily("standard", 10), userDaily(u, 10)]);
+    // 0.82 (person) + 0.50 (provider charge) + 0.07 (pro) today; 0.20 yesterday; free, demo and unpriced rows count nothing.
+    expect(usage.map((x) => x.actualUsd)).toEqual([Date.parse(DAY) === Date.parse(MONTH) ? 1.39 : 1.59, 1.39, 1.32, 0.82]);
+    await store.deleteUserData(u); // the ledger's account link becomes NULL: totals unchanged
+    await compare();
+    await raw.query("DELETE FROM inference_attempts WHERE plan = 'pro'"); // a future retention purge
+    expect(await compare()).toBe(2);
   });
 
   it("the schema refuses impossible rows and keeps holds free of content", async () => {
@@ -577,9 +612,11 @@ describe.skipIf(!TEST_DATABASE_URL)("spend reservations on PostgreSQL", () => {
     expect(personOnly).not.toMatch(/Seq Scan on spend_reservations/);
     const system = await explain([systemMonthly(10), systemDaily(1), planDaily("standard", 5), userDaily(u, 1)]);
     expect(system).toMatch(/spend_reservations_active_idx/);
-    // Each hold's own ledger rows are found by request id, never by scanning the ledger.
+    // Each hold's own ledger rows are found by request id; system and plan totals come from the per-day
+    // totals: nothing scans a month of ledger rows while the scope's lock is held.
     expect(system).toMatch(/inference_attempts_inference_idx/);
-    expect(system).not.toMatch(/Seq Scan on inference_attempts a\b/);
+    expect(system).toMatch(/inference_spend_daily/);
+    expect(system).not.toMatch(/Seq Scan on inference_attempts/);
     if (process.env.DASH_PRINT_PLANS) writeFileSync(process.env.DASH_PRINT_PLANS, `${personOnly}\n---\n${system}\n`);
     const text = system;
     expect(text).not.toMatch(/Seq Scan on spend_reservations/);

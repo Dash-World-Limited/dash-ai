@@ -40,6 +40,14 @@ actual spend in every window stays ≤ L, however many requests run at once and 
    scope fits.
 4. `COMMIT` releases the locks.
 
+Under a system or plan limit, `actual` comes from `inference_spend_daily` (migration 12): paid ledger
+cost per UTC day and plan, kept by a trigger in the same transaction as every ledger write (insert, the
+account-deletion update, a future retention delete) and backfilled by the migration, so in any snapshot it
+equals the ledger. Without it every admission summed a month of ledger rows while holding the system lock;
+measured locally, admission fell to about 13 per second at 100,000 paid rows in the month and hit the lock
+timeout at 500,000. With it: about 4 ms per admission at 100,000 rows and no lock timeouts at 500,000.
+Person limits still read the ledger through its `(user_id, created_at)` index.
+
 Why advisory locks: the serialization point is exactly the aggregate being protected, it is held for one short
 statement, there is no retry storm (unlike `SERIALIZABLE`, where every concurrent admission on a busy scope
 conflicts), and no counter rows have to be kept in step with the append-only ledger. Locks are per scope: with

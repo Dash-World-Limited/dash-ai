@@ -415,8 +415,42 @@ CREATE INDEX spend_reservations_active_idx ON spend_reservations (expires_at) WH
 CREATE INDEX spend_reservations_active_user_idx ON spend_reservations (user_id) WHERE status = 'active';
 CREATE INDEX spend_reservations_active_plan_idx ON spend_reservations (plan) WHERE status = 'active';
 CREATE INDEX spend_reservations_finished_idx ON spend_reservations (finished_at) WHERE status <> 'active';
--- Plan-limit sums read paid rows of one plan since the start of the UTC day.
-CREATE INDEX inference_attempts_paid_plan_created_idx ON inference_attempts (plan, created_at) WHERE pricing = 'paid';
+
+-- Paid ledger cost per UTC day and plan, maintained by a trigger in the same transaction as every ledger
+-- write, so it always equals the ledger in any snapshot. Admission under a system or plan limit reads
+-- these few rows (at most 31 days × plans) instead of summing a month of ledger rows while it holds the
+-- scope's lock. Derived data only: the ledger stays the record; person limits still read the ledger.
+CREATE TABLE inference_spend_daily (
+  day      date NOT NULL,
+  plan     text NOT NULL,
+  paid_usd numeric NOT NULL,
+  attempts bigint NOT NULL,
+  PRIMARY KEY (day, plan)
+);
+CREATE FUNCTION inference_spend_daily_apply() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP IN ('UPDATE', 'DELETE') AND OLD.pricing = 'paid' THEN
+    UPDATE inference_spend_daily
+       SET paid_usd = paid_usd - COALESCE(OLD.provider_cost_usd, OLD.estimated_cost_usd, 0)::numeric, attempts = attempts - 1
+     WHERE day = (OLD.created_at AT TIME ZONE 'UTC')::date AND plan = OLD.plan;
+  END IF;
+  IF TG_OP IN ('INSERT', 'UPDATE') AND NEW.pricing = 'paid' THEN
+    INSERT INTO inference_spend_daily (day, plan, paid_usd, attempts)
+    VALUES ((NEW.created_at AT TIME ZONE 'UTC')::date, NEW.plan, COALESCE(NEW.provider_cost_usd, NEW.estimated_cost_usd, 0)::numeric, 1)
+    ON CONFLICT (day, plan) DO UPDATE
+      SET paid_usd = inference_spend_daily.paid_usd + EXCLUDED.paid_usd, attempts = inference_spend_daily.attempts + 1;
+  END IF;
+  RETURN NULL;
+END $$;
+-- Creating the trigger locks the ledger against writes until this migration commits, so the backfill
+-- below sees every row written before it and the trigger every row written after it.
+CREATE TRIGGER inference_spend_daily_insert AFTER INSERT OR DELETE ON inference_attempts
+  FOR EACH ROW EXECUTE FUNCTION inference_spend_daily_apply();
+CREATE TRIGGER inference_spend_daily_update AFTER UPDATE OF pricing, plan, created_at, provider_cost_usd, estimated_cost_usd ON inference_attempts
+  FOR EACH ROW EXECUTE FUNCTION inference_spend_daily_apply();
+INSERT INTO inference_spend_daily (day, plan, paid_usd, attempts)
+SELECT (created_at AT TIME ZONE 'UTC')::date, plan, sum(COALESCE(provider_cost_usd, estimated_cost_usd, 0)::numeric), count(*)
+  FROM inference_attempts WHERE pricing = 'paid' GROUP BY 1, 2;
 `,
   },
 ];

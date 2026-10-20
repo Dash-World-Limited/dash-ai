@@ -254,8 +254,28 @@ Without any spend limit or ceiling nothing is reserved, so nothing is enforced.
 A paid model with **no price** never fits: under any configured limit it is not used, at run time as
 well as at start-up. Excluded paid providers leave free providers to serve the requests they are
 eligible for; otherwise the request is refused neutrally. Free, promotional and demonstration usage
-never counts against the paid limits. System totals are cached for at most five seconds and refreshed
-after every paid attempt on the same instance.
+never counts against the paid limits.
+
+**In-flight spend reservations** ([ADR 0015](decisions/0015-atomic-spend-reservations.md)). The check
+above only picks the route. A paid request is admitted when its **reservation** succeeds: in one
+PostgreSQL transaction, holding an advisory lock for each limited scope (system, plan, person; taken in
+one fixed order), one statement reads every scope's ACTUAL spend (the ledger) and RESERVED spend (what
+requests still in flight may yet spend: each active hold minus its own ledger rows so far) and inserts a
+hold of the route's worst case only if, for every limit, `actual + reserved + this hold ≤ limit`. The hold
+is the dearest worst case among the paid providers in the route, so a fallback inside the route is
+covered. If another request took the room meanwhile, DASH routes once more on the database's fresh
+numbers (a free provider may still serve) and otherwise refuses with the usual limit message. When the
+request ends, whatever the outcome, the hold is **settled** to the request's paid ledger cost (`settled`,
+or `released` when nothing was billed) and stops counting. A hold that is never settled (a crashed
+process) stops counting when its lease ends: the request's enforced execution bound (`PROVIDER_TIMEOUT_MS`
+for chat, the run's time budget for Automates) plus two minutes, on the database clock. Lapsed rows are
+marked `expired` and finished rows older than 30 days deleted by lazy housekeeping after admissions; nothing
+depends on it running. If the hold cannot be checked (database unavailable, a scope's lock busy for more
+than three seconds) the paid request is refused as busy: spend control fails closed.
+
+System totals in the check are cached for at most five seconds; the reservation never uses the cache.
+With only per-person limits configured, different people's admissions never wait for each other; a system
+limit serializes admissions (only the short admission statement, never the provider call).
 
 An answer whose served model id has no price (providers often report a dated snapshot of the alias the
 operator priced) is charged at the configured model's price, so it can never count as free.
@@ -272,12 +292,15 @@ estimates it: it was let in only because its worst case fitted, and none of its 
 send more than that worst case budgeted. The guarantee is stated in the ledger's own terms: input is
 the estimate above, and an answer is charged the provider's reported usage. A provider whose tokenizer
 counts more tokens than the three-characters-per-token estimate for the same text (unusual scripts,
-dense code or data) can bill more input than was reserved; output never exceeds the cap sent. Requests
-running at the same time are each admitted against the same recorded spend, so together they can pass
-a limit by at most the sum of their worst cases (and, across instances, by what was spent in the last
-five seconds of cached totals). An attempt that a timeout or cancellation cut short is estimated as
-possibly billed; a provider retry of such an attempt, and a fallback to the next provider after a
-billed failure, are not part of the worst case. Because admission reserves the worst case, a limit stops
+dense code or data) can bill more input than was reserved; output never exceeds the cap sent. Before
+in-flight reservations, requests running at the same time were each admitted against the same recorded
+spend, so together they could pass a limit by the sum of their worst cases (and, across instances, by
+what was spent in the last five seconds of cached totals). This is **closed by in-flight reservations**: requests running at the same
+time, on any number of instances sharing the database, are admitted only while their holds fit together
+with actual spend. An attempt that a timeout or cancellation cut short is estimated as possibly billed; a
+provider retry of such an attempt, and a fallback to the next provider after a billed failure, are not
+part of the worst case (they still charge the same hold through the ledger; an actual above the hold is
+logged and counted as `dash_ai_spend_reservation_overage_total`). Because admission reserves the worst case, a limit stops
 new paid requests before it is reached; tool-using answers reserve the most.
 Explicit engineering routes (`PROVIDER_DETAILS=exposed`, which production refuses to start with) only
 check that no limit is already reached.
@@ -303,7 +326,11 @@ environment has been renamed.
 `dash_ai_inference_attempts_total{provider,pricing,outcome}`, `dash_ai_attempt_cost_usd_total{pricing}`,
 `dash_ai_provider_pauses_total{provider,reason}`, `dash_ai_spend_blocked_total{scope}` (requests for which a
 limit kept paid providers out), `dash_ai_ledger_write_failures_total` (alert on any increase: spend limits
-under-count while ledger writes fail), plus the existing
+under-count while ledger writes fail), `dash_ai_spend_reservations_total{outcome}` (admitted, denied, error),
+`dash_ai_spend_reservation_settlements_total{status}`, `dash_ai_spend_reservations_expired_total` (holds whose
+request never settled: alert on a steady rise), `dash_ai_spend_reservation_failures_total{stage}`,
+`dash_ai_spend_reservation_overage_total` and `_overage_usd_total` (alert on any increase: an actual cost
+above its hold), plus the existing
 router, failure, retry, fallback and estimated-cost counters.
 
 ## Safe production rollout
@@ -333,18 +360,24 @@ Nothing here is deployed by merging. When the operator decides to roll it out:
    - If `schema_migrations` does not exist, the database was never migrated: safe.
 
 1. **Back up the database** (snapshot) before upgrading.
-2. **Migrations.** This release adds three additive migrations (no existing data is changed or deleted):
+2. **Migrations.** These releases add four additive migrations (no existing data is changed or deleted):
    - `9 usage_estimated_cost`: `ALTER TABLE usage_records ADD COLUMN estimated_cost_usd double precision` (nullable).
    - `10 inference_ledger`: `CREATE TABLE inference_attempts (…)` with indexes on `created_at`,
      `(user_id, created_at)` and `inference_id`; `user_id` references `users` with `ON DELETE SET NULL`.
    - `11 inference_ledger_integrity`: adds the nullable `configured_model` column and CHECK constraints
      (known pricing, outcome, token source and currency values; no negative tokens, counts, latency or
      costs) so the database refuses ledger rows that would corrupt spend totals.
+   - `12 spend_reservations` (atomic spend reservations, [ADR 0015](decisions/0015-atomic-spend-reservations.md)):
+     `CREATE TABLE spend_reservations (…)` with CHECK constraints, a unique `inference_id`, partial indexes
+     on active holds; and `inference_spend_daily`, paid ledger cost per UTC day and plan, kept equal to the
+     ledger by a trigger on `inference_attempts` and backfilled from it. No existing row is changed. The
+     backfill reads the whole ledger and blocks ledger writes until the migration commits; on a large
+     ledger run it in a quiet period.
    Production has `DATABASE_AUTO_MIGRATE=false`: run `pnpm --filter @dash-ai/api migrate` (or
    `node apps/api/dist/migrate-cli.js`) against the production database before starting the new
    version. **Rollback:** the previous server version refuses to start on a database that has
    migrations it does not know, so going back after migrating means restoring the snapshot from step 1
-   (or an operator reverting migrations 11, 10 and 9 by hand, which discards the ledger and the cost column).
+   (or an operator reverting migrations 12, 11, 10 and 9 by hand, which discards the holds, the ledger and the cost column).
 3. **Deploy with the current mode first.** With `PROVIDER_MODE=fake` nothing changes for people;
    check `/health`, `/ready` and that demonstration answers appear in `inference_attempts` with
    pricing `demo` and cost 0.
@@ -385,11 +418,14 @@ months that closed long ago, so no current spend limit is affected.
 
 - Quota counters and health are per instance (seeded from the ledger at start-up).
 - Plans: every account is on `AI_DEFAULT_PLAN`; assigning plans per account is future work.
-- Spend sums read the ledger; at very high volume they should move to pre-aggregated totals.
+- The operator view and router hint still sum the ledger (cached); admission reads per-day totals.
 - Retention: the policy is **24 months** (see *Ledger retention*); the purge that enforces it is not
   built yet, so until then rows are kept.
-- Concurrent requests can together pass a limit by the sum of their worst cases (see *What a limit
-  guarantees*); with several API instances, add up to five seconds of cached system totals.
+- Admissions under a system-wide limit are serialized on that limit's lock (one short statement each,
+  reading per-day totals; measured locally at roughly 60–250 admissions per second). A much higher
+  paid request rate would need sharded or batched admission.
+- A provider retry after a possibly billed failure, or a fallback after one, can spend past a request's
+  hold (reported as an overage; retry/fallback accounting is the next milestone).
 - The worst case is in DASH's estimated tokens (about three characters per token). A provider that
   counts more tokens for the same text can bill more input than was reserved.
 - Sensitivity is classified from structure (documents, tools) and the operator default, not from

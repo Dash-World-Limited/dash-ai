@@ -157,23 +157,36 @@ export function spendUsageCtes(limits: readonly SpendLimit[], params: unknown[])
       FROM spend_reservations r
      WHERE r.status = 'active' AND r.expires_at > statement_timestamp()${narrow.length ? ` AND (${narrow.join(" OR ")})` : ""})`;
   const rows = limits.map((l, i) => {
-    const ledger = ["pricing = 'paid'", `created_at >= ${p(l.since)}::timestamptz`];
+    // System and plan windows start at a UTC midnight: read the per-day totals (equal to the ledger in
+    // every snapshot, kept by trigger) rather than a month of ledger rows. Person limits, and any window
+    // that does not start at midnight, read the ledger itself.
+    const daily = l.scope !== "user_daily" && isUtcMidnight(l.since);
+    const where = daily ? [`day >= ${p(l.since.slice(0, 10))}::date`] : ["pricing = 'paid'", `created_at >= ${p(l.since)}::timestamptz`];
     let held = "";
     if (l.scope === "plan_daily") {
       const plan = p(l.plan ?? "");
-      ledger.push(`plan = ${plan}`);
+      where.push(`plan = ${plan}`);
       held = ` WHERE plan = ${plan}`;
     } else if (l.scope === "user_daily") {
       const user = p(l.userId ?? "");
-      ledger.push(`user_id = ${user}`);
+      where.push(`user_id = ${user}`);
       held = ` WHERE user_id = ${user}`;
     }
+    const actual = daily
+      ? `(SELECT COALESCE(sum(paid_usd), 0) FROM inference_spend_daily WHERE ${where.join(" AND ")})`
+      : `(SELECT COALESCE(sum(${LEDGER_COST}), 0) FROM inference_attempts WHERE ${where.join(" AND ")})`;
     return `SELECT ${i} AS ord, ${p(l.scope)}::text AS scope, ${p(String(l.limitUsd))}::numeric AS limit_usd,
-           (SELECT COALESCE(sum(${LEDGER_COST}), 0) FROM inference_attempts WHERE ${ledger.join(" AND ")}) AS actual_usd,
+           ${actual} AS actual_usd,
            (SELECT COALESCE(sum(held), 0) FROM holds${held}) AS reserved_usd`;
   });
   return `${holds}, usage AS (${rows.join(" UNION ALL ")})`;
 }
+
+/** True for an ISO time at exactly 00:00:00.000 UTC (the start of every system and plan window). */
+const isUtcMidnight = (iso: string): boolean => {
+  const t = Date.parse(iso);
+  return Number.isFinite(t) && t % 86_400_000 === 0 && new Date(t).toISOString().slice(0, 10) === iso.slice(0, 10);
+};
 
 interface SpendUsageRow { scope: SpendScope; limit_usd: string; actual_usd: string; reserved_usd: string }
 const toSpendUsage = (r: SpendUsageRow): SpendUsage => {
