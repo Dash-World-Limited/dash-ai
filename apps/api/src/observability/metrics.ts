@@ -160,7 +160,7 @@ export class Metrics {
   readonly documentRejections = new Counter("dash_document_rejections_total", "Uploaded documents stored as unsupported, by reason.", ["kind", "reason"]);
   readonly documentExtractionSeconds = new Histogram("dash_document_extraction_seconds", "Time spent extracting text from one document.", ["kind", "status"], SECONDS);
   readonly streamAdmissions = new Counter("dash_stream_admissions_total", "Chat stream admissions by outcome (admitted, full = account at its concurrent-stream limit, unavailable = shared state unreachable: refused, gone = account deleted).", ["outcome"]);
-  readonly streamStops = new Counter("dash_stream_stops_total", "Chat streams stopped from outside the stream, by source (cancel, remote_cancel, account_deleted, shutdown).", ["source"]);
+  readonly streamStops = new Counter("dash_stream_stops_total", "Chat streams stopped from outside the stream, by source (cancel, remote_cancel, account_deleted, shutdown, lease_lost: a slot lost to an outage could not be re-taken within the limit).", ["source"]);
   readonly streamControlErrors = new Counter("dash_stream_control_errors_total", "Shared stream state (Redis) operations that failed, by operation.", ["op"]);
   readonly activeStreams = new Gauge("dash_active_streams", "Chat streams running on this instance.", []);
   readonly busyRejections = new Counter("dash_busy_rejections_total", "Requests refused as temporarily busy, by reason (draining, stream_control, extraction_saturated, export, database).", ["reason"]);
