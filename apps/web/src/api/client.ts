@@ -107,7 +107,8 @@ export class DashApi {
     }
     if (!response.ok) {
       const error = await toError(response);
-      if (response.status === 401 && this.tokens.get()) this.onUnauthorized();
+      // A wrong password while signed in is not this session ending.
+      if (response.status === 401 && this.tokens.get() && path !== "/v1/auth/login" && path !== "/v1/auth/register") this.onUnauthorized();
       throw error;
     }
     if (response.status === 204) return undefined as T;

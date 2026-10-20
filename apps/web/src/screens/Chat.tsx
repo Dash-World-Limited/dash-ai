@@ -164,6 +164,8 @@ export function ChatScreen() {
   const routeId = parts[1];
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState<ChatMsg | null>(null);
+  /** An earlier answer to regenerate once the person confirms that the messages after it go. */
+  const [regenerating, setRegenerating] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const [showJump, setShowJump] = useState(false);
@@ -196,7 +198,7 @@ export function ChatScreen() {
     () => ({
       copy: (text) => void navigator.clipboard?.writeText(text).then(() => app.notify("Copied")),
       share: typeof navigator !== "undefined" && "share" in navigator ? (text) => void navigator.share({ text }).catch(() => undefined) : null,
-      regenerate: (id) => app.engine.regenerate(id),
+      regenerate: (id) => (app.engine.regenerateRemovesLater(id) ? setRegenerating(id) : app.engine.regenerate(id)),
       edit: (m) => setEditing(m),
       retry: (id) => {
         setDismissed((d) => new Set([...d].filter((x) => x !== id)));
@@ -291,6 +293,25 @@ export function ChatScreen() {
         <Composer onSend={send} />
       </div>
       {editing && <EditDialog m={editing} onClose={() => setEditing(null)} />}
+      {regenerating && (
+        <Dialog title="Regenerate this answer?" onClose={() => setRegenerating(null)}>
+          <p>The messages after it in this chat will be removed and replaced by the new answer.</p>
+          <div className="actions">
+            <button className="btn btn-text" style={{ color: "var(--ink-2)" }} onClick={() => setRegenerating(null)}>
+              Cancel
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                app.engine.regenerate(regenerating);
+                setRegenerating(null);
+              }}
+            >
+              Regenerate
+            </button>
+          </div>
+        </Dialog>
+      )}
     </>
   );
 }

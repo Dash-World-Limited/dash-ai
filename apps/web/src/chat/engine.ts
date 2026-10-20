@@ -30,12 +30,17 @@ export function newId(prefix = ""): string {
 
 const DEFAULT_TITLE = "New chat";
 
-/** Context sent with a request: earlier turns, never demo answers or empty/failed ones, within the API's limits. */
+/**
+ * Context sent with a request: earlier turns, never demo answers or empty/failed ones, within the API's
+ * limits. An answer can be longer than one message may be, so each turn is cut to the per-message limit
+ * (as Android does): otherwise one long answer would make every later request in the chat invalid.
+ */
 export function buildHistory(earlier: ChatMsg[]): HistoryMessage[] {
   const turns: HistoryMessage[] = [];
+  const bounded = (text: string) => text.slice(0, LIMITS.maxMessageChars);
   for (const m of earlier) {
-    if (m.role === "user") turns.push({ role: "user", content: m.content });
-    else if (!m.demo && m.content.trim() && m.status !== "failed") turns.push({ role: "assistant", content: m.content });
+    if (m.role === "user") turns.push({ role: "user", content: bounded(m.content) });
+    else if (!m.demo && m.content.trim() && m.status !== "failed") turns.push({ role: "assistant", content: bounded(m.content) });
   }
   let recent = turns.slice(-LIMITS.maxHistoryMessages);
   while (recent.reduce((n, t) => n + t.content.length, 0) > LIMITS.maxHistoryChars) recent = recent.slice(1);
@@ -62,7 +67,8 @@ function fromServer(m: ConversationMessage, tools: ToolUse[] = []): ChatMsg {
     demo: m.demo,
     createdAt: m.createdAt,
     replyToId: null,
-    attachments: [],
+    // Only the ids are stored with a message: enough to send the same documents again on Regenerate.
+    attachments: (m.attachmentIds ?? []).map((id) => ({ id, name: "Attached document", kind: "txt" as const, sizeBytes: 0 })),
     errorMessage: m.status === "failed" ? "This answer was not completed." : null,
     retryable: m.status === "failed",
     tools: m.role === "assistant" ? tools : [],
@@ -163,6 +169,13 @@ export class ChatEngine {
   connectionLost(): void {
     if (!this.state.generating || this.backend.demo) return;
     this.controller?.abort(ApiError.connectionLost());
+  }
+
+  /** True when regenerating this answer would also remove later messages (the API replaces them). */
+  regenerateRemovesLater(answerId: string): boolean {
+    const messages = this.state.messages;
+    const index = messages.findIndex((m) => m.id === answerId);
+    return index >= 0 && index < messages.length - 1;
   }
 
   /** Answers the same question again. */
