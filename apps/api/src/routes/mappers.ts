@@ -54,6 +54,7 @@ export const toMessage = (m: MessageRecord, view: View): ConversationMessage => 
   status: m.status,
   compareGroupId: m.compareGroupId,
   createdAt: m.createdAt,
+  attachmentIds: m.role === "user" ? [...m.attachmentIds] : [],
 });
 
 export const toDocument = (d: DocumentSummary): DocumentResponse => ({

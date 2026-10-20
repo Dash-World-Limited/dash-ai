@@ -25,6 +25,11 @@ export const ConversationMessage = z.object({
   status: MessageStatus,
   compareGroupId: Id.nullable(),
   createdAt: IsoDateTime,
+  /**
+   * Documents sent with a user message (their ids), so a reopened conversation can regenerate or
+   * retry that message with the same documents. Absent from older servers: treat as none.
+   */
+  attachmentIds: z.array(Id).max(LIMITS.maxAttachmentsPerMessage).default([]),
 });
 export type ConversationMessage = z.infer<typeof ConversationMessage>;
 
