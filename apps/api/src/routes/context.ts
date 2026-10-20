@@ -26,6 +26,8 @@ export interface RouteContext {
   push: PushService;
   tools: ToolRuntime;
   streams: StreamRegistry;
+  /** Set when shutdown begins: /ready answers 503 and new answers and uploads are refused. */
+  lifecycle: { draining: boolean };
   rateLimits: RateLimitService;
   metrics: Metrics;
   requireAuth: (request: FastifyRequest) => Promise<void>;

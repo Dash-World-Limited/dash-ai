@@ -360,7 +360,7 @@ describe("streaming chat", () => {
   it("limits concurrent streams per user", async () => {
     const { app, context } = await setup({ env: { MAX_CONCURRENT_STREAMS_PER_USER: "1" } });
     const { auth, user } = await register(app);
-    context.streams.register("existing-stream", user.id, new AbortController());
+    expect(await context.streams.acquire("existing-stream", user.id, 1, new AbortController())).toEqual({ ok: true });
     const res = await app.inject({ method: "POST", url: "/v1/chat/stream", headers: auth, payload: chatBody() });
     expect(res.statusCode).toBe(429);
     expect(res.json().error.code).toBe("too_many_streams");
@@ -433,7 +433,7 @@ describe("cancellation over a real connection", () => {
     const { app, context } = await setup();
     const alice = await register(app);
     const bob = await register(app);
-    context.streams.register("alice-stream-1", alice.user.id, new AbortController());
+    await context.streams.acquire("alice-stream-1", alice.user.id, 3, new AbortController());
     const res = await app.inject({ method: "POST", url: "/v1/chat/streams/alice-stream-1/cancel", headers: bob.auth });
     expect(res.json()).toEqual({ streamId: "alice-stream-1", cancelled: false });
   });

@@ -159,6 +159,18 @@ export class AutomationService {
     this.poke();
   }
 
+  /** Shutdown, step 1: schedules and claims nothing more; runs in progress go on (see stop). */
+  beginDrain(): void {
+    this.stopped = true;
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+  }
+
+  /** True while a scheduling pass or a run is in progress on this instance. */
+  get busy(): boolean {
+    return this.ticking !== null || this.inFlight.size > 0;
+  }
+
   /** Stops scheduling; runs still in progress are stopped and recorded as interrupted. */
   async stop(): Promise<void> {
     this.stopped = true;

@@ -18,16 +18,19 @@ export function systemRoutes(app: FastifyInstance, ctx: RouteContext): void {
   /**
    * Readiness for a load balancer: 200 when this instance can serve requests (the database answers),
    * 503 otherwise. A shared rate-limit backend that is down is reported as degraded but does not make
-   * the instance unready: limits fall back to per-instance ones. No details beyond up/down.
+   * the instance unready: limits fall back to per-instance ones. Shared stream state that is down is
+   * also "degraded": new answers are refused on every instance alike, so taking this one out of
+   * rotation would not help. A draining instance (shutting down) is 503. No details beyond up/down.
    */
   app.get("/ready", async (_request: FastifyRequest, reply: FastifyReply) => {
-    const [database, rateLimits] = await Promise.all([ctx.store.ping(), ctx.rateLimits.store.healthy()]);
+    const [database, rateLimits, streams] = await Promise.all([ctx.store.ping(), ctx.rateLimits.store.healthy(), ctx.streams.sharedHealthy()]);
     ctx.metrics.databaseUp.set({ store: storeKind(ctx) }, database ? 1 : 0);
     ctx.metrics.rateLimitBackendUp.set({ backend: ctx.rateLimits.store.kind }, rateLimits ? 1 : 0);
-    reply.code(database ? 200 : 503);
+    const draining = ctx.lifecycle.draining;
+    reply.code(database && !draining ? 200 : 503);
     return {
-      status: database ? (rateLimits ? "ready" : "degraded") : "not_ready",
-      checks: { database: database ? "up" : "down", rateLimits: rateLimits ? "up" : "down" },
+      status: draining ? "draining" : database ? (rateLimits && streams ? "ready" : "degraded") : "not_ready",
+      checks: { database: database ? "up" : "down", rateLimits: rateLimits ? "up" : "down", streams: streams ? "up" : "down" },
     };
   });
 

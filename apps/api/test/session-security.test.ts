@@ -97,4 +97,24 @@ describe("account deletion while another device is active", () => {
     expect((await app.inject({ method: "GET", url: "/v1/conversations", headers: again.auth })).json()).toEqual({ conversations: [] });
     expect((await app.inject({ method: "GET", url: "/v1/usage", headers: again.auth })).json()).toMatchObject({ totals: [], recent: [] });
   });
+
+  it("deleting accounts while their answers are being saved never fails (no deadlock between the two)", async () => {
+    // Before: on PostgreSQL the deletion (user row, then its conversations by cascade) and a stream
+    // saving its stopped answer (conversation row, then the user row) could deadlock, and DELETE /v1/me
+    // answered 500 with the account still there. Forty at once reproduced it every run.
+    const { app, store } = await setup({ RATE_LIMIT_AUTH_PER_MINUTE: "1000", RATE_LIMIT_API_PER_MINUTE: "10000", RATE_LIMIT_CHAT_PER_MINUTE: "1000", FAKE_STREAM_DELAY_MS: "1" });
+    const results = await Promise.all(
+      Array.from({ length: 40 }, async (_, i) => {
+        const account = await register(app, `race-${i}-${Date.now()}@example.com`);
+        const body = chatBody({ message: { id: testId("msg"), content: `answer ${i % 2 ? FAKE_TRIGGERS.slow : ""}`, attachmentIds: [] } });
+        const streaming = app.inject({ method: "POST", url: "/v1/chat/stream", headers: account.auth, payload: body });
+        await new Promise((r) => setTimeout(r, (i * 7) % 60));
+        const deleted = (await app.inject({ method: "DELETE", url: "/v1/me", headers: account.auth })).statusCode;
+        await streaming;
+        return { deleted, userId: account.user.id };
+      }),
+    );
+    expect(results.map((r) => r.deleted)).toEqual(Array(40).fill(204));
+    for (const r of results) expect(await store.findUserById(r.userId)).toBeUndefined();
+  }, 60_000);
 });

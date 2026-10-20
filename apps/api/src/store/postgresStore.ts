@@ -808,8 +808,23 @@ export class PostgresStore implements Store {
   }
 
   async deleteUserData(userId: string): Promise<void> {
-    // Every owned table cascades from users.
-    await this.pool.query("DELETE FROM users WHERE id = $1", [userId]);
+    // Every owned table cascades from users. The account's conversations are locked first, in id
+    // order, then the user row: the same order every chat write takes (lockConversation), so a
+    // deletion and an answer that is still being saved can no longer deadlock. A deadlock with any
+    // other writer is still possible in principle; PostgreSQL then aborts one side and this retries.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await this.tx(async (client) => {
+          await client.query("SELECT id FROM conversations WHERE user_id = $1 ORDER BY id FOR UPDATE", [userId]);
+          await client.query("DELETE FROM users WHERE id = $1", [userId]);
+        });
+        return;
+      } catch (err) {
+        const code = (err as { code?: string }).code;
+        if ((code !== "40P01" && code !== "40001") || attempt >= 4) throw err;
+        await new Promise((r) => setTimeout(r, 20 * attempt + Math.floor(Math.random() * 30)));
+      }
+    }
   }
 
   async createSession(session: SessionRecord): Promise<void> {

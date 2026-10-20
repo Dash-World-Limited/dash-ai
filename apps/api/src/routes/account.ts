@@ -10,10 +10,13 @@ export function accountRoutes(app: FastifyInstance, ctx: RouteContext): void {
 
   app.get("/v1/me", auth, async (request: FastifyRequest): Promise<MeResponse> => ({ user: toUser(currentUser(request)) }));
 
-  /** Deletes the account and everything stored for it. Active streams are cancelled first. */
+  /**
+   * Deletes the account and everything stored for it. Its active streams, on every instance, are
+   * cancelled first, and no new one is admitted.
+   */
   app.delete("/v1/me", auth, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = currentUser(request);
-    ctx.streams.cancelAllForUser(user.id);
+    await ctx.streams.cancelAllForUser(user.id);
     await ctx.store.deleteUserData(user.id);
     request.log.info({ event: "account_deleted" }, "account deleted");
     reply.code(204);

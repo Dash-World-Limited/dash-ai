@@ -158,6 +158,13 @@ export class Metrics {
   readonly rateLimitBackendErrors = new Counter("dash_rate_limit_backend_errors_total", "Shared rate-limit backend errors (requests fell back to per-instance limits).", ["backend"]);
   readonly documentRejections = new Counter("dash_document_rejections_total", "Uploaded documents stored as unsupported, by reason.", ["kind", "reason"]);
   readonly documentExtractionSeconds = new Histogram("dash_document_extraction_seconds", "Time spent extracting text from one document.", ["kind", "status"], SECONDS);
+  readonly streamAdmissions = new Counter("dash_stream_admissions_total", "Chat stream admissions by outcome (admitted, full = account at its concurrent-stream limit, unavailable = shared state unreachable: refused, gone = account deleted).", ["outcome"]);
+  readonly streamStops = new Counter("dash_stream_stops_total", "Chat streams stopped from outside the stream, by source (cancel, remote_cancel, account_deleted, shutdown, lease_lost: a slot lost to an outage could not be re-taken within the limit).", ["source"]);
+  readonly streamControlErrors = new Counter("dash_stream_control_errors_total", "Shared stream state (Redis) operations that failed, by operation.", ["op"]);
+  readonly activeStreams = new Gauge("dash_active_streams", "Chat streams running on this instance.", []);
+  readonly busyRejections = new Counter("dash_busy_rejections_total", "Requests refused as temporarily busy, by reason (draining, stream_control, extraction_saturated).", ["reason"]);
+  readonly draining = new Gauge("dash_draining", "1 while this instance is shutting down (not ready, finishing work in progress).", []);
+  readonly shutdownDrains = new Counter("dash_shutdown_drains_total", "Shutdown drains by outcome (drained = all work finished in the window, deadline = remaining work was stopped).", ["outcome"]);
   readonly databaseUp = new Gauge("dash_database_up", "1 when the last database health check succeeded, else 0.", ["store"]);
   readonly rateLimitBackendUp = new Gauge("dash_rate_limit_backend_up", "1 when the shared rate-limit backend answered its last health check, else 0.", ["backend"]);
 
