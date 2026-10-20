@@ -53,6 +53,7 @@ class Engine implements ProviderAdapter {
     const step = this.shared?.shift() ?? this.steps.shift() ?? this.otherwise;
     const until = (resolveOn: "release" | "abort") =>
       new Promise<void>((resolve, reject) => {
+        if (request.signal.aborted) return reject(new Error("aborted")); // cancelled while the hold was being read
         if (resolveOn === "release") this.waiting.push(resolve);
         request.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
       });
