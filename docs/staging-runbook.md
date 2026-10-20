@@ -24,8 +24,14 @@ are supplied.
   start-up). Point-in-time recovery or at least daily snapshots (§7).
 - **Redis**: 7.x, password-protected, `rediss://` (TLS) unless it is on a private network, no
   persistence required (rate-limit buckets are short-lived). Required whenever more than one API
-  instance runs (`RATE_LIMIT_BACKEND=redis`). If Redis is unreachable, each instance falls back to
-  its own limits for a few seconds at a time and `/ready` reports `degraded`; requests keep working.
+  instance runs (`RATE_LIMIT_BACKEND=redis`): it holds the shared rate limits and the per-account
+  stream slots and cross-instance cancels (ADR 0017). If Redis is unreachable, each instance falls back
+  to its own *rate limits* for a few seconds at a time and `/ready` reports `degraded`; ordinary
+  requests keep working, but **new chat answers are refused as busy** (503, retryable) until Redis
+  answers again, so the per-account stream limit never multiplies by the number of instances.
+- **Rolling deploys**: send SIGTERM and allow `SHUTDOWN_DRAIN_MS` (20 s) plus ~5 s before a hard kill
+  (a termination grace period of 30 s fits). The instance turns not-ready at once; the load balancer
+  must stop sending it new requests on `/ready` 503.
 - **HTTPS reverse proxy / load balancer**: terminates TLS, forwards `X-Forwarded-For` (hence
   `TRUST_PROXY=1`, the number of proxies in front of the API; never `true`, which lets clients choose their own IP and which a production server refuses at start-up), must **not** buffer `text/event-stream` responses (chat streams), idle timeout
   above `PROVIDER_TIMEOUT_MS` (120 s), request body limit ≥ 11 MB (10 MB uploads). Only the proxy may
@@ -106,7 +112,9 @@ immediately, then treat database backups made before the rotation as exposed.
       the other device.
 - [ ] Rate limits: 25 rapid sign-ins for one account from two instances → 429 after the configured
       count, with `Retry-After`.
-- [ ] Stop Redis briefly: requests keep working, `/ready` says `degraded`, then recovers.
+- [ ] Stop Redis briefly: ordinary requests keep working, a new chat answer is refused with "DASH AI is busy right now", `/ready` says `degraded`, then everything recovers on its own.
+- [ ] Two instances: start three answers for one account on instance A and a fourth on B → B refuses it (`too_many_streams`); Stop on an answer whose cancel lands on the other instance stops it.
+- [ ] Rolling restart during an answer: the answer finishes (or, past the drain window, ends as stopped) and the instance exits by itself.
 - [ ] `/metrics` with the token shows the series above; without it, 401.
 - [ ] Database TLS: `DATABASE_SSL=require` with no start-up warning.
 - [ ] Cost controls: after a few answers, `inference_attempts` has one row per provider attempt with

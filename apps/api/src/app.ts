@@ -2,9 +2,10 @@ import multipart from "@fastify/multipart";
 import { LIMITS } from "@dash-ai/contracts";
 import Fastify, { type FastifyError, type FastifyInstance, type FastifyRequest } from "fastify";
 import { makeRequireAuth } from "./auth/requireAuth.js";
+import type { RedisStreamControl } from "./chat/streamControl.js";
 import { StreamRegistry } from "./chat/streamRegistry.js";
 import type { AppConfig } from "./config.js";
-import { AppError } from "./errors.js";
+import { AppError, busyError } from "./errors.js";
 import { loggerOptions, type LogStream } from "./logging.js";
 import { AiPlatform } from "./intelligence/platform.js";
 import { IntelligenceRouter } from "./intelligence/router.js";
@@ -45,6 +46,11 @@ export interface AppDependencies {
   metrics?: Metrics;
   /** Push transports. Defaults to what PUSH_TRANSPORT configures (tests pass a fake). */
   pushTransports?: PushTransport[];
+  /**
+   * Shared stream slots and cross-instance cancellation (index.ts passes Redis with
+   * RATE_LIMIT_BACKEND=redis). Without it, the stream limit and cancel are per process.
+   */
+  streamControl?: RedisStreamControl;
 }
 
 /** The transports PUSH_TRANSPORT asks for: none, FCM for Android, or a recording fake. */
@@ -65,6 +71,13 @@ const trustHops = (hops: number) => (_address: string, hop: number): boolean => 
 export interface DashApp {
   app: FastifyInstance;
   context: RouteContext;
+  /**
+   * Shutdown, step 1 (before app.close): the instance turns not-ready, accepts no new answers or
+   * uploads, and its schedulers claim nothing new; work in progress gets up to `windowMs` to finish.
+   * Whatever is still running at the deadline is stopped by app.close (answers saved as stopped,
+   * automation runs as interrupted, spend holds settled).
+   */
+  drain(windowMs: number): Promise<"drained" | "deadline">;
 }
 
 /** Maps framework errors to the public error shape without leaking internals. */
@@ -139,6 +152,15 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
       retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000)),
     });
 
+  // At most one warning per operation per 5 s while Redis is unreachable (every failure is counted).
+  const lastStreamControlWarning = new Map<string, number>();
+  const reportStreamControlError = (op: string, errorName: string) => {
+    const at = Date.now();
+    if (at - (lastStreamControlWarning.get(op) ?? 0) < 5_000) return;
+    lastStreamControlWarning.set(op, at);
+    app.log.warn({ op, errorName }, "shared stream state unavailable: new answers are refused until Redis answers (fail closed)");
+  };
+
   const push = new PushService({ store, transports: deps.pushTransports ?? pushTransportsFor(config), config, log: app.log, metrics, now });
   const automations = new AutomationService({ store, providers, router, ai, config, log: app.log, metrics, now, push });
   const context: RouteContext = {
@@ -150,7 +172,16 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
     automations,
     push,
     tools: ToolRuntime.fromConfig(config, store, deps.plugins),
-    streams: new StreamRegistry(),
+    streams: new StreamRegistry(deps.streamControl, {
+      onAdmission: (outcome) => metrics.streamAdmissions.inc({ outcome }),
+      onStop: (source) => metrics.streamStops.inc({ source }),
+      onBackendError: (op, errorName) => {
+        metrics.streamControlErrors.inc({ op });
+        reportStreamControlError(op, errorName);
+      },
+      onActiveChange: (active) => metrics.activeStreams.set({}, active),
+    }),
+    lifecycle: { draining: false },
     rateLimits,
     metrics,
     requireAuth: makeRequireAuth(store, now),
@@ -162,10 +193,19 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
     startedAt: Date.now(),
   };
 
+  // While draining, new long-running work goes to another instance; everything else (cancels,
+  // reads, sync) is still served until the process exits.
+  const newWork = (request: FastifyRequest) => request.method === "POST" && (request.url === "/v1/chat/stream" || request.url === "/v1/documents");
+
   // Broad abuse protection for every route, keyed by client IP.
-  app.addHook("onRequest", async (request) => {
+  app.addHook("onRequest", async (request, reply) => {
     // Load-balancer probes are not rate limited (they come from one address, very often).
     if (request.url === "/health" || request.url === "/ready") return;
+    if (context.lifecycle.draining && newWork(request)) {
+      metrics.busyRejections.inc({ reason: "draining" });
+      void reply.header("Connection", "close");
+      throw busyError();
+    }
     const decision = await rateLimits.consume("api", `api:${request.ip}`);
     if (!decision.allowed) throw tooMany(decision.retryAfterMs);
   });
@@ -183,6 +223,8 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   });
 
   app.addHook("onSend", async (_request, reply, payload) => {
+    // A draining instance closes each connection after its response, so close() never waits on keep-alive.
+    if (context.lifecycle.draining) reply.header("Connection", "close");
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("Cache-Control", "no-store");
@@ -212,12 +254,33 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   automationRoutes(app, context);
   pushRoutes(app, context);
 
+  // Before the server waits for in-flight requests: whatever the drain left running is stopped now,
+  // so close() is bounded (answers end as stopped; runs as interrupted; spend holds settle).
+  app.addHook("preClose", async () => {
+    context.lifecycle.draining = true;
+    context.streams.cancelAll("shutdown");
+    automations.beginDrain();
+    push.beginDrain();
+  });
   app.addHook("onClose", async () => {
-    context.streams.cancelAll();
     await automations.stop();
     await push.stop();
+    await context.streams.close();
   });
   // The caller that created the store (index.ts / tests) owns closing it.
 
-  return { app, context };
+  const drain = async (windowMs: number): Promise<"drained" | "deadline"> => {
+    context.lifecycle.draining = true;
+    metrics.draining.set({}, 1);
+    automations.beginDrain();
+    push.beginDrain();
+    const deadline = Date.now() + windowMs;
+    const busy = () => context.streams.size > 0 || automations.busy || push.busy;
+    while (busy() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    const outcome = busy() ? "deadline" : "drained";
+    metrics.shutdownDrains.inc({ outcome });
+    return outcome;
+  };
+
+  return { app, context, drain };
 }

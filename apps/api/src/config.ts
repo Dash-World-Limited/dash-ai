@@ -118,7 +118,17 @@ const EnvSchema = z.object({
   RATE_LIMIT_BACKEND: z.preprocess(emptyToUndefined, z.enum(["memory", "redis"]).default("memory")),
   /** redis:// or rediss:// (TLS). Secret: it usually contains a password. */
   REDIS_URL: optionalString,
+  /** Prefix for every Redis key DASH AI writes (rate limits and shared stream state). */
+  REDIS_KEY_PREFIX: z.preprocess(emptyToUndefined, z.string().regex(/^[A-Za-z0-9:_-]{1,64}$/).default("dash:")),
+  /** Per account, across every instance (shared through Redis with RATE_LIMIT_BACKEND=redis). */
   MAX_CONCURRENT_STREAMS_PER_USER: int(3, 1, 50),
+  /** How long a stream slot outlives its instance's last heartbeat (a crashed instance's slots free up after this). */
+  STREAM_SLOT_TTL_MS: int(20_000, 2_000, 300_000),
+  /**
+   * On SIGTERM: how long active answers, automation runs and push sends may keep going (no new work
+   * is accepted and /ready answers 503) before they are stopped and the process exits.
+   */
+  SHUTDOWN_DRAIN_MS: int(20_000, 0, 600_000),
   SESSION_TTL_DAYS: int(30, 1, 365),
   /**
    * Which X-Forwarded-For entries to believe for the client IP (per-IP rate limits depend on it):
@@ -245,11 +255,14 @@ export interface AppConfig {
     loginPerAccountPer15Min: number;
     backend: "memory" | "redis";
     redisUrl: string | undefined;
+    redisKeyPrefix: string;
   };
   metricsToken: string | undefined;
   /** Operator credential for GET /v1/providers; never the same value as metricsToken. */
   operatorToken: string | undefined;
   maxConcurrentStreamsPerUser: number;
+  streamSlotTtlMs: number;
+  shutdownDrainMs: number;
   sessionTtlDays: number;
   /** Passed to Fastify: false, true (every hop; development only), a hop count, or proxy addresses. */
   trustProxy: boolean | number | string;
@@ -455,10 +468,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       loginPerAccountPer15Min: e.RATE_LIMIT_LOGIN_PER_ACCOUNT,
       backend: e.RATE_LIMIT_BACKEND,
       redisUrl: e.REDIS_URL,
+      redisKeyPrefix: e.REDIS_KEY_PREFIX,
     },
     metricsToken: e.METRICS_TOKEN,
     operatorToken: e.OPERATOR_TOKEN,
     maxConcurrentStreamsPerUser: e.MAX_CONCURRENT_STREAMS_PER_USER,
+    streamSlotTtlMs: e.STREAM_SLOT_TTL_MS,
+    shutdownDrainMs: e.SHUTDOWN_DRAIN_MS,
     sessionTtlDays: e.SESSION_TTL_DAYS,
     trustProxy: e.TRUST_PROXY === "true" ? true : e.TRUST_PROXY === "false" ? false : /^\d+$/.test(e.TRUST_PROXY) ? Number(e.TRUST_PROXY) : e.TRUST_PROXY,
     database: {

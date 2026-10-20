@@ -63,6 +63,18 @@ export class PushService {
     this.poke();
   }
 
+  /** Shutdown, step 1: claims nothing more; sends already claimed finish (see stop). */
+  beginDrain(): void {
+    this.stopped = true;
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+  }
+
+  /** True while a delivery pass is sending. */
+  get busy(): boolean {
+    return this.ticking !== null;
+  }
+
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);

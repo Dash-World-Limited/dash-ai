@@ -133,7 +133,7 @@ describe("readiness", () => {
     const { app, metrics } = await setup({ store });
     const ready = await app.inject({ method: "GET", url: "/ready" });
     expect(ready.statusCode).toBe(200);
-    expect(ready.json()).toEqual({ status: "ready", checks: { database: "up", rateLimits: "up" } });
+    expect(ready.json()).toEqual({ status: "ready", checks: { database: "up", rateLimits: "up", streams: "up" } });
     store.ping = async () => false;
     const down = await app.inject({ method: "GET", url: "/ready" });
     expect(down.statusCode).toBe(503);
@@ -147,7 +147,7 @@ describe("readiness", () => {
       const { app } = await setup({ rateLimitStore: dead });
       const res = await app.inject({ method: "GET", url: "/ready" });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ status: "degraded", checks: { database: "up", rateLimits: "down" } });
+      expect(res.json()).toEqual({ status: "degraded", checks: { database: "up", rateLimits: "down", streams: "up" } });
     } finally {
       await dead.close();
     }

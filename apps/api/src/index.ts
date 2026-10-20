@@ -1,4 +1,5 @@
 import { buildApp } from "./app.js";
+import { RedisStreamControl } from "./chat/streamControl.js";
 import { ConfigError, configWarnings, loadConfig } from "./config.js";
 import { startupErrorText } from "./startupError.js";
 import { Metrics } from "./observability/metrics.js";
@@ -36,6 +37,7 @@ async function main(): Promise<void> {
     config.rateLimits.backend === "redis" && config.rateLimits.redisUrl
       ? new RedisRateLimitStore({
           url: config.rateLimits.redisUrl,
+          prefix: `${config.rateLimits.redisKeyPrefix}rl:`,
           onBackendError: (errorName) => {
             metrics.rateLimitBackendErrors.inc({ backend: "redis" });
             reportRateLimitError(errorName);
@@ -43,8 +45,14 @@ async function main(): Promise<void> {
         })
       : new MemoryRateLimitStore();
   const sharedLimitsReady = rateLimitStore instanceof RedisRateLimitStore ? await rateLimitStore.ready() : true;
+  // Shared stream slots and cancellation use the same Redis (several instances need it; ADR 0017).
+  const streamControl =
+    config.rateLimits.backend === "redis" && config.rateLimits.redisUrl
+      ? new RedisStreamControl({ url: config.rateLimits.redisUrl, prefix: config.rateLimits.redisKeyPrefix, slotTtlMs: config.streamSlotTtlMs })
+      : undefined;
+  if (streamControl) await streamControl.ready();
 
-  const { app, context } = await buildApp({ config, store: selection.store, rateLimitStore, metrics });
+  const { app, context, drain } = await buildApp({ config, store: selection.store, rateLimitStore, metrics, streamControl });
   reportRateLimitError = (errorName) =>
     app.log.warn({ errorName }, "rate-limit backend unavailable; using per-instance limits for a few seconds");
   if (!sharedLimitsReady) {
@@ -70,9 +78,20 @@ async function main(): Promise<void> {
   app.log.info({ transport: config.push.transport, available: context.push.available }, "push notifications");
   app.log.info({ enabled: config.automations.enabled, concurrency: config.automations.concurrency }, "automations scheduler");
 
+  let shuttingDown = false;
   const shutdown = async (signal: string) => {
-    app.log.info({ signal }, "shutting down");
+    if (shuttingDown) return;
+    shuttingDown = true;
+    // Whatever happens below, the process is gone shortly after the drain window.
+    setTimeout(() => {
+      app.log.error("shutdown did not finish in time; exiting");
+      process.exit(1);
+    }, config.shutdownDrainMs + 15_000).unref();
+    app.log.info({ signal, drainMs: config.shutdownDrainMs, activeStreams: context.streams.size }, "shutting down: draining");
     clearInterval(purge);
+    const started = Date.now();
+    const outcome = await drain(config.shutdownDrainMs);
+    app.log.info({ outcome, waitedMs: Date.now() - started, stoppedStreams: context.streams.size }, "drain finished");
     await app.close();
     await rateLimitStore.close();
     await selection.store.close();

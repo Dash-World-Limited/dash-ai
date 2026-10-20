@@ -11,7 +11,8 @@ import type { ServerResponse } from "node:http";
 import { z } from "zod";
 import { currentUser } from "../auth/requireAuth.js";
 import { prepareChat, runChat, type SseSink } from "../chat/orchestrator.js";
-import { AppError, parseOrThrow } from "../errors.js";
+import { StreamControlUnavailable } from "../chat/streamControl.js";
+import { AppError, busyError, parseOrThrow } from "../errors.js";
 import { newId } from "../security/crypto.js";
 import type { RouteContext } from "./context.js";
 
@@ -46,18 +47,28 @@ export function chatRoutes(app: FastifyInstance, ctx: RouteContext): void {
       if (body.message.content.length > LIMITS.maxMessageChars) {
         throw new AppError("payload_too_large", "Message is too long.");
       }
-      if (ctx.streams.countForUser(user.id) >= ctx.config.maxConcurrentStreamsPerUser) {
-        throw new AppError("too_many_streams", "Too many responses are generating at once. Wait for one to finish.");
-      }
-      const prepared = await prepareChat(
-        { store: ctx.store, providers: ctx.providers, router: ctx.router, ai: ctx.ai, tools: ctx.tools, config: ctx.config, log: request.log, now: ctx.now, metrics: ctx.metrics },
-        user.id,
-        body,
-      );
-
+      // The slot is taken before anything else (no reservation, no provider work) and atomically, so
+      // concurrent requests, on this instance or any other, can never all pass the limit.
       const streamId = newId();
       const controller = new AbortController();
-      ctx.streams.register(streamId, user.id, controller);
+      const slot = await ctx.streams.acquire(streamId, user.id, ctx.config.maxConcurrentStreamsPerUser, controller);
+      if (!slot.ok) {
+        if (slot.reason === "full") throw new AppError("too_many_streams", "Too many responses are generating at once. Wait for one to finish.");
+        if (slot.reason === "gone") throw new AppError("unauthorized", "Your session has ended. Sign in again.");
+        ctx.metrics.busyRejections.inc({ reason: "stream_control" });
+        throw busyError();
+      }
+      let prepared;
+      try {
+        prepared = await prepareChat(
+          { store: ctx.store, providers: ctx.providers, router: ctx.router, ai: ctx.ai, tools: ctx.tools, config: ctx.config, log: request.log, now: ctx.now, metrics: ctx.metrics },
+          user.id,
+          body,
+        );
+      } catch (err) {
+        await ctx.streams.release(streamId);
+        throw err;
+      }
       const startedAt = Date.now();
 
       reply.hijack();
@@ -93,16 +104,25 @@ export function chatRoutes(app: FastifyInstance, ctx: RouteContext): void {
         );
         outcome = results.map((r) => `${r.provider}:${r.status}`).join(",");
       } catch (err) {
-        outcome = "error";
-        request.log.error({ err }, "chat stream failed");
-        sink.send({
-          event: "stream.error",
-          data: { error: { code: "internal_error", message: "Something went wrong on the Dash AI server.", retryable: true } },
-        });
+        if ((err as { code?: string }).code === "23503" && controller.signal.aborted) {
+          // The account was deleted while this answer was being written: its rows are gone and stay gone.
+          outcome = "account_deleted";
+          request.log.info({ streamId }, "chat stream ended: account deleted");
+        } else {
+          outcome = "error";
+          request.log.error({ err }, "chat stream failed");
+          sink.send({
+            event: "stream.error",
+            data: { error: { code: "internal_error", message: "Something went wrong on the Dash AI server.", retryable: true } },
+          });
+        }
       } finally {
         finished = true;
         clearInterval(heartbeat);
-        ctx.streams.unregister(streamId);
+        await ctx.streams.release(streamId);
+        // Shutting down: close the connection once the last event is written (no idle keep-alive).
+        const socket = res.socket;
+        if (ctx.lifecycle.draining && socket) res.once("finish", () => socket.destroySoon());
         if (!res.writableEnded) res.end();
         // Metadata only: never the prompt, documents or model output.
         request.log.info(
@@ -126,8 +146,17 @@ export function chatRoutes(app: FastifyInstance, ctx: RouteContext): void {
     { preHandler: ctx.requireAuth },
     async (request: FastifyRequest): Promise<CancelStreamResponse> => {
       const { streamId } = parseOrThrow(z.object({ streamId: Id }), request.params, "stream id");
-      const cancelled = ctx.streams.cancel(currentUser(request).id, streamId);
-      return { streamId, cancelled };
+      try {
+        return { streamId, cancelled: await ctx.streams.cancel(currentUser(request).id, streamId) };
+      } catch (err) {
+        // The stream is not on this instance and Redis cannot reach the one it is on. The client
+        // also closes its connection, which stops the answer on its own instance.
+        if (err instanceof StreamControlUnavailable) {
+          ctx.metrics.busyRejections.inc({ reason: "stream_control" });
+          throw busyError();
+        }
+        throw err;
+      }
     },
   );
 }

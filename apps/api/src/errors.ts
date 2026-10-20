@@ -54,6 +54,10 @@ export class AppError extends Error {
   }
 }
 
+/** A neutral, retryable "try again in a moment" (overload, shutdown, shared state unreachable). */
+export const busyError = (): AppError =>
+  new AppError("rate_limited", "DASH AI is busy right now. Please try again in a moment.", { statusCode: 503, retryAfterSeconds: 2 });
+
 /** Parses a request part with a zod schema, returning a 400 that lists paths but never echoes input values. */
 export function parseOrThrow<S extends z.ZodType>(schema: S, value: unknown, what = "request"): z.infer<S> {
   const result = schema.safeParse(value);

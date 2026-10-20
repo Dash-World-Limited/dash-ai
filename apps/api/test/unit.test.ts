@@ -530,17 +530,36 @@ describe("idle timeout", () => {
 });
 
 describe("stream registry", () => {
-  it("only lets the owner cancel", () => {
+  it("only lets the owner cancel", async () => {
     const registry = new StreamRegistry();
     const controller = new AbortController();
-    registry.register("s1", "alice", controller);
+    expect(await registry.acquire("s1", "alice", 3, controller)).toEqual({ ok: true });
     expect(registry.countForUser("alice")).toBe(1);
-    expect(registry.cancel("bob", "s1")).toBe(false);
+    expect(await registry.cancel("bob", "s1")).toBe(false);
     expect(controller.signal.aborted).toBe(false);
-    expect(registry.cancel("alice", "s1")).toBe(true);
+    expect(await registry.cancel("alice", "s1")).toBe(true);
     expect(controller.signal.reason).toBe("cancelled");
-    registry.unregister("s1");
+    await registry.release("s1");
+    await registry.release("s1"); // a second release is harmless
     expect(registry.size).toBe(0);
+  });
+
+  it("admission is a synchronous check-and-take: concurrent requests never all pass the limit", async () => {
+    const registry = new StreamRegistry();
+    const results = await Promise.all(Array.from({ length: 8 }, (_, i) => registry.acquire(`s${i}`, "alice", 3, new AbortController())));
+    expect(results.filter((r) => r.ok)).toHaveLength(3);
+    expect(results.filter((r) => !r.ok && r.reason === "full")).toHaveLength(5);
+    // Another account is unaffected.
+    expect(await registry.acquire("b1", "bob", 3, new AbortController())).toEqual({ ok: true });
+  });
+
+  it("a deleted account's streams stop and it cannot start new ones", async () => {
+    const registry = new StreamRegistry();
+    const controller = new AbortController();
+    await registry.acquire("s1", "alice", 3, controller);
+    await registry.cancelAllForUser("alice");
+    expect(controller.signal.aborted).toBe(true);
+    expect(await registry.acquire("s2", "alice", 3, new AbortController())).toEqual({ ok: false, reason: "gone" });
   });
 });
 
