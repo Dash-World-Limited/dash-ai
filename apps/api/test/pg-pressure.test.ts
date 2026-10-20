@@ -4,7 +4,8 @@ import type pg from "pg";
 import { buildApp } from "../src/app.js";
 import { PostgresStore } from "../src/store/postgresStore.js";
 import { FaultProxy } from "./cluster/cluster.js";
-import { chatBody, register, testConfig } from "./helpers.js";
+import { multipartBody, smallPdf } from "./cluster/documents.js";
+import { chatBody, LogCapture, register, testConfig } from "./helpers.js";
 import { TEST_DATABASE_URL, testCipher } from "./pgTestStore.js";
 
 /**
@@ -18,7 +19,7 @@ afterEach(async () => {
   for (const c of cleanups.splice(0).reverse()) await c().catch(() => undefined);
 });
 
-async function setup(options: { poolMax?: number; acquireMs?: number; viaProxy?: boolean } = {}) {
+async function setup(options: { poolMax?: number; acquireMs?: number; viaProxy?: boolean; logs?: LogCapture } = {}) {
   const schema = `t_${randomBytes(6).toString("hex")}`;
   const proxy = options.viaProxy ? await FaultProxy.start(TEST_DATABASE_URL!) : undefined;
   if (proxy) cleanups.push(() => proxy.close());
@@ -34,7 +35,11 @@ async function setup(options: { poolMax?: number; acquireMs?: number; viaProxy?:
     await store.dropSchema(schema).catch(() => undefined);
     await store.close();
   });
-  const { app, context } = await buildApp({ config: testConfig({ PROVIDER_DETAILS: "hidden" }), store });
+  const { app, context } = await buildApp({
+    config: testConfig({ PROVIDER_DETAILS: "hidden", ...(options.logs ? { LOG_LEVEL: "debug" } : {}) }),
+    store,
+    logStream: options.logs,
+  });
   await app.ready();
   cleanups.push(() => app.close());
   return { app, context, store, proxy };
@@ -111,5 +116,46 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL pressure", () => {
       await client.query("RESET statement_timeout").catch(() => undefined);
       client.release();
     }
+  });
+
+  it("chat, uploads and Run now at once on an exhausted pool: all busy and retryable, nothing leaked, no private text logged", async () => {
+    const logs = new LogCapture();
+    const { app, context, store } = await setup({ poolMax: 3, acquireMs: 800, logs });
+    const user = await register(app);
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/automations",
+      headers: user.auth,
+      payload: { name: "Brief", prompt: "secret automation prompt", mode: "business", schedule: { kind: "daily", time: "08:00" }, timeZone: "Africa/Lagos" },
+    });
+    expect(created.statusCode).toBe(201);
+    const automationId = (created.json() as { id: string }).id;
+    const held: pg.PoolClient[] = [await store.pool.connect(), await store.pool.connect(), await store.pool.connect()];
+    const file = multipartBody("p.pdf", "application/pdf", smallPdf("secret document text"));
+    const started = Date.now();
+    const results = await Promise.all([
+      ...Array.from({ length: 4 }, () =>
+        app.inject({ method: "POST", url: "/v1/chat/stream", headers: user.auth, payload: chatBody({ modelChoice: "smart", message: { id: `m${Math.random()}`, content: "secret chat prompt", attachmentIds: [] } }) }),
+      ),
+      ...Array.from({ length: 4 }, () =>
+        app.inject({ method: "POST", url: "/v1/documents", headers: { ...user.auth, "content-type": file.contentType }, payload: file.body }),
+      ),
+      ...Array.from({ length: 2 }, () => app.inject({ method: "POST", url: `/v1/automations/${automationId}/run`, headers: user.auth })),
+    ]);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    for (const r of results) {
+      expect(r.statusCode).toBe(503);
+      expect(r.json()).toMatchObject({ error: { retryable: true } });
+    }
+    expect(context.streams.size).toBe(0);
+    expect(context.extraction.state).toEqual({ active: 0, waiting: 0, held: 0 });
+    expect(context.metrics.render()).toMatch(/dash_database_errors_total\{kind="pool_timeout"\} [1-9]/);
+    expect(logs.text).not.toMatch(/secret (chat prompt|document text|automation prompt)/);
+
+    for (const c of held) c.release();
+    const chat = await app.inject({ method: "POST", url: "/v1/chat/stream", headers: user.auth, payload: chatBody({ modelChoice: "smart" }) });
+    expect(chat.statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: "/v1/documents", headers: { ...user.auth, "content-type": file.contentType }, payload: file.body })).statusCode).toBe(201);
+    expect(context.streams.size).toBe(0);
   });
 });

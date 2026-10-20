@@ -493,6 +493,30 @@ describe("the server-side scheduler", () => {
     }
   });
 
+  it.runIf(USING_POSTGRES)("an instance whose clock runs an hour slow still recovers a run whose instance crashed (the lease expires on the database clock)", async () => {
+    const pg = await createTestPgStore();
+    try {
+      const slow = await setup({ store: pg.store, start: new Date(Date.now() - 3_600_000).toISOString() });
+      const { automation } = await create(slow.app, slow.user.auth);
+      const record = (await pg.store.getAutomation(slow.user.user.id, automation!.id))!;
+      await pg.store.enqueueRun(newRun(record, "manual", new Date(slow.clock.t)));
+      // A crashed instance held a 200 ms lease (database clock).
+      expect(await pg.store.claimQueuedRun(new Date().toISOString(), 200)).toBeDefined();
+      await slow.context.automations.tick();
+      await slow.context.automations.idle();
+      expect((await pg.store.listRuns(slow.user.user.id, automation!.id, 10)).map((r) => r.status)).toEqual(["running"]);
+      await new Promise((r) => setTimeout(r, 300));
+      await slow.context.automations.tick();
+      await slow.context.automations.idle();
+      const runs = await pg.store.listRuns(slow.user.user.id, automation!.id, 10);
+      expect(runs.map((r) => r.status)).toEqual(["failed"]);
+      expect(slow.context.metrics.automationLeaseRecoveries.get()).toBe(1);
+    } finally {
+      for (const app of opened.splice(0)) await app.close();
+      await pg.dispose();
+    }
+  });
+
   it("recovers a run whose instance stopped mid-run (expired lease) as interrupted", async () => {
     const { app, user, context, clock } = await setup();
     const { automation } = await create(app, user.auth);

@@ -4,7 +4,8 @@ import { ExtractionGate, GateBusy } from "../src/documents/gate.js";
 import { activeExtractionProcesses } from "../src/documents/isolate.js";
 import type { RouteContext } from "../src/routes/context.js";
 import { malformedPdf, slowPdf, smallPdf, upload } from "./cluster/documents.js";
-import { makeApp, register } from "./helpers.js";
+import { makeApp, register, USING_POSTGRES } from "./helpers.js";
+import { createTestPgStore } from "./pgTestStore.js";
 
 /**
  * Document upload backpressure on one instance (gate.ts). Before: every upload's body was read into
@@ -225,6 +226,39 @@ describe("uploads through the API under pressure", () => {
     expect((await upload(url, other.auth, "o.txt", "text/plain", Buffer.from("other"))).status).toBe(201);
     await idle(context);
   }, 30_000);
+
+  it.runIf(USING_POSTGRES)("the ceiling holds across two instances on one database; refused uploads do not count; deleting frees a place", async () => {
+    const pg = await createTestPgStore();
+    try {
+      const env = { DOCUMENTS_MAX_PER_ACCOUNT: "5", DOCUMENT_UPLOADS_PER_ACCOUNT: "10", DOCUMENT_EXTRACTION_QUEUE: "20", RATE_LIMIT_UPLOAD_PER_MINUTE: "1000", RATE_LIMIT_API_PER_MINUTE: "10000", RATE_LIMIT_AUTH_PER_MINUTE: "1000" };
+      const nodes = await Promise.all([0, 1].map(async () => {
+        const { app, context } = await makeApp({ env, store: pg.store });
+        apps.push(app);
+        return { context: context as RouteContext, url: await app.listen({ port: 0, host: "127.0.0.1" }) };
+      }));
+      const inject = { inject: (o: never) => fetchInject(nodes[0]!.url, o) } as never;
+      const user = await register(inject);
+      // Refused before anything is stored: wrong type and too large. Neither may count.
+      expect((await upload(nodes[0]!.url, user.auth, "x.exe", "application/x-msdownload", Buffer.from("MZ"))).status).toBeGreaterThanOrEqual(400);
+      expect((await upload(nodes[1]!.url, user.auth, "big.txt", "text/plain", Buffer.alloc(11 * 1024 * 1024, 97))).status).toBe(413);
+      expect(await pg.store.listDocuments(user.user.id)).toHaveLength(0);
+      // 10 simultaneous uploads, alternating instances, against a ceiling of 5.
+      const results = await Promise.all(Array.from({ length: 10 }, (_, i) => upload(nodes[i % 2]!.url, user.auth, `n${i}.txt`, "text/plain", Buffer.from(`note ${i}`))));
+      expect(results.filter((r) => r.status === 201)).toHaveLength(5);
+      expect(results.filter((r) => r.status === 409)).toHaveLength(5);
+      const docs = await pg.store.listDocuments(user.user.id);
+      expect(docs).toHaveLength(5);
+      // Deleting one (on the other instance) frees exactly one place.
+      expect((await fetch(`${nodes[1]!.url}/v1/documents/${docs[0]!.id}`, { method: "DELETE", headers: user.auth })).status).toBe(204);
+      const again = await Promise.all([0, 1].map((i) => upload(nodes[i]!.url, user.auth, `again${i}.txt`, "text/plain", Buffer.from("again"))));
+      expect(again.map((r) => r.status).sort()).toEqual([201, 409]);
+      expect(await pg.store.listDocuments(user.user.id)).toHaveLength(5);
+      for (const n of nodes) await idle(n.context);
+    } finally {
+      while (apps.length) await apps.pop()!.close();
+      await pg.dispose();
+    }
+  }, 60_000);
 });
 
 /** register() takes something with inject(); this adapts it to a real listening server. */

@@ -416,6 +416,28 @@ describe("delivery, retry and failure", () => {
   });
 });
 
+describe("push leases on the database clock", () => {
+  it.runIf(USING_POSTGRES)("an instance an hour fast cannot take a delivery another instance is still sending", async () => {
+    const pg = await createTestPgStore();
+    try {
+      const { app, user, context, clock, fake } = await setup({ store: pg.store, transport: new FakePushTransport() });
+      await registerDevice(app, user.auth, TOKEN_A);
+      fake.script = () => ({ ok: false, kind: "retryable", code: "unavailable" });
+      await runNow(app, context, user.auth, (await createAutomation(app, user.auth)).id);
+      clock.t += 60_000;
+      // A healthy instance holds the delivery for 60 s (database clock).
+      expect(await pg.store.claimPushDeliveries(new Date(clock.t).toISOString(), 60_000, 10)).toHaveLength(1);
+      fake.script = () => ({ ok: true });
+      clock.t += 3_600_000; // this instance's clock is an hour ahead
+      await context.push.tick();
+      expect(fake.sent).toEqual([]);
+    } finally {
+      for (const a of opened.splice(0)) await a.close();
+      await pg.dispose();
+    }
+  });
+});
+
 describe("duplicate protection across instances", () => {
   it("two API instances sharing one database push each finished run once per device", async () => {
     const pg = USING_POSTGRES ? await createTestPgStore() : undefined;
