@@ -17,6 +17,13 @@ Every finding below cites code. Each P0/P1 fix has a regression test that fails 
 Status key: COMPLETE · PARTIAL · BROKEN · API ONLY · WEB ONLY · ANDROID ONLY · DEMO/FAKE ONLY ·
 NOT IMPLEMENTED · INTENTIONALLY DEFERRED. "Fixed" means fixed on this branch.
 
+**Follow-up (`feature/post-pr15-correctness-hardening`, base `364b65d`, PR #15 merged).** This
+document was updated after PR #15 merged: §2a and §2b (written on the PR #15 branch after its merge,
+commits `ed27b8e`, `e9617c6`) are carried forward and re-checked against the code; two findings were
+fixed on the follow-up branch and are marked "fixed (follow-up)": production now refuses
+`TRUST_PROXY=true`, and Android Tools/Automates "Sign in" uses the same account transition as every
+other sign-in. The dependency advisory row in §3 was re-verified against the current lockfile.
+
 ## 1. Product inventory
 
 | Area | Capability | API | Web | Android | Status | Severity | Action | Verification |
@@ -86,17 +93,43 @@ No `TODO`, `FIXME`, `HACK` or "not implemented" markers exist in production code
 | `mock-github` plugin | test fixture only |
 | Android document delete reporting success after a failed server delete | **dangerous fake success → fixed** |
 | Empty provider answer saved as complete | **fake success → fixed** |
-| Android Tools/Automates "Sign in" sets Demo Mode without the account guard (`DashAiApp.kt:268,316`) | unfinished path, P2 (the old account's data stays visible in Demo Mode) |
+| Android Tools/Automates "Sign in" set Demo Mode without the account guard | unfinished path → **fixed (follow-up)**, see §2a |
+
+## 2a. Orphaned / duplicated product paths
+
+| Finding | Impact | Classification |
+| --- | --- | --- |
+| Every Android route (`DashAiApp.kt` `Routes`) and every Web screen is reachable from navigation; no button without an action was found | – | none |
+| API routes no screen uses: `GET /v1/me/export` (both apps), `GET /v1/tools/activity` (Web has no client; Android has `ToolsService.activity()` but no screen calls it), push device list/delete-by-id (Android unregisters by token) | capability exists but no person can use it | P2 (export), P3 (others) |
+| Android Tools and Automates "Sign in" dropped the account (`account = null, demoMode = true`) without `LocalAccountGuard`. The account's chats stayed on the phone under no account; "Continue in Demo Mode" then showed them as a demo, and the session token stayed stored | previous account's local data shown in Demo Mode; signing in as another account still wiped it | was P2 → **fixed (follow-up)**: every sign-in, Demo Mode and sign-out change goes through `AccountTransitions` (`di/AccountTransitions.kt`); Tools and Automates only open the sign-in screen, like Settings and the chat banner; Demo Mode without an account first releases data an account still owns (`LocalAccountGuard.releaseForDemo`), also at start-up for devices left in that state (`AccountTransitionTest`, `AccountIsolationTest`) |
+| History truncation existed only on Android (`ContextBuilder.kt`); Web sent turns verbatim | duplicated rule that drifted | fixed (Web now applies the same limit) |
+| Demo Mode answers exist twice (Web `backends.ts`, Android `DemoResponses.kt`) | intentional: each client works offline | none |
+| No local/demo behaviour reachable from production: the fake providers need `PROVIDER_MODE=fake` and production warns; Demo Mode is labelled and never sends history to the server | – | none |
+
+## 2b. Expanded checklist items verified without a code change
+
+| Item | Evidence |
+| --- | --- |
+| Repeated failed login | per-account and per-IP sign-in limits, shared across instances through Redis (`routes/auth.ts:44`, `rate-limit.test.ts` "whole API instances share sign-in limits per account and per IP"); the per-IP part depends on `TRUST_PROXY`, which production now requires to be a count or addresses (§3) |
+| Renamed/mismatched file type, empty, corrupt | file signature check (`documents/inspect.ts:10`); hostile-document suite ("garbage that passes the signature check is refused cleanly") |
+| Encrypted / password-protected PDF | refused before parsing, with a reason (`documents/budget.ts:132`; "a real RC4-encrypted PDF … is refused before parsing") |
+| Partial response | a disconnect mid-stream keeps the partial text once, stored as failed, not retried (`provider-resilience.test.ts:179`) |
+| Refusal | surfaced as `finishReason: "refusal"` (`adapters.test.ts:257`; `product-completion.test.ts`) |
+| Database timeouts | pool `connectionTimeoutMillis` 10 s, `statement_timeout` 30 s (`postgresStore.ts:274-276`) |
+| Push token refresh | `DashMessagingService.onNewToken` re-registers for the current session |
+| Push delivery state, retries, duplicates | delivery rows claimed with `SKIP LOCKED`, up to 5 attempts with backoff, a retried send replaces an undelivered one (`push/fcm.ts:120`), invalid tokens removed (`push.test.ts`) |
+| Firefox | CI runs the whole E2E suite in Firefox as well (`ci.yml` `DASH_E2E_FIREFOX=1`); locally only Chromium is installed |
 
 ## 3. Security findings (while touching flows; not the final audit)
 
 | Finding | Severity | Status |
 | --- | --- | --- |
-| `TRUST_PROXY=true` believed every `X-Forwarded-For` entry: clients could choose their IP and bypass per-IP sign-up, sign-in and API limits behind a load balancer; the staging template set `true` | P1 | fixed: proxy count or addresses; staging uses `1`; production warns about `true` (`rate-limit.test.ts`) |
+| `TRUST_PROXY=true` believed every `X-Forwarded-For` entry: clients could choose their IP and bypass per-IP sign-up, sign-in and API limits behind a load balancer; the staging template set `true` | P1 | fixed: proxy count or addresses; staging uses `1` (`rate-limit.test.ts`). **Follow-up:** production refuses to start with `true` or a `/0` range, and addresses must be valid IPs/CIDRs (`unit.test.ts` "TRUST_PROXY", `trust-proxy-startup.test.ts`) |
 | Android sent its session token to any server address typed while signed in | P1 | fixed (`ServerAddressTest`) |
 | Web tab acting as another account after a sign-in in another tab | P1 | fixed |
 | Object ownership: conversations, messages (PK is `(conversation_id, id)`), documents, automations, runs, notifications, push devices, plugin settings are all scoped by user | – | verified by reading; covered by existing suites |
 | Push token ownership: registered only for the calling session; removed with the session (FK cascade) | – | verified |
+| Dependency advisories (`pnpm audit`, re-verified on the follow-up branch): `source-map-js` < 1.2.2 (high, event-loop DoS, GHSA-68fv-2mgg-jv7q) reached only build/test tooling (`jsdom > css-tree` for Web tests, `vite > postcss`), never the shipped bundle or the API; 1.2.2 is now published and inside every dependent's range, so the lockfile takes it (no `package.json` change). `sprintf-js` ≤ 1.1.3 (moderate, GHSA-hp3w-g68c-fv3c) comes through `mammoth 1.13.0 > argparse ~1.0.3`: no patched release exists (1.1.3 is the latest), the latest mammoth still pins `argparse ~1.0.3`, and only mammoth's command-line entry (`bin/mammoth`) loads argparse; the API imports `mammoth` (library) inside the isolated, time- and memory-limited extraction process (`documents/isolate.ts`) | P3 | `source-map-js` **fixed (follow-up)**; `sprintf-js` deferred until mammoth drops or upgrades argparse |
 | Account deletion race: all owned rows cascade; late writes fail on FK (`finishRun`, `createAutomation`, `saveMessage`) | – | verified; streams on *other* instances keep running until they end (see §5) |
 
 ## 4. Resource-bound findings
@@ -173,7 +206,7 @@ export and tool audit list not offered.
 
 Android: server document list; zombie conversation when deleting the one streaming; "delete local
 data" keeps the sync cursor; stale branches after edits on another device; unknown file size;
-Tools/Automates "Sign in" bypasses the account guard; offline sign-out result not shown; push
+offline sign-out result not shown; push
 unregister after the session is revoked (harmless: FK cascade); notifications of a previous account
 stay in the tray; offset time-zone ids; partial answers persisted only at the end; reopened
 attachments from other devices are listed by id only; a document deleted from its detail screen

@@ -79,7 +79,8 @@ data class SignOutResult(
  * - Signing in as a different account than the one the local data belongs to removes that data first
  *   (covers an interrupted sign-out, or switching accounts without signing out).
  * - Signing back in re-syncs the account from the server.
- * - Demo Mode keeps working: it starts empty after a sign-out.
+ * - Demo Mode keeps working: it starts empty after a sign-out, and never shows data an account
+ *   still owns ([releaseForDemo]).
  * - Nothing here deletes server data: only `logout` (this session) is called on the server.
  *
  * The wipe runs twice: at once (so nothing is visible even while a sync is still downloading), and
@@ -195,6 +196,18 @@ class LocalAccountGuard(
         wipeEverywhere(state.userId)
         owner.save(LocalOwnerState())
         SignOutResult(serverSessionRevoked = revoked, discardedPendingChanges = discarded)
+    }
+
+    /**
+     * Before Demo Mode starts without an account: data still recorded as an account's (for example
+     * left behind when an earlier version dropped the account without signing out) is removed through
+     * [signOut], so it is never shown as a demo. Returns null, changing nothing, when no account owns
+     * the local data; Demo Mode's own chats stay.
+     */
+    suspend fun releaseForDemo(revokeServerSession: suspend () -> Unit): SignOutResult? {
+        val state = owner.load()
+        if (state.userId == null && !state.wipePending) return null
+        return signOut(revokeServerSession)
     }
 
     /** Whether a write coming from the UI or a running answer may touch this conversation. */

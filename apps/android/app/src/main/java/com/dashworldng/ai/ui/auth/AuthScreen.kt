@@ -62,7 +62,6 @@ import com.dashworldng.ai.core.presentation.StatusTone
 import com.dashworldng.ai.core.remote.DashApiClient
 import com.dashworldng.ai.core.stream.ApiError
 import com.dashworldng.ai.core.stream.ApiException
-import com.dashworldng.ai.data.settings.AccountInfo
 import com.dashworldng.ai.di.AppServices
 import com.dashworldng.ai.ui.components.BrandMark
 import com.dashworldng.ai.ui.components.BrandWordmark
@@ -141,15 +140,7 @@ class AuthViewModel(private val services: AppServices) : ViewModel() {
             try {
                 val session = if (s.creating) auth.register(s.email, s.password, s.name) else auth.login(s.email, s.password)
                 // Before anything of the new account is stored: remove another account's data left on this device.
-                services.accountGuard.onSignedIn(session.user.id)
-                services.tokens.set(session.token)
-                services.syncTracker.reset()
-                services.settings.update {
-                    it.copy(
-                        demoMode = false,
-                        account = AccountInfo(session.user.id, session.user.email, session.user.displayName, isDemo = false),
-                    )
-                }
+                services.accounts.signedIn(session)
                 _state.update { AuthUiState() }
                 onSuccess()
             } catch (e: CancellationException) {
@@ -172,9 +163,7 @@ class AuthViewModel(private val services: AppServices) : ViewModel() {
 
     fun continueInDemo(onDone: () -> Unit) {
         viewModelScope.launch {
-            services.settings.update {
-                it.copy(demoMode = true, account = AccountInfo("demo-local", null, "Demo user", isDemo = true))
-            }
+            services.accounts.continueInDemo()
             onDone()
         }
     }

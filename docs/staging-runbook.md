@@ -27,7 +27,7 @@ are supplied.
   instance runs (`RATE_LIMIT_BACKEND=redis`). If Redis is unreachable, each instance falls back to
   its own limits for a few seconds at a time and `/ready` reports `degraded`; requests keep working.
 - **HTTPS reverse proxy / load balancer**: terminates TLS, forwards `X-Forwarded-For` (hence
-  `TRUST_PROXY=1`, the number of proxies in front of the API; never `true`, which lets clients choose their own IP), must **not** buffer `text/event-stream` responses (chat streams), idle timeout
+  `TRUST_PROXY=1`, the number of proxies in front of the API; never `true`, which lets clients choose their own IP and which a production server refuses at start-up), must **not** buffer `text/event-stream` responses (chat streams), idle timeout
   above `PROVIDER_TIMEOUT_MS` (120 s), request body limit ≥ 11 MB (10 MB uploads). Only the proxy may
   reach the API port.
 - **Runtime**: Node 22, `pnpm install --frozen-lockfile && pnpm build`, start with

@@ -126,12 +126,10 @@ class AccountViewModel(private val services: AppServices) : ViewModel() {
                     _extras.update { it.copy(busy = false, error = "Couldn't sign out everywhere: ${e.error.message}") }
                     return@launch
                 }
-                services.accountGuard.signOut(revokeServerSession = {})
+                services.accounts.signedOut(revokeServerSession = {})
             } else {
-                services.accountGuard.signOut(revokeServerSession = { if (signedIn) auth?.logout() })
+                services.accounts.signedOut(revokeServerSession = { if (signedIn) auth?.logout() })
             }
-            services.syncTracker.reset()
-            services.settings.update { it.copy(account = null, demoMode = true) }
             onDone()
         }
     }
@@ -144,9 +142,7 @@ class AccountViewModel(private val services: AppServices) : ViewModel() {
             try {
                 auth.deleteAccount()
                 // The server already ended every session; this removes the account's local data too.
-                services.accountGuard.signOut(revokeServerSession = {})
-                services.syncTracker.reset()
-                services.settings.update { it.copy(account = null, demoMode = true) }
+                services.accounts.signedOut(revokeServerSession = {})
                 onDone()
             } catch (e: ApiException) {
                 _extras.update { it.copy(busy = false, error = e.error.message) }
@@ -157,7 +153,7 @@ class AccountViewModel(private val services: AppServices) : ViewModel() {
     /** Leaves Demo Mode's profile (the demo chats stay on this device, separate from any account). */
     fun leaveDemo(onDone: () -> Unit) {
         viewModelScope.launch {
-            services.settings.update { it.copy(account = null, demoMode = true) }
+            services.accounts.leaveDemoProfile()
             onDone()
         }
     }

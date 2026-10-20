@@ -267,10 +267,9 @@ private fun AppNavigation(services: AppServices, startDestination: String, setti
             AutomatesScreen(
                 services,
                 onBack = { nav.popBackStack() },
-                onSignIn = {
-                    scope.launch { services.settings.update { it.copy(account = null, demoMode = true) } }
-                    nav.goFresh(Routes.AUTH)
-                },
+                // Sign-in never edits the account here: AuthScreen and AccountTransitions apply the
+                // same rules as every other way in (same account keeps its data, another removes it).
+                onSignIn = { nav.open(Routes.AUTH) },
                 onNew = { nav.open(Routes.AUTOMATION_NEW) },
                 onOpen = { nav.open(Routes.automation(it)) },
                 onOpenRun = { id, runId -> nav.open(Routes.automationRun(id, runId)) },
@@ -315,10 +314,7 @@ private fun AppNavigation(services: AppServices, startDestination: String, setti
             )
         }
         composable(Routes.TOOLS) {
-            ToolsScreen(services, onBack = { nav.popBackStack() }, onSignIn = {
-                scope.launch { services.settings.update { it.copy(account = null, demoMode = true) } }
-                nav.goFresh(Routes.AUTH)
-            })
+            ToolsScreen(services, onBack = { nav.popBackStack() }, onSignIn = { nav.open(Routes.AUTH) })
         }
         composable(Routes.PROMPTS) {
             PromptLibraryScreen(services, onBack = { nav.popBackStack() }, onUsePrompt = {

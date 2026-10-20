@@ -143,6 +143,9 @@ interface AppServices {
      */
     val accountGuard: LocalAccountGuard
 
+    /** Sign-in, Demo Mode and sign-out: the only way screens change the account (see AccountTransitions). */
+    val accounts: AccountTransitions
+
     /** Sync is skipped while this returns false (for example while a response is being generated). */
     var syncGuard: () -> Boolean
 
@@ -231,6 +234,7 @@ abstract class BaseServices : AppServices {
             exclusive = { block -> syncService()?.exclusive(block) ?: block() },
         )
     }
+    override val accounts: AccountTransitions by lazy { AccountTransitions(this) }
     override val conversations: ConversationRepository by lazy { accountGuard.fence(localConversations) }
     override val documents: DocumentRepository by lazy { accountGuard.fence(localDocuments) }
 
@@ -347,6 +351,8 @@ class AppContainer(context: Context) : BaseServices() {
             // An account signed in with an older app version has no ownership record yet: adopt it.
             val account = settings.settings.first { it.loaded }.account
             if (account != null && !account.isDemo && tokens.get() != null) accountGuard.adoptExisting(account.userId)
+            // The demo profile never shows data an account still owns (an earlier version could leave it).
+            accounts.repairAtStart()
         }
     }
 }
@@ -362,12 +368,15 @@ class InMemoryServices(
     val permission: FixedNotificationPermission = FixedNotificationPermission(granted = false),
     override val pushTokens: PushTokenSource = FixedPushTokenSource(),
     override val notifier: PushNotifier = RecordingPushNotifier(),
+    private val authOverride: AuthService? = null,
 ) : BaseServices() {
     override val pushState: PushStateStore = InMemoryPushStateStore()
     override val seenPushes: SeenPushStore = InMemorySeenPushStore()
     override val notificationPermission: NotificationPermissionState = permission
 
     override fun pushApi(): PushApi? = pushApiOverride ?: super.pushApi()
+
+    override fun authService(): AuthService? = authOverride ?: super.authService()
 
     override fun onPushToken(token: String) = Unit
 

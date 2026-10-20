@@ -278,7 +278,7 @@ describe("client IP behind a load balancer (TRUST_PROXY)", () => {
     expect(await signUpsAllowed("10.0.0.0/8")).toBe(3);
   });
 
-  it("TRUST_PROXY=true believes every entry (why production warns about it)", async () => {
+  it("TRUST_PROXY=true believes every entry (why production refuses it)", async () => {
     expect(await signUpsAllowed("true")).toBe(6);
   });
 });
