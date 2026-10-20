@@ -7,7 +7,8 @@ import type { Metrics } from "../observability/metrics.js";
 import { buildSystemPrompt } from "../providers/instructions.js";
 import type { ProviderRegistry } from "../providers/registry.js";
 import { ProviderError, toProviderError, type ProviderAdapter, type ProviderChunk, type ProviderRequest } from "../providers/types.js";
-import { requestChars, type InferenceContext } from "./ledger.js";
+import type { SpendCoverage } from "./coverage.js";
+import { estimateTokensForLedger, requestChars, type InferenceContext } from "./ledger.js";
 import { SpendAdmissionError, type Admission, type AiPlatform } from "./platform.js";
 import type { RoutePreference, Sensitivity, TaskType } from "./policy.js";
 import { estimateTokens, type IntelligenceRouter } from "./router.js";
@@ -149,11 +150,22 @@ async function generateAdmitted(
       spendBlockedBy: spend.blockedBy,
     },
   };
+  // Every paid attempt (retries and fallbacks included) is covered by the hold before it is sent (ADR 0016).
+  const coverage = deps.ai.coverage(admission.reservation);
   let last: ProviderError | undefined;
+  let spendStopped: SpendStop | undefined;
   for (const [index, adapter] of adapters.entries()) {
     try {
-      return await generateWith(deps, adapter, request, estimatedInputTokens, inference, index);
+      return await generateWith(deps, adapter, request, estimatedInputTokens, inference, index, coverage);
     } catch (err) {
+      if (err instanceof SpendStop) {
+        // This provider's first attempt could not be covered: never sent. The next provider in the route
+        // (a free one needs no cover) may still serve; nothing re-routes in a loop.
+        spendStopped = err;
+        const next = adapters[index + 1];
+        if (next) deps.log.info({ from: adapter.id, to: next.id, reason: err.reason, task: request.task }, "provider skipped: its spend could not be covered");
+        continue;
+      }
       const error = err instanceof ProviderError ? err : toProviderError(adapter.displayName, err, request.signal);
       if (error.code === "cancelled") throw new GenerationError("cancelled", false);
       last = error;
@@ -164,8 +176,25 @@ async function generateAdmitted(
       }
     }
   }
+  if (!last && spendStopped) {
+    // Nothing was sent: refused like a spend admission (busy when it could not be checked).
+    if (spendStopped.reason === "error" || spendStopped.reason === "inactive") throw new GenerationError("rate_limited", true);
+    if (spendStopped.blockedBy === "user_daily" || spendStopped.blockedBy === "plan_daily") throw new GenerationError("limit_reached", false);
+    throw new GenerationError("unavailable", true);
+  }
   const code = last?.code === "provider_timeout" || last?.code === "rate_limited" ? last.code : "provider_error";
   throw new GenerationError(code, last?.retryable ?? true);
+}
+
+/** A provider's first attempt was not sent because its spend could not be covered (internal). */
+class SpendStop extends Error {
+  constructor(
+    readonly reason: string,
+    readonly blockedBy: string | undefined,
+  ) {
+    super("spend not covered");
+    this.name = "SpendStop";
+  }
 }
 
 async function generateWith(
@@ -175,10 +204,12 @@ async function generateWith(
   estimatedInputTokens: number,
   inference: InferenceContext,
   fallbackIndex: number,
+  coverage: SpendCoverage,
 ): Promise<GenerateResult> {
   const { config } = deps;
   const system = [buildSystemPrompt(request.mode, adapter), request.instructions].join("\n\n");
   const started = Date.now();
+  let failed: ProviderError | undefined;
   for (let attempt = 0; ; attempt++) {
     const controller = new AbortController();
     const onAbort = () => controller.abort(request.signal?.reason ?? "cancelled");
@@ -203,6 +234,16 @@ async function generateWith(
         estimatedInputTokens,
       },
     };
+    const at = { fallbackIndex, round: 0, retry: attempt };
+    // Before anything is sent: this exact request at this provider's prices must fit in the hold.
+    const cover = await coverage.cover({ ...at, adapter, inputTokens: estimateTokensForLedger(requestChars(providerRequest)) });
+    if (!cover.ok) {
+      clearTimeout(overall);
+      request.signal?.removeEventListener("abort", onAbort);
+      // A retry that cannot be covered is not sent: the failure that asked for it stands.
+      if (failed) throw failed;
+      throw new SpendStop(cover.reason, cover.blockedBy);
+    }
     const report = (error?: ProviderError) =>
       deps.ai.attempts.record(inference, {
         adapter,
@@ -228,7 +269,7 @@ async function generateWith(
         }
       }
       if (content.trim() === "") throw new ProviderError("provider_error", `${adapter.displayName} returned an empty answer.`, true);
-      await report();
+      coverage.record(at, await report(), { output: true });
       deps.router.recordSuccess(adapter.id, Date.now() - started);
       deps.metrics?.aiRequestSeconds.observe({ provider: adapter.id, status: "complete" }, (Date.now() - started) / 1000);
       if (servedModel !== adapter.model) {
@@ -237,7 +278,8 @@ async function generateWith(
       return { content, provider: adapter.id, model: servedModel, configuredModel: adapter.model, demo: adapter.demo, usage, truncated: finish === "length" };
     } catch (err) {
       const error = toProviderError(adapter.displayName, err, controller.signal);
-      await report(error);
+      coverage.record(at, await report(error), { error, output: content.length > 0 || finishChunk !== undefined });
+      failed = error;
       deps.router.recordFailure(adapter.id, error.code, error.retryable);
       if (error.code === "cancelled") throw error;
       deps.metrics?.providerFailures.inc({ provider: adapter.id, code: error.code, retryable: error.retryable });

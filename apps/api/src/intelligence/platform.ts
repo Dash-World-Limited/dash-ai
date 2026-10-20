@@ -6,6 +6,7 @@ import type { ProviderRegistry } from "../providers/registry.js";
 import { newId } from "../security/crypto.js";
 import type { SpendReservationRecord, Store } from "../store/store.js";
 import { priceFor } from "./cost.js";
+import { SpendCoverage, type AttemptCoordinates, type AttemptKind, type CoverRefusal } from "./coverage.js";
 import { AttemptRecorder, estimateTokensForLedger } from "./ledger.js";
 import type { Sensitivity } from "./policy.js";
 import { QuotaTracker, type QuotaWindow } from "./quota.js";
@@ -252,6 +253,72 @@ export class AiPlatform {
       log.warn({ err }, "spend reservation housekeeping failed");
       throw err;
     }
+  }
+
+  /** Per-request accounting of every provider attempt against its hold (ADR 0016). */
+  coverage(hold: SpendReservationRecord | null): SpendCoverage {
+    return new SpendCoverage(this, hold);
+  }
+
+  /**
+   * Worst-case USD of ONE provider request to `provider` sending `inputTokens` (ledger estimate): its
+   * dearest model at that input plus the model's full output cap. Null when the provider has no model or
+   * an unpriced one (it cannot be bounded: a paid attempt is then not sent).
+   */
+  attemptWorstCaseUsd(provider: ProviderId, inputTokens: number): number | null {
+    const { config, providers } = this.deps;
+    const models = providers.modelsFor(provider);
+    if (models.length === 0) return null;
+    let worst = 0;
+    for (const model of models) {
+      const price = priceFor(config.modelPrices, provider, model);
+      if (!price) return null;
+      worst = Math.max(worst, worstCaseUsd(price, [Math.max(0, inputTokens)], this.outputTokenCap(provider, model)));
+    }
+    return worst;
+  }
+
+  /**
+   * Extends a request's hold so it covers one more attempt (store: atomic under the scope locks,
+   * idempotent per attempt). Never throws: a store error refuses the attempt (fails closed).
+   */
+  async extendHold(
+    hold: SpendReservationRecord,
+    attempt: AttemptCoordinates & { provider: ProviderId; model: string | null },
+    amounts: { attemptUsd: number; priorUsd: number; kind: AttemptKind },
+  ): Promise<{ ok: true; reservedUsd: number } | { ok: false; reason: Exclude<CoverRefusal, "unpriced">; blockedBy?: SpendScope }> {
+    const { log, metrics } = this.deps;
+    const { kind, attemptUsd, priorUsd } = amounts;
+    metrics?.spendExtensionAttempts.inc({ kind });
+    const where = { reservation: hold.id, inferenceId: hold.inferenceId, task: hold.task, kind, provider: attempt.provider, fallbackIndex: attempt.fallbackIndex, round: attempt.round, retry: attempt.retry };
+    let result;
+    try {
+      result = await this.spend.extend(
+        { userId: hold.userId, plan: hold.plan },
+        { reservationId: hold.id, attempt: { fallbackIndex: attempt.fallbackIndex, round: attempt.round, retry: attempt.retry, provider: attempt.provider, model: attempt.model }, attemptUsd, priorUsd },
+      );
+    } catch (err) {
+      metrics?.spendExtensions.inc({ kind, outcome: "error" });
+      metrics?.spendReservationFailures.inc({ stage: "extend" });
+      log.warn({ err, ...where }, "spend hold could not be extended; paid attempt not sent");
+      return { ok: false, reason: "error" };
+    }
+    if (!result.ok) {
+      const outcome = result.reason === "limit" ? "denied" : "inactive";
+      metrics?.spendExtensions.inc({ kind, outcome });
+      log.info({ ...where, attemptUsd, priorUsd, ...(result.reason === "limit" ? { blockedBy: result.blockedBy } : {}) }, "spend hold extension refused; paid attempt not sent");
+      return result.reason === "limit" ? { ok: false, reason: "denied", blockedBy: result.blockedBy } : { ok: false, reason: "inactive" };
+    }
+    const outcome = result.duplicate ? "duplicate" : result.extendedUsd > 0 ? "extended" : "covered";
+    metrics?.spendExtensions.inc({ kind, outcome });
+    if (result.extendedUsd > 0) metrics?.spendExtensionUsd.inc({ kind }, result.extendedUsd);
+    log.info({ ...where, outcome, attemptUsd, priorUsd, extendedUsd: result.extendedUsd, reservedUsd: result.reservation.reservedUsd }, "spend hold extended for a provider attempt");
+    return { ok: true, reservedUsd: result.reservation.reservedUsd };
+  }
+
+  /** Counts a paid attempt that was not sent because its spend could not be covered. */
+  notePrevented(kind: AttemptKind, reason: CoverRefusal): void {
+    this.deps.metrics?.spendPreventedAttempts.inc({ kind, reason });
   }
 
   /** The limit that kept paid providers out of this route: one already reached, or the one with too little left. */

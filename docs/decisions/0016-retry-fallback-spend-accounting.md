@@ -80,8 +80,9 @@ PostgreSQL, one `READ COMMITTED` transaction:
 3. Inactive, expired or missing hold → refused (`inactive`); the attempt is not sent.
 4. Attempt already registered → `duplicate`, no effect (idempotent: a retried call after a lost reply, or two code
    paths racing for the same attempt, extend once).
-5. `target = max(prior, recorded + inflight) + attemptUsd`, where `prior` is the caller's own count of its earlier
-   attempts (above, the more conservative of the two wins). `increase = target − reserved`.
+5. `target = max(prior, recorded) + inflight + attemptUsd`, where `prior` is the caller's own count of its
+   earlier attempts (above; the more conservative of it and the ledger wins) and `inflight` covers attempts
+   other code paths registered that are still running. `increase = target − reserved`.
 6. `increase ≤ 0` → register the attempt; no scope lock needed (the hold does not grow).
 7. Otherwise take the advisory lock of every scope with a limit, in the same fixed order as admission
    (system → plan → person), then **one statement** reads actual and outstanding for every scope from one

@@ -235,6 +235,32 @@ export type ReserveSpendResult =
   /** Nothing was reserved: the first limit (in `limits` order) the amount does not fit, and fresh usage of all. */
   | { ok: false; blockedBy: SpendScope; usage: SpendUsage[] };
 
+/**
+ * One provider attempt a hold is asked to cover beyond what it already does (ADR 0016). The attempt is
+ * identified by the coordinates its ledger row carries, so a repeated call for it never adds twice.
+ */
+export interface ExtendSpendInput {
+  reservationId: string;
+  attempt: { fallbackIndex: number; round: number; retry: number; provider: string; model: string | null };
+  /** The attempt's own worst-case cost. */
+  attemptUsd: number;
+  /** What the caller counts for the request's earlier attempts (the store also counts its ledger rows; the larger wins). */
+  priorUsd: number;
+  /** Every configured aggregate limit the request falls under (as at admission). */
+  limits: readonly SpendLimit[];
+}
+
+export type ExtendSpendResult =
+  /**
+   * Covered: `extendedUsd` was added to the hold (0 when it already covered the attempt, or for a repeated
+   * call). `usage` is fresh when the hold grew, else empty (nothing changed that a limit could see).
+   */
+  | { ok: true; reservation: SpendReservationRecord; extendedUsd: number; duplicate: boolean; usage: SpendUsage[] }
+  /** Not covered and the increase does not fit: nothing changed. */
+  | { ok: false; reason: "limit"; blockedBy: SpendScope; usage: SpendUsage[] }
+  /** The hold is no longer active (settled, released, expired or gone): nothing may be sent on it. */
+  | { ok: false; reason: "inactive" };
+
 export interface SettleSpendResult {
   reservation: SpendReservationRecord;
   /** True when it had already been settled (settlement is idempotent). */
@@ -515,6 +541,13 @@ export interface Store {
    * instances; memory: atomic within its process). Throws when the check cannot be made (fail closed).
    */
   reserveSpend(input: ReserveSpendInput): Promise<ReserveSpendResult>;
+  /**
+   * Makes an active hold cover one more provider attempt (ADR 0016): it grows to max(priorUsd, its
+   * ledger cost) + attempts registered on it with no ledger row yet + attemptUsd, only if
+   * the increase fits every limit with actual spend and every other hold (same scope locks and order as
+   * reserveSpend). Idempotent per attempt; never shrinks a hold. Throws when the check cannot be made.
+   */
+  extendSpendReservation(input: ExtendSpendInput): Promise<ExtendSpendResult>;
   /**
    * Ends a hold, recording the request's paid ledger cost as its actual. Idempotent; undefined when the
    * reservation does not exist (purged).

@@ -15,9 +15,9 @@ import { buildSystemPrompt } from "../providers/instructions.js";
 import type { ProviderRegistry } from "../providers/registry.js";
 import {
   failoverAllowed,
+  ProviderError,
   toProviderError,
   type ProviderChunk,
-  type ProviderError,
   type ProviderRequest,
   type ProviderAdapter,
   type ProviderToolResult,
@@ -415,6 +415,8 @@ async function runTarget(
     ),
   };
 
+  // Every paid attempt (retries, tool rounds, fallbacks) is covered by the hold before it is sent (ADR 0016).
+  const coverage = ctx.ai.coverage(prepared.reservation);
   // Every provider attempt (retries, tool rounds, fallbacks) goes to the inference ledger.
   const inference: InferenceContext = {
     inferenceId: messageId,
@@ -473,6 +475,8 @@ async function runTarget(
       let calls: ModelToolCall[] = [];
       let continuation: unknown;
       let roundFinish: "stop" | "length" | "refusal" = "stop";
+      let failed: ProviderError | undefined;
+      let spendStop = false;
       // One provider request per attempt. A retryable failure before this attempt produced anything
       // is retried with backoff (see retryDelayMs); once output has reached the client, or a tool
       // has been requested, the failure is final: retrying would duplicate text or tool calls.
@@ -496,6 +500,23 @@ async function runTarget(
           signal: attemptController.signal,
           routing,
         };
+        const at = { fallbackIndex, round, retry: attempt };
+        // Before anything is sent: everything this answer may already have spent plus this exact request
+        // at this provider's prices must fit in the hold, or the hold is extended first.
+        const cover = await coverage.cover({ ...at, adapter, inputTokens: estimateTokensForLedger(requestChars(providerRequest)) });
+        if (!cover.ok) {
+          attempts -= 1;
+          controller.signal.removeEventListener("abort", onTargetAbort);
+          // A retry that cannot be covered is not sent: the failure that asked for it stands (and the
+          // route's next provider may still take over). A provider's first attempt that cannot be
+          // covered is skipped the same way. A later round ends the answer where it is: text and tool
+          // results already reached the person (as when a round outgrows its budget).
+          if (failed) throw failed;
+          if (round === 0) throw new SpendNotCovered(cover.reason);
+          ctx.log.warn({ provider: adapter.id, round, reason: cover.reason }, "answer stopped: its next round's spend could not be covered");
+          spendStop = true;
+          break;
+        }
         const report = (error?: ProviderError) =>
           ctx.ai.attempts.record(inference, {
             adapter,
@@ -534,11 +555,12 @@ async function runTarget(
               attemptFinish = chunk;
             }
           }
-          await report();
+          coverage.record(at, await report(), { output: true });
           break;
         } catch (err) {
           const error = toProviderError(adapter.displayName, err, attemptController.signal);
-          await report(error);
+          coverage.record(at, await report(error), { error, output: produced });
+          failed = error;
           // The target's own abort (user cancel, overall timeout) is never retried.
           if (controller.signal.aborted) throw err;
           ctx.metrics?.providerFailures.inc({ provider: adapter.id, code: error.code, retryable: error.retryable });
@@ -555,6 +577,10 @@ async function runTarget(
         } finally {
           controller.signal.removeEventListener("abort", onTargetAbort);
         }
+      }
+      if (spendStop) {
+        finishReason = "length";
+        break;
       }
       finishReason = roundFinish;
       if (calls.length === 0) break;
@@ -580,6 +606,7 @@ async function runTarget(
 
   try {
     let finishReason: "stop" | "length" | "refusal" = "stop";
+    let lastFailure: ProviderError | undefined;
     for (let c = 0; ; c++) {
       adapter = candidates[c]!;
       const attemptStarted = Date.now();
@@ -588,7 +615,16 @@ async function runTarget(
         ctx.router.recordSuccess(adapter.id, Date.now() - attemptStarted);
         break;
       } catch (err) {
+        if (err instanceof SpendNotCovered && !controller.signal.aborted) {
+          // Never sent, so not a provider failure: try the route's next provider (a free one needs no
+          // cover), else end with the failure that led here, or as busy when nothing was sent at all.
+          const next = candidates[c + 1];
+          if (!next) throw lastFailure ?? new ProviderError("rate_limited", "DASH AI is very busy right now. Please try again in a moment.", true);
+          ctx.log.info({ from: adapter.id, to: next.id, reason: err.reason }, "provider skipped: its spend could not be covered");
+          continue;
+        }
         const error = toProviderError(adapter.displayName, err, controller.signal);
+        lastFailure = error;
         // Health learns from provider failures (timeouts included); a person's cancel is ignored.
         ctx.router.recordFailure(adapter.id, error.code, error.retryable);
         if (controller.signal.aborted) throw err;
@@ -664,6 +700,14 @@ async function runTarget(
     createdAt: now,
   });
   return { provider: adapter.id, status, usage };
+}
+
+/** A provider's first attempt was not sent because its spend could not be covered (internal; ADR 0016). */
+class SpendNotCovered extends Error {
+  constructor(readonly reason: string) {
+    super("spend not covered");
+    this.name = "SpendNotCovered";
+  }
 }
 
 /**

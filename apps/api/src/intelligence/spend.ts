@@ -1,4 +1,4 @@
-import type { InferenceSpend, ReserveSpendInput, ReserveSpendResult, SpendLimit, SpendScope, SpendUsage, Store } from "../store/store.js";
+import type { ExtendSpendInput, ExtendSpendResult, InferenceSpend, ReserveSpendInput, ReserveSpendResult, SpendLimit, SpendScope, SpendUsage, Store } from "../store/store.js";
 import type { AiControls } from "./settings.js";
 
 /** Which limit stopped paid inference (most specific reported). */
@@ -116,6 +116,18 @@ export class SpendGuard {
   async reserve(input: Omit<ReserveSpendInput, "limits">): Promise<ReserveSpendResult> {
     try {
       return await this.store.reserveSpend({ ...input, limits: this.limits({ userId: input.userId, plan: input.plan }) });
+    } finally {
+      this.invalidate();
+    }
+  }
+
+  /**
+   * Grows an active hold so it covers one more provider attempt, under the same limits it was admitted
+   * against (ADR 0016); atomic and idempotent per attempt in the store.
+   */
+  async extend(who: { userId: string | null; plan: string }, input: Omit<ExtendSpendInput, "limits">): Promise<ExtendSpendResult> {
+    try {
+      return await this.store.extendSpendReservation({ ...input, limits: this.limits(who) });
     } finally {
       this.invalidate();
     }
