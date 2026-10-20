@@ -44,6 +44,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -61,6 +62,7 @@ import com.dashworldng.ai.core.model.ChatMessage
 import com.dashworldng.ai.core.presentation.Recovery
 import com.dashworldng.ai.core.presentation.StatusTone
 import com.dashworldng.ai.data.DocumentReader
+import com.dashworldng.ai.ui.components.ConfirmDialog
 import com.dashworldng.ai.ui.components.ContentWidth
 import com.dashworldng.ai.ui.components.DashTextField
 import com.dashworldng.ai.ui.components.DashTopBar
@@ -92,10 +94,19 @@ class ChatEvents(
     val onEditAndResend: (String, String) -> Unit,
     val onRetryAnswer: (String) -> Unit,
     val onContinueLater: (String) -> Unit,
+    /** The session ended (expired or signed out elsewhere): sign in again, keeping this device's chats. */
+    val onSignInAgain: () -> Unit = {},
 )
 
 @Composable
-fun ChatScreen(vm: ChatViewModel, drawer: DrawerCallbacks, onBack: () -> Unit, onOpenSettings: () -> Unit, onOpenTools: () -> Unit) {
+fun ChatScreen(
+    vm: ChatViewModel,
+    drawer: DrawerCallbacks,
+    onBack: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenTools: () -> Unit,
+    onSignInAgain: () -> Unit = {},
+) {
     val state by vm.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -125,6 +136,7 @@ fun ChatScreen(vm: ChatViewModel, drawer: DrawerCallbacks, onBack: () -> Unit, o
             onEditAndResend = vm::editAndResend,
             onRetryAnswer = vm::retryAnswer,
             onContinueLater = vm::continueLater,
+            onSignInAgain = onSignInAgain,
         )
     }
     ChatContent(state, events, drawer, reducedMotion = rememberReducedMotion())
@@ -139,6 +151,9 @@ fun ChatContent(state: ChatUiState, events: ChatEvents, drawer: DrawerCallbacks,
     // System Back closes the open history drawer first, before leaving the screen.
     BackHandler(enabled = drawerState.isOpen) { scope.launch { drawerState.close() } }
     var editing by remember { mutableStateOf<ChatMessage?>(null) }
+    // An earlier answer to regenerate once the person confirms the messages after it are replaced.
+    var regenerating by remember { mutableStateOf<String?>(null) }
+    val messages by rememberUpdatedState(state.session.messages)
     var modeSheet by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(state.notice) {
@@ -150,7 +165,10 @@ fun ChatContent(state: ChatUiState, events: ChatEvents, drawer: DrawerCallbacks,
 
     val actions = remember(events) {
         MessageActions(
-            onRegenerate = events.onRegenerate,
+            onRegenerate = { id ->
+                val index = messages.indexOfFirst { it.id == id }
+                if (index in 0 until messages.lastIndex) regenerating = id else events.onRegenerate(id)
+            },
             onEdit = { editing = it },
             onNotice = { events.onNotice(it) },
             onRetryAnswer = events.onRetryAnswer,
@@ -252,6 +270,19 @@ fun ChatContent(state: ChatUiState, events: ChatEvents, drawer: DrawerCallbacks,
             onDismiss = { modeSheet = false },
         )
     }
+    regenerating?.let { id ->
+        ConfirmDialog(
+            title = "Regenerate this answer?",
+            text = "The messages after it in this chat will be removed and replaced by the new answer.",
+            confirmLabel = "Regenerate",
+            onConfirm = {
+                events.onRegenerate(id)
+                regenerating = null
+            },
+            onDismiss = { regenerating = null },
+            modifier = Modifier.testTag("regenerate_confirm"),
+        )
+    }
     editing?.let { message ->
         EditMessageDialog(
             initial = message.content,
@@ -293,11 +324,12 @@ private fun StatusNotices(state: ChatUiState, events: ChatEvents) {
             }
             val error = state.session.error
             if (error != null) {
+                val signInAgain = error.code == "unauthorized"
                 Notice(
                     error.message,
                     tone = StatusTone.ERROR,
-                    actionLabel = if (error.retryable) "Retry" else null,
-                    onAction = if (error.retryable) events.onRetryLast else null,
+                    actionLabel = if (signInAgain) "Sign in" else if (error.retryable) "Retry" else null,
+                    onAction = if (signInAgain) events.onSignInAgain else if (error.retryable) events.onRetryLast else null,
                     onDismiss = events.onDismissError,
                     modifier = Modifier.testTag("error_banner"),
                 )

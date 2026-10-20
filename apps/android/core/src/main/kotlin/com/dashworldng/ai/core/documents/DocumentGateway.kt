@@ -63,3 +63,36 @@ class DemoDocumentGateway(
 
     override suspend fun delete(document: DocumentItem) = Unit
 }
+
+/** How removing a document ended. A failure keeps it listed, so the person can try again. */
+sealed interface DocumentRemoval {
+    data object Removed : DocumentRemoval
+    data class Failed(val message: String) : DocumentRemoval
+
+    companion object {
+        /**
+         * Removes [document] from the DASH AI server first when it is stored there, and from this device
+         * only once that worked (a document the server no longer has counts as removed). Nothing is
+         * reported as removed while the server still holds the document's text.
+         */
+        suspend fun remove(
+            document: DocumentItem,
+            demoMode: Boolean,
+            server: () -> DocumentGateway,
+            deleteLocal: suspend (String) -> Unit,
+        ): DocumentRemoval {
+            if (!document.isDemo && document.remoteId != null) {
+                if (demoMode) return Failed("Turn off Demo Mode to remove a document stored on the DASH AI server.")
+                try {
+                    server().delete(document)
+                } catch (e: ApiException) {
+                    if (e.error.code != "not_found") {
+                        return Failed("“${document.name}” couldn't be removed from the DASH AI server. ${e.error.message}")
+                    }
+                }
+            }
+            deleteLocal(document.id)
+            return Removed
+        }
+    }
+}
