@@ -328,6 +328,40 @@ class AccountIsolationTest {
     }
 
     @Test
+    fun `Demo Mode without an account never shows data an account still owns`() = runBlocking<Unit> {
+        val phone = Phone(server)
+        phone.signIn("alice")
+        phone.syncNow()
+        var revoked = false
+        val out = phone.guard.releaseForDemo { revoked = true }
+        assertTrue(out != null && out.serverSessionRevoked && revoked)
+        assertNull(phone.token)
+        assertEquals("", phone.everything())
+        assertFalse(phone.guard.isOwner("alice"))
+    }
+
+    @Test
+    fun `releasing for Demo Mode keeps Demo Mode's own chats and touches no credentials when no account owns the data`() = runBlocking<Unit> {
+        val phone = Phone(server)
+        phone.token = "unrelated"
+        phone.ui.upsertConversation(Conversation("demo-1", "Demo chat", AssistantMode.GENERAL, 1, 1, isDemo = true))
+        assertNull(phone.guard.releaseForDemo { error("no server call when nothing belongs to an account") })
+        assertEquals(listOf("demo-1"), phone.ids())
+        assertEquals("unrelated", phone.token)
+    }
+
+    @Test
+    fun `releasing for Demo Mode finishes an interrupted sign-out`() = runBlocking<Unit> {
+        val owner = InMemoryLocalOwnerStore(LocalOwnerState(userId = "alice", wipePending = true))
+        val phone = Phone(server, owner)
+        phone.conversations.upsertConversation(Conversation("a1", "Alice left over", AssistantMode.GENERAL, 1, 1))
+        phone.rebuildGuard()
+        assertTrue(phone.guard.releaseForDemo {} != null)
+        assertEquals(emptyList(), phone.ids())
+        assertEquals(LocalOwnerState(), owner.state)
+    }
+
+    @Test
     fun `a sync started for an account that is no longer signed in does nothing`() = runBlocking<Unit> {
         val phone = Phone(server)
         phone.signIn("alice")
