@@ -24,8 +24,20 @@ still per process, and a local multi-instance harness (`apps/api/test/cluster`) 
    members are random stream ids scored by expiry. Admission is one Lua script: drop expired members,
    refuse if full, else add. Expiry uses Redis's `TIME`, never an instance's clock. The owning instance
    refreshes its streams every `STREAM_SLOT_TTL_MS / 4`; a crashed instance's slots expire after
-   `STREAM_SLOT_TTL_MS` (20 s). A refresh after a Redis restart writes live slots back. Release is
-   `ZREM` (idempotent). Without Redis (one instance) the same check-and-take is synchronous in memory.
+   `STREAM_SLOT_TTL_MS` (20 s). Release is `ZREM` (idempotent). Without Redis (one instance) the same
+   check-and-take is synchronous in memory.
+   **Recovery rule (heartbeat).** For each of its running streams, one atomic heartbeat script:
+   (a) a cancel or account-deletion marker wins: the slot is removed and the stream stops;
+   (b) a slot that is still live (score after Redis's now) is extended;
+   (c) a slot that expired or vanished (an outage longer than the TTL, a Redis restart or flush, a
+   heartbeat that came too late) is taken again **only through the admission check**: the account's
+   expired slots are dropped, and the stream gets a slot only if the account is below the limit it was
+   admitted under. Otherwise the stream is stopped as `lease_lost`: it ends `cancelled` to the client,
+   its partial answer is saved as stopped, its spend hold settles like any cancelled answer, and its
+   local and shared state is released. Redis runs scripts one at a time, so several instances
+   reconnecting together cannot push an account past its limit either; a lost slot is never written
+   back unconditionally. (Before this rule, the heartbeat re-added every running stream, which let an
+   account reach 6 live slots with a limit of 3 after new streams were admitted during an outage.)
 2. **Admission before anything else.** The slot is taken before the request is prepared, so a refused
    request makes no spend reservation and no provider request; a failure while preparing releases it.
 3. **Cross-instance cancel.** A cancel the receiving instance cannot serve locally runs a script that
@@ -58,6 +70,12 @@ token or user id (a test dumps every key and value to check).
 
 - A Redis outage now refuses new chat answers on every instance until Redis answers. That is the
   chosen trade: the alternative is a per-account limit that multiplies by the number of instances.
+- Answers already running keep going through an outage **shorter** than `STREAM_SLOT_TTL_MS` (their
+  slots are still live when the heartbeat reaches Redis again). Through a **longer** outage, or after
+  Redis lost its data, they keep their slots only while the account has room: if other answers of the
+  same account were admitted meanwhile, the excess old answers are stopped (`lease_lost`) at the first
+  heartbeat after Redis returns. Running answers are not guaranteed to survive an arbitrarily long
+  outage. `dash_stream_stops_total{source="lease_lost"}` counts them.
   `/ready` reports `degraded` (not 503): every instance is equally affected, so taking one out of
   rotation would not help.
 - One extra Redis round trip per answer at admission, one at release, and one batched heartbeat per

@@ -3,11 +3,13 @@ import { accountKey, StreamControlUnavailable, type CancelMessage, type RedisStr
 interface ActiveStream {
   userId: string;
   account: string;
+  /** The limit the stream was admitted under (a lost slot is re-taken only within it). */
+  limit: number;
   controller: AbortController;
 }
 
 /** Why a stream was stopped from outside (metrics). */
-export type StopSource = "cancel" | "remote_cancel" | "account_deleted" | "shutdown";
+export type StopSource = "cancel" | "remote_cancel" | "account_deleted" | "shutdown" | "lease_lost";
 
 export type AcquireResult = { ok: true } | { ok: false; reason: "full" | "gone" | "unavailable" };
 
@@ -32,8 +34,11 @@ const GONE_MS = 120_000;
  * script, so an account has at most MAX_CONCURRENT_STREAMS_PER_USER streams across every instance.
  * Cancels and account deletions reach the instance that runs the stream through Redis. If Redis
  * cannot answer, new streams are REFUSED (fail closed): the limit never silently multiplies by the
- * number of instances. Streams already running are unaffected; their slots expire by themselves if
- * the outage outlasts STREAM_SLOT_TTL_MS, and are written back by the next successful heartbeat.
+ * number of instances. Streams already running keep going through a short outage. If the outage
+ * outlasts STREAM_SLOT_TTL_MS (or Redis lost its data), their slots have expired: the next successful
+ * heartbeat re-takes each one only if the account is still below its limit (other streams may have
+ * been admitted meanwhile); a stream that cannot get its slot back is stopped ("lease_lost"), saved
+ * as stopped, and settles like any cancelled answer.
  */
 export class StreamRegistry {
   private readonly streams = new Map<string, ActiveStream>();
@@ -70,7 +75,7 @@ export class StreamRegistry {
     if (goneAt !== undefined && this.now() - goneAt < GONE_MS) return this.admission({ ok: false, reason: "gone" });
     if (!this.shared) {
       if (this.countForUser(userId) >= limit) return this.admission({ ok: false, reason: "full" });
-      this.track(streamId, userId, account, controller);
+      this.track(streamId, userId, account, limit, controller);
       return this.admission({ ok: true });
     }
     let outcome;
@@ -81,12 +86,12 @@ export class StreamRegistry {
       return this.admission({ ok: false, reason: "unavailable" });
     }
     if (outcome !== "admitted") return this.admission({ ok: false, reason: outcome });
-    this.track(streamId, userId, account, controller);
+    this.track(streamId, userId, account, limit, controller);
     return this.admission({ ok: true });
   }
 
-  private track(streamId: string, userId: string, account: string, controller: AbortController): void {
-    this.streams.set(streamId, { userId, account, controller });
+  private track(streamId: string, userId: string, account: string, limit: number, controller: AbortController): void {
+    this.streams.set(streamId, { userId, account, limit, controller });
     this.hooks.onActiveChange?.(this.streams.size);
   }
 
@@ -127,7 +132,7 @@ export class StreamRegistry {
     const s = this.streams.get(streamId);
     if (!s) return false;
     if (!s.controller.signal.aborted) {
-      s.controller.abort(source === "shutdown" ? "shutdown" : "cancelled");
+      s.controller.abort(source === "shutdown" || source === "lease_lost" ? source : "cancelled");
       this.hooks.onStop?.(source);
     }
     return true;
@@ -194,14 +199,16 @@ export class StreamRegistry {
   heartbeat(): Promise<void> {
     if (!this.shared || this.beating) return this.beating ?? Promise.resolve();
     const shared = this.shared;
-    const entries = [...this.streams].map(([streamId, s]) => ({ streamId, account: s.account }));
+    const entries = [...this.streams].map(([streamId, s]) => ({ streamId, account: s.account, limit: s.limit }));
     if (entries.length === 0) return Promise.resolve();
     this.releasedDuringHeartbeat = new Set();
     this.beating = (async () => {
       try {
-        for (const id of await shared.heartbeat(entries)) {
-          const s = this.streams.get(id);
-          if (s) this.stopLocal(id, this.gone.has(s.account) ? "account_deleted" : "remote_cancel");
+        for (const stop of await shared.heartbeat(entries)) {
+          const s = this.streams.get(stop.streamId);
+          if (!s) continue;
+          if (stop.reason === "lease_lost") this.stopLocal(stop.streamId, "lease_lost");
+          else this.stopLocal(stop.streamId, this.gone.has(s.account) ? "account_deleted" : "remote_cancel");
         }
       } catch (err) {
         this.backendError(err);

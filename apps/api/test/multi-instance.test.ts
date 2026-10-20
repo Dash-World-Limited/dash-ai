@@ -156,6 +156,50 @@ describe.skipIf(!ENABLED)("several API instances: shared stream limit and cancel
 });
 
 describe.skipIf(!ENABLED)("several API instances: failures", () => {
+  it("an outage longer than the slot TTL: streams admitted meanwhile keep their slots; the old streams cannot come back past the limit and are stopped and saved", async () => {
+    const env = { FAKE_STREAM_DELAY_MS: "20", MAX_CONCURRENT_STREAMS_PER_USER: "3", STREAM_SLOT_TTL_MS: "2000", PROVIDER_IDLE_TIMEOUT_MS: "120000" };
+    // Instance A reaches Redis through the fault proxy; instance B directly, so only A is cut off.
+    const cluster = await Cluster.start({ instances: 1, env });
+    try {
+      const b = await cluster.addNode({ REDIS_URL: cluster.directRedisUrl! });
+      const user = await signUp(cluster.node(0).url, "lease");
+      const oldConversations = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+      const old = await Promise.all(oldConversations.map((id) => openStream(cluster.node(0).url, user, HANG, id)));
+      expect(old.map((s) => s.status)).toEqual([200, 200, 200]);
+
+      cluster.redisProxy!.down();
+      // A cannot refresh: by Redis's clock its three slots expire.
+      await eventually(async () => (await liveSlots(cluster)) === 0, 10_000, 100);
+      const fresh = await Promise.all([0, 1, 2].map(() => openStream(b.url, user, HANG)));
+      expect(fresh.map((s) => s.status)).toEqual([200, 200, 200]);
+      expect((await openStream(b.url, user, HANG)).status).toBe(429);
+
+      cluster.redisProxy!.up();
+      // A's heartbeat finds its slots gone and the account full: its streams stop, none is re-added.
+      let maxSeen = 0;
+      await eventually(async () => {
+        maxSeen = Math.max(maxSeen, await liveSlots(cluster));
+        return (await Promise.all(old.map((s) => Promise.race([s.done.then(() => true), new Promise((r) => setTimeout(() => r(false), 10))])))).every(Boolean);
+      }, 15_000, 100);
+      expect(maxSeen).toBeLessThanOrEqual(3);
+      for (const s of old) expect(finishReason((await s.done).events)).toEqual(["cancelled"]);
+      expect(await liveSlots(cluster)).toBe(3);
+      for (const id of oldConversations) {
+        const conv = (await (await fetch(`${b.url}/v1/conversations/${id}`, { headers: user.auth })).json()) as { messages: { role: string; status: string }[] };
+        expect(conv.messages.find((m) => m.role === "assistant")?.status).toBe("stopped");
+      }
+      const metrics = await cluster.metrics(cluster.node(0));
+      expect(metricValue(metrics, "dash_stream_stops_total", { source: "lease_lost" })).toBe(3);
+      expect(metricValue(metrics, "dash_active_streams")).toBe(0);
+      // The streams admitted meanwhile are untouched.
+      expect(fresh.every((s) => !s.events.some((e) => e.event === "message.end"))).toBe(true);
+      for (const s of fresh) await cancelStream(b.url, user, s.streamId!);
+      await eventually(async () => (await liveSlots(cluster)) === 0, 10_000, 100);
+    } finally {
+      await cluster.stop();
+    }
+  }, 90_000);
+
   it("an instance that dies (SIGKILL) frees its slots after STREAM_SLOT_TTL_MS, never before", async () => {
     const cluster = await Cluster.start({ instances: 2, env: { FAKE_STREAM_DELAY_MS: "30", MAX_CONCURRENT_STREAMS_PER_USER: "2", STREAM_SLOT_TTL_MS: "3000" } });
     try {

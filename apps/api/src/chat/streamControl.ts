@@ -9,6 +9,9 @@ import { Redis } from "ioredis";
  * - `streams:u:<account hash>`  sorted set of the account's active stream ids, scored by expiry.
  *   An instance refreshes its own streams every heartbeat, so a crashed instance's slots expire on
  *   their own after STREAM_SLOT_TTL_MS. Expiry uses Redis's clock (TIME), never an instance's.
+ *   A slot that has expired (or vanished with a Redis restart) is never written back blindly: the
+ *   heartbeat takes it again only through the same capacity check as a new stream, and a stream that
+ *   cannot get its slot back is stopped. So the set never holds more than the account's limit.
  * - `streams:c:<stream id>`     "cancel this stream" marker (short TTL).
  * - `streams:d:<account hash>`  "this account was deleted: stop its streams" marker (short TTL).
  * - channel `streams:cancel`    fast path: the owning instance stops the stream within milliseconds.
@@ -32,23 +35,38 @@ return 1
 
 /**
  * Refreshes this instance's streams (KEYS: slots, cancel marker, account marker per stream; ARGV:
- * ttl then the stream ids). Returns the ids that were asked to stop; their slots are released.
- * A slot lost to a Redis restart is written back, so the count stays right after an outage.
+ * ttl, then stream id and that stream's limit per stream). For each stream, in one atomic script:
+ * - a cancel or account-deletion marker wins: the slot is removed, the stream returned as `c:<id>`;
+ * - a live slot (score after Redis's now) is extended;
+ * - a slot that expired or vanished (outage longer than the TTL, Redis restart, a late heartbeat) is
+ *   taken again only if the account is below its limit after expired slots are dropped, exactly as
+ *   ACQUIRE_LUA would; otherwise the stream is returned as `l:<id>` (lease lost) and must stop.
+ * Scripts run one at a time in Redis, so instances reconnecting together cannot overshoot either.
  */
 const HEARTBEAT_LUA = `
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 local ttl = tonumber(ARGV[1])
 local out = {}
-for i = 1, #ARGV - 1 do
+local purged = {}
+for i = 1, (#ARGV - 1) / 2 do
   local slots = KEYS[3 * i - 2]
-  local id = ARGV[i + 1]
+  local id = ARGV[2 * i]
+  local limit = tonumber(ARGV[2 * i + 1])
   if redis.call('EXISTS', KEYS[3 * i - 1]) == 1 or redis.call('EXISTS', KEYS[3 * i]) == 1 then
     redis.call('ZREM', slots, id)
-    table.insert(out, id)
+    table.insert(out, 'c:' .. id)
   else
-    redis.call('ZADD', slots, now + ttl, id)
-    redis.call('PEXPIRE', slots, ttl * 2)
+    if not purged[slots] then
+      redis.call('ZREMRANGEBYSCORE', slots, '-inf', now)
+      purged[slots] = true
+    end
+    if redis.call('ZSCORE', slots, id) or redis.call('ZCARD', slots) < limit then
+      redis.call('ZADD', slots, now + ttl, id)
+      redis.call('PEXPIRE', slots, ttl * 2)
+    else
+      table.insert(out, 'l:' .. id)
+    end
   end
 end
 return out
@@ -84,6 +102,11 @@ type StreamRedis = Redis & {
 export const accountKey = (userId: string): string => createHash("sha256").update(`stream:${userId}`).digest("base64url").slice(0, 32);
 
 export type AcquireOutcome = "admitted" | "full" | "gone";
+/** A stream the heartbeat says must stop: cancelled (or its account deleted), or its slot was lost and the account is full. */
+export interface HeartbeatStop {
+  streamId: string;
+  reason: "cancelled" | "lease_lost";
+}
 export type CancelMessage = { kind: "stream"; streamId: string } | { kind: "account"; accountKey: string };
 
 /** The operation that failed when Redis could not be used (metrics and logs; never the URL). */
@@ -179,13 +202,18 @@ export class RedisStreamControl {
     await this.call("release", () => this.redis.zrem(this.slots(account), streamId));
   }
 
-  /** Refreshes these streams' slots; returns the ids that must stop (cancelled elsewhere). */
-  async heartbeat(entries: ReadonlyArray<{ account: string; streamId: string }>): Promise<string[]> {
-    const out: string[] = [];
+  /**
+   * Refreshes these streams' slots (re-taking a lost one only within the limit). Returns the streams
+   * that must stop: cancelled elsewhere (or account deleted), or whose slot could not be re-taken.
+   */
+  async heartbeat(entries: ReadonlyArray<{ account: string; streamId: string; limit: number }>): Promise<HeartbeatStop[]> {
+    const out: HeartbeatStop[] = [];
     for (let i = 0; i < entries.length; i += 200) {
       const batch = entries.slice(i, i + 200);
       const keys = batch.flatMap((e) => [this.slots(e.account), this.streamMarker(e.streamId), this.accountMarker(e.account)]);
-      out.push(...(await this.call("heartbeat", () => this.redis.dashStreamHeartbeat(keys.length, ...keys, this.slotTtlMs, ...batch.map((e) => e.streamId)))));
+      const args = batch.flatMap((e) => [e.streamId, e.limit]);
+      const stops = await this.call("heartbeat", () => this.redis.dashStreamHeartbeat(keys.length, ...keys, this.slotTtlMs, ...args));
+      for (const s of stops) out.push({ streamId: s.slice(2), reason: s.startsWith("l:") ? "lease_lost" : "cancelled" });
     }
     return out;
   }
