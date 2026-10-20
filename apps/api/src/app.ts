@@ -29,6 +29,7 @@ import { syncRoutes } from "./routes/sync.js";
 import { systemRoutes } from "./routes/system.js";
 import { Metrics } from "./observability/metrics.js";
 import { MemoryRateLimitStore, RateLimitService, type RateLimitStore } from "./security/rateLimit.js";
+import { databaseFailure } from "./store/dbErrors.js";
 import { MemoryStore } from "./store/memoryStore.js";
 import type { Store } from "./store/store.js";
 import { ToolRuntime } from "./tools/runtime.js";
@@ -245,8 +246,13 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   });
 
   app.setErrorHandler((err: FastifyError, request, reply) => {
-    const appError = toAppError(err);
-    if (appError.statusCode >= 500) request.log.error({ err }, "request failed");
+    const dbFailure = err instanceof AppError ? null : databaseFailure(err);
+    const appError = dbFailure ? busyError() : toAppError(err);
+    if (dbFailure) {
+      metrics.databaseErrors.inc({ kind: dbFailure });
+      metrics.busyRejections.inc({ reason: "database" });
+      request.log.warn({ kind: dbFailure, err: { code: (err as { code?: string }).code, message: err.message } }, "database unavailable or overloaded");
+    } else if (appError.statusCode >= 500) request.log.error({ err }, "request failed");
     else request.log.info({ code: appError.code, statusCode: appError.statusCode }, "request rejected");
     if (appError.retryAfterSeconds !== undefined) reply.header("Retry-After", String(appError.retryAfterSeconds));
     void reply.code(appError.statusCode).send(appError.toResponse());

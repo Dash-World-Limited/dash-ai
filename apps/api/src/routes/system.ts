@@ -1,6 +1,7 @@
 import { SMART_ROUTING, type AssistantStatusResponse, type HealthResponse, type ProvidersResponse } from "@dash-ai/contracts";
 import { hideProviders } from "../chat/publicSurface.js";
 import { createHash, timingSafeEqual } from "node:crypto";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { AppError } from "../errors.js";
 import { TaskType } from "../intelligence/policy.js";
@@ -47,10 +48,27 @@ export function systemRoutes(app: FastifyInstance, ctx: RouteContext): void {
    * Prometheus metrics, only when METRICS_TOKEN is configured, and only with that bearer token.
    * Without a token configured the route answers 404 like any unknown path.
    */
+  // Event-loop delay between scrapes: a saturated instance shows it before requests start failing.
+  const loopDelay = monitorEventLoopDelay({ resolution: 20 });
+  loopDelay.enable();
+  app.addHook("onClose", async () => loopDelay.disable());
+
   app.get("/metrics", async (request: FastifyRequest, reply: FastifyReply) => {
     if (!ctx.config.metricsToken) throw new AppError("not_found", "Not found.");
     if (!bearerMatches(request, ctx.config.metricsToken)) throw new AppError("unauthorized", "Not authorized.");
     reply.type("text/plain; version=0.0.4");
+    ctx.metrics.eventLoopDelay.set({ stat: "p50" }, loopDelay.percentile(50) / 1e9);
+    ctx.metrics.eventLoopDelay.set({ stat: "p99" }, loopDelay.percentile(99) / 1e9);
+    ctx.metrics.eventLoopDelay.set({ stat: "max" }, loopDelay.max / 1e9);
+    loopDelay.reset();
+    ctx.metrics.residentMemory.set({}, process.memoryUsage.rss());
+    const pool = ctx.store.poolStats?.();
+    if (pool) {
+      ctx.metrics.databasePool.set({ state: "total" }, pool.total);
+      ctx.metrics.databasePool.set({ state: "idle" }, pool.idle);
+      ctx.metrics.databasePool.set({ state: "waiting" }, pool.waiting);
+      ctx.metrics.databasePool.set({ state: "max" }, pool.max);
+    }
     return ctx.metrics.render();
   });
 

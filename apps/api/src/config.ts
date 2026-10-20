@@ -163,6 +163,7 @@ const EnvSchema = z.object({
   /** TLS to the database. Defaults to "require" in production and "disable" elsewhere. */
   DATABASE_SSL: z.preprocess(emptyToUndefined, z.enum(["disable", "require", "no-verify"]).optional()),
   DATABASE_POOL_MAX: int(10, 1, 100),
+  DATABASE_POOL_ACQUIRE_TIMEOUT_MS: int(5_000, 250, 60_000),
   /** Apply pending migrations at startup. Defaults to true outside production, false in production. */
   DATABASE_AUTO_MIGRATE: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).optional()),
   /** Base64 of 32 random bytes (openssl rand -base64 32). Encrypts document text at rest. */
@@ -282,6 +283,7 @@ export interface AppConfig {
     url: string | undefined;
     ssl: "disable" | "require" | "no-verify";
     poolMax: number;
+    acquireTimeoutMs: number;
     autoMigrate: boolean;
     allowMemoryStore: boolean;
   };
@@ -495,6 +497,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       url: e.DATABASE_URL,
       ssl: e.DATABASE_SSL ?? (e.NODE_ENV === "production" ? "require" : "disable"),
       poolMax: e.DATABASE_POOL_MAX,
+      acquireTimeoutMs: e.DATABASE_POOL_ACQUIRE_TIMEOUT_MS,
       autoMigrate: e.DATABASE_AUTO_MIGRATE ? e.DATABASE_AUTO_MIGRATE === "true" : e.NODE_ENV !== "production",
       allowMemoryStore: e.ALLOW_MEMORY_STORE === "true",
     },

@@ -61,6 +61,7 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `DATABASE_URL` | — | PostgreSQL connection string. Empty = in-memory store (development/tests only; **production refuses to start without it**). Keep it out of git; it usually contains a password. |
 | `DATABASE_SSL` | `require` in production, else `disable` | `disable`, `require` (verify certificate) or `no-verify`. `disable` or `no-verify` in production log a start-up warning. |
 | `DATABASE_POOL_MAX` | `10` | Connection pool size. |
+| `DATABASE_POOL_ACQUIRE_TIMEOUT_MS` | `5000` | How long a request may wait for a pooled connection (or for an unreachable database) before it is refused as busy (503, retryable). 250–60000. |
 | `DATABASE_AUTO_MIGRATE` | `true` outside production, `false` in production | Apply pending migrations at start-up. When off, start-up fails if the schema is not current; run `pnpm --filter @dash-ai/api migrate`. |
 | `DATA_ENCRYPTION_KEY` | — | **Required with `DATABASE_URL`.** Base64 (or base64url) of 32 random bytes (`openssl rand -base64 32`). Encrypts conversation titles, message content and document text at rest. Start-up refuses malformed or obviously patterned keys, and a key that does not match data stored under its key id. Back it up separately: losing it makes stored conversations and document text unreadable. |
 | `DATA_ENCRYPTION_KEY_ID` | `k1` | Label stored with each ciphertext; change it when you rotate the key. |

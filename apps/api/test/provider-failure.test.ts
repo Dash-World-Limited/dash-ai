@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { FAKE_TRIGGERS } from "../src/providers/fake.js";
-import type { AppContext } from "../src/routes/context.js";
+import type { RouteContext } from "../src/routes/context.js";
 import { chatBody, makeApp, register, sse, testId } from "./helpers.js";
 
 /**
@@ -43,7 +43,7 @@ async function ask(app: FastifyInstance, auth: { authorization: string }, conten
 
 const final = (events: ReturnType<typeof sse>) => events.find((e) => e.event === "message.end" || e.event === "message.error");
 
-function expectClean(context: AppContext, events: ReturnType<typeof sse>) {
+function expectClean(context: RouteContext, events: ReturnType<typeof sse>) {
   expect(events.at(-1)?.event).toBe("stream.end");
   expect(context.streams.size).toBe(0);
   expect(JSON.stringify(events.filter((e) => e.event !== "message.delta" && e.event !== "conversation.title"))).not.toMatch(PROVIDER_NAMES);

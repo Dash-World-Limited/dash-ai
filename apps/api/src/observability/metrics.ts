@@ -163,12 +163,16 @@ export class Metrics {
   readonly streamStops = new Counter("dash_stream_stops_total", "Chat streams stopped from outside the stream, by source (cancel, remote_cancel, account_deleted, shutdown).", ["source"]);
   readonly streamControlErrors = new Counter("dash_stream_control_errors_total", "Shared stream state (Redis) operations that failed, by operation.", ["op"]);
   readonly activeStreams = new Gauge("dash_active_streams", "Chat streams running on this instance.", []);
-  readonly busyRejections = new Counter("dash_busy_rejections_total", "Requests refused as temporarily busy, by reason (draining, stream_control, extraction_saturated).", ["reason"]);
+  readonly busyRejections = new Counter("dash_busy_rejections_total", "Requests refused as temporarily busy, by reason (draining, stream_control, extraction_saturated, export, database).", ["reason"]);
+  readonly databaseErrors = new Counter("dash_database_errors_total", "Requests failed because the database was unavailable or overloaded, by kind (pool_timeout, connection, statement_timeout).", ["kind"]);
   readonly draining = new Gauge("dash_draining", "1 while this instance is shutting down (not ready, finishing work in progress).", []);
   readonly shutdownDrains = new Counter("dash_shutdown_drains_total", "Shutdown drains by outcome (drained = all work finished in the window, deadline = remaining work was stopped).", ["outcome"]);
   readonly extractionActive = new Gauge("dash_document_extraction_active", "Document extraction processes running on this instance.", []);
   readonly extractionWaiting = new Gauge("dash_document_extraction_waiting", "Uploads waiting for an extraction process on this instance.", []);
   readonly extractionRejections = new Counter("dash_document_extraction_rejections_total", "Uploads refused as busy by the extraction gate (saturated, account, wait_timeout, closed).", ["reason"]);
+  readonly databasePool = new Gauge("dash_database_pool_connections", "This instance's PostgreSQL pool when /metrics was read: total, idle, waiting (queries queued for a connection) and max.", ["state"]);
+  readonly eventLoopDelay = new Gauge("dash_event_loop_delay_seconds", "Event-loop delay on this instance since /metrics was last read (p50, p99, max).", ["stat"]);
+  readonly residentMemory = new Gauge("dash_process_resident_memory_bytes", "Resident memory of this API process when /metrics was read.", []);
   readonly databaseUp = new Gauge("dash_database_up", "1 when the last database health check succeeded, else 0.", ["store"]);
   readonly rateLimitBackendUp = new Gauge("dash_rate_limit_backend_up", "1 when the shared rate-limit backend answered its last health check, else 0.", ["backend"]);
 

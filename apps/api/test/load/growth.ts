@@ -1,7 +1,7 @@
 /**
  * Growth-sensitive endpoints on a realistically enlarged account (real PostgreSQL, one API in process).
- * Seeds one account at each size, then times every account-wide read and records its response size
- * and the heap it needed.
+ * Seeds one account at each size, then times every account-wide read over real HTTP and records its
+ * response size and the peak heap growth while it ran (sampled every 5 ms).
  *
  *   TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/dash_test npx tsx test/load/growth.ts [sizes...]
  *
@@ -31,7 +31,16 @@ const pg = await createTestPgStore();
 const store = pg.store;
 const config = testConfig({ PROVIDER_DETAILS: "hidden", RATE_LIMIT_API_PER_MINUTE: "100000", RATE_LIMIT_AUTH_PER_MINUTE: "1000", DOCUMENTS_MAX_PER_ACCOUNT: "200" });
 const { app, context } = await buildApp({ config, store });
-await app.ready();
+await app.listen({ port: 0, host: "127.0.0.1" });
+const base = `http://127.0.0.1:${(app.server.address() as { port: number }).port}`;
+
+/** Real HTTP: the body is counted and dropped as it arrives, so the heap measured is the server's. */
+async function fetchCounting(url: string, headers: Record<string, string>): Promise<{ status: number; bytes: number }> {
+  const res = await fetch(`${base}${url}`, { headers });
+  let bytes = 0;
+  for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) bytes += chunk.length;
+  return { status: res.status, bytes };
+}
 
 const report: Record<string, unknown>[] = [];
 try {
@@ -69,7 +78,9 @@ try {
     }
     const seedMs = Date.now() - seedStarted;
 
-    const endpoints = ["/v1/conversations", "/v1/documents", "/v1/usage", "/v1/notifications", "/v1/automations", "/v1/sync/conversations", "/v1/me/export"];
+    const all = ["/v1/conversations", "/v1/documents", "/v1/usage", "/v1/notifications", "/v1/automations", "/v1/sync/conversations", "/v1/me/export"];
+    // GROWTH_ENDPOINTS=/v1/me/export limits the run (e.g. with --max-old-space-size to prove a bound).
+    const endpoints = process.env.GROWTH_ENDPOINTS ? process.env.GROWTH_ENDPOINTS.split(",") : all;
     const results: Record<string, unknown> = {};
     for (const url of endpoints) {
       const times: number[] = [];
@@ -86,14 +97,17 @@ try {
           counted.n++;
           return original(...args);
         }) as typeof store.pool.query;
+        let peak = heapBefore;
+        const sampler = setInterval(() => (peak = Math.max(peak, process.memoryUsage().heapUsed)), 5);
         const started = performance.now();
-        const res = await app.inject({ method: "GET", url, headers: account.auth });
+        const res = await fetchCounting(url, account.auth);
         times.push(performance.now() - started);
+        clearInterval(sampler);
         store.pool.query = original as typeof store.pool.query;
         queries = counted.n;
-        status = res.statusCode;
-        bytes = res.rawPayload.length;
-        heapMb = Math.max(heapMb, (process.memoryUsage().heapUsed - heapBefore) / 1048576);
+        status = res.status;
+        bytes = res.bytes;
+        heapMb = Math.max(heapMb, (peak - heapBefore) / 1048576);
       }
       times.sort((a, b) => a - b);
       results[url] = { status, medianMs: Math.round(times[1]!), maxMs: Math.round(times[2]!), responseKb: Math.round(bytes / 1024), heapDeltaMb: Math.round(heapMb), poolQueries: queries };

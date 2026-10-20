@@ -462,6 +462,8 @@ export interface ScheduleRunInput {
 export interface Store {
   /** True when the store can serve requests (PostgreSQL: a trivial query succeeds). */
   ping(): Promise<boolean>;
+  /** Connection pool occupancy, when the store has a pool (PostgreSQL). Read for /metrics only. */
+  poolStats?(): { total: number; idle: number; waiting: number; max: number };
   createUser(user: UserRecord): Promise<boolean>;
   findUserByEmail(email: string): Promise<UserRecord | undefined>;
   findUserById(id: string): Promise<UserRecord | undefined>;

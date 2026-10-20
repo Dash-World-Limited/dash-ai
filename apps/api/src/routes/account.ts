@@ -1,4 +1,5 @@
 import { AUTOMATION_LIMITS, type DataExportResponse, type MeResponse, type UsageSummaryResponse } from "@dash-ai/contracts";
+import { Readable } from "node:stream";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { currentUser } from "../auth/requireAuth.js";
 import { toRun } from "../automations/service.js";
@@ -25,47 +26,59 @@ export function accountRoutes(app: FastifyInstance, ctx: RouteContext): void {
     reply.code(204);
   });
 
-  /** Data portability: everything the server stores for this user. */
-  // An export holds the whole account in memory (measured: 1,000 conversations / 20,000 messages ≈
-  // 35 MB of JSON and +57 MB of heap), so only a few run at once per instance; more are refused as busy.
+  /**
+   * Data portability: everything the server stores for this user, as one JSON document. It is
+   * streamed: conversations are read 200 at a time and written out as they are read, so an export's
+   * memory no longer grows with the account (measured before: 5,000 conversations / 100,000 messages
+   * ≈ 174 MB of JSON held at once, +226 MB of heap). Only a few run at once per instance; more are
+   * refused as busy. A failure part-way cuts the response short, so the client can never mistake a
+   * partial export for a complete one (the JSON does not parse).
+   */
   let exporting = 0;
   const EXPORTS_AT_ONCE = 2;
   const EXPORT_BATCH = 200;
-
-  app.get("/v1/me/export", { preHandler: [ctx.requireAuth, exportLimit] }, async (request: FastifyRequest): Promise<DataExportResponse> => {
+  app.get("/v1/me/export", { preHandler: [ctx.requireAuth, exportLimit] }, async (request: FastifyRequest, reply: FastifyReply) => {
     if (exporting >= EXPORTS_AT_ONCE) {
       ctx.metrics.busyRejections.inc({ reason: "export" });
       throw busyError();
     }
     exporting += 1;
-    try {
-      return await exportAccount(currentUser(request));
-    } finally {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
       exporting -= 1;
-    }
+    };
+    reply.raw.once("close", finish);
+    const user = currentUser(request);
+    const body = Readable.from(exportAccount(user), { objectMode: false });
+    body.once("error", (err) => {
+      request.log.error({ err }, "export failed part-way");
+      finish();
+    });
+    return reply.type("application/json; charset=utf-8").send(body);
   });
 
-  async function exportAccount(user: ReturnType<typeof currentUser>): Promise<DataExportResponse> {
+  /** The export's JSON text, piece by piece (same document as DataExportResponse). */
+  async function* exportAccount(user: ReturnType<typeof currentUser>): AsyncGenerator<string> {
     const view = viewFor(ctx.config);
+    const head: Pick<DataExportResponse, "exportedAt" | "user"> = { exportedAt: ctx.now().toISOString(), user: toUser(user) };
+    yield `${JSON.stringify(head).slice(0, -1)},"conversations":[`;
     const conversations = await ctx.store.listConversations(user.id);
-    // Messages and tool activity are read 200 conversations per query (was two queries per conversation).
-    const details: DataExportResponse["conversations"] = [];
     for (let i = 0; i < conversations.length; i += EXPORT_BATCH) {
       const batch = conversations.slice(i, i + EXPORT_BATCH);
       const ids = batch.map((c) => c.id);
       const [messages, tools] = await Promise.all([ctx.store.listMessagesFor(user.id, ids), ctx.store.listToolInvocationsFor(user.id, ids)]);
-      for (const c of batch) {
-        details.push({
+      const parts = batch.map((c) =>
+        JSON.stringify({
           conversation: toConversation(c),
           messages: (messages.get(c.id) ?? []).map((m) => toMessage(m, view)),
           toolActivity: (tools.get(c.id) ?? []).map(toMessageToolActivity),
-        });
-      }
+        } satisfies DataExportResponse["conversations"][number]),
+      );
+      yield `${i === 0 ? "" : ","}${parts.join(",")}`;
     }
-    return {
-      exportedAt: ctx.now().toISOString(),
-      user: toUser(user),
-      conversations: details,
+    const tail: Omit<DataExportResponse, "exportedAt" | "user" | "conversations"> = {
       documents: (await ctx.store.listDocuments(user.id)).map(toDocument),
       usage: (await ctx.store.listUsage(user.id)).map((u) => toUsage(u, view)),
       plugins: (await ctx.store.getPluginSettings(user.id)).map(toPluginSetting),
@@ -77,6 +90,7 @@ export function accountRoutes(app: FastifyInstance, ctx: RouteContext): void {
         })),
       ),
     };
+    yield `],${JSON.stringify(tail).slice(1)}`;
   }
 
   app.get("/v1/usage", auth, async (request: FastifyRequest): Promise<UsageSummaryResponse> => {

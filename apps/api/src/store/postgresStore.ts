@@ -49,6 +49,8 @@ export interface PostgresOptions {
   cipher: DataCipher;
   ssl?: "disable" | "require" | "no-verify";
   poolMax?: number;
+  /** How long a query may wait for a pooled connection before it fails (default 5 s). */
+  acquireTimeoutMs?: number;
   /** Apply pending migrations on connect (otherwise the schema must already be current). */
   autoMigrate?: boolean;
   /** Isolated schema, used by tests. Must be a plain identifier. */
@@ -271,7 +273,9 @@ export class PostgresStore implements Store {
     const pool = new pg.Pool({
       connectionString: options.connectionString,
       max: options.poolMax ?? 10,
-      connectionTimeoutMillis: 10_000,
+      // Bounded wait for a connection (also bounds connecting to an unreachable server): an exhausted
+      // pool or a database that went away answers "busy" in this time instead of queueing for ever.
+      connectionTimeoutMillis: options.acquireTimeoutMs ?? 5_000,
       idleTimeoutMillis: 30_000,
       statement_timeout: 30_000,
       ...(ssl ? { ssl } : {}),
@@ -778,6 +782,10 @@ export class PostgresStore implements Store {
   }
 
   // ---- users and sessions ----------------------------------------------------------------------
+
+  poolStats(): { total: number; idle: number; waiting: number; max: number } {
+    return { total: this.pool.totalCount, idle: this.pool.idleCount, waiting: this.pool.waitingCount, max: this.pool.options.max ?? 10 };
+  }
 
   async ping(): Promise<boolean> {
     try {
