@@ -59,6 +59,9 @@ export function pushTransportsFor(config: AppConfig): PushTransport[] {
   }
 }
 
+/** Trusts the nearest `hops` addresses (the load balancers), never what the client wrote before them. */
+const trustHops = (hops: number) => (_address: string, hop: number): boolean => hop < hops;
+
 export interface DashApp {
   app: FastifyInstance;
   context: RouteContext;
@@ -96,7 +99,8 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
 
   const app = Fastify({
     logger: loggerOptions(config.logLevel, deps.logStream),
-    trustProxy: config.trustProxy,
+    // A proxy count trusts exactly that many hops from the API (how proxy-addr reads a number).
+    trustProxy: typeof config.trustProxy === "number" ? trustHops(config.trustProxy) : config.trustProxy,
     bodyLimit: 256 * 1024,
     requestTimeout: 0, // chat streams are long-lived; provider timeouts are enforced per stream
     return503OnClosing: true,

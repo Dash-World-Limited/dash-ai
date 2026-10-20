@@ -143,7 +143,9 @@ describe("Claude thinking models: tool-use turns are replayed with their thinkin
     const events = await chat(app, auth, { modelChoice: "claude" });
     expect(claude.requests).toHaveLength(2);
     expect(byEvent(events, "tool.result")).toHaveLength(1); // only the round where tool use was allowed
-    expect(byEvent(events, "message.end")).toHaveLength(1);
+    // It never wrote an answer: that ends as a retryable failure, not as an empty "complete" reply.
+    expect(byEvent(events, "message.end")).toHaveLength(0);
+    expect(byEvent(events, "message.error").map((e) => [e.data.error.code, e.data.error.retryable])).toEqual([["provider_error", true]]);
   });
 
   it("counts prompt-cache reads and writes as input tokens", async () => {

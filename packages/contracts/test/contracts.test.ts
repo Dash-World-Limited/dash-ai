@@ -75,6 +75,14 @@ describe("JSON fixtures match the schemas", () => {
     expect(result.success, JSON.stringify(result.error?.issues)).toBe(true);
   });
 
+  it("message attachments are listed for reopened chats and optional for older servers", () => {
+    const detail = ConversationDetailResponse.parse(json("conversation-detail.json"));
+    expect(detail.messages[0]!.attachmentIds).toEqual(["d2222222-2222-4222-8222-222222222222"]);
+    const older = json("conversation-detail.json") as { messages: Record<string, unknown>[] };
+    const stripped = { ...older, messages: older.messages.map(({ attachmentIds: _omit, ...m }) => m) };
+    expect(ConversationDetailResponse.parse(stripped).messages.map((m) => m.attachmentIds)).toEqual([[], []]);
+  });
+
   it("tool activity in history is optional for older servers and refers only to listed messages in the fixtures", () => {
     const { toolActivity: _omit, ...older } = json("conversation-detail.json") as Record<string, unknown>;
     expect(ConversationDetailResponse.parse(older).toolActivity).toEqual([]);

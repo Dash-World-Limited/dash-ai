@@ -128,7 +128,7 @@ describe("config", () => {
         ...TEST_COST_CONTROLS,
       });
       expect(configWarnings(filled)).toEqual([]);
-      expect(filled).toMatchObject({ nodeEnv: "production", providerMode: "live", trustProxy: true, database: { ssl: "require", autoMigrate: false, allowMemoryStore: false }, rateLimits: { backend: "redis" } });
+      expect(filled).toMatchObject({ nodeEnv: "production", providerMode: "live", trustProxy: 1, database: { ssl: "require", autoMigrate: false, allowMemoryStore: false }, rateLimits: { backend: "redis" } });
     });
   });
 
@@ -138,6 +138,9 @@ describe("config", () => {
       configWarnings(loadConfig({ NODE_ENV: "production", DATABASE_URL: "postgres://placeholder", ...shared, ...env })).join(" ");
     expect(prod({})).toBe("");
     expect(prod({ RATE_LIMIT_BACKEND: "memory" })).toMatch(/per instance/);
+    expect(prod({ TRUST_PROXY: "true" })).toMatch(/pick its own IP/);
+    expect(prod({ TRUST_PROXY: "1" })).toBe("");
+    expect(() => loadConfig({ TRUST_PROXY: "yes" })).toThrow(/TRUST_PROXY/);
     expect(prod({ REDIS_URL: "redis://placeholder" })).toMatch(/not encrypted in transit/);
     expect(() => loadConfig({ RATE_LIMIT_BACKEND: "redis" })).toThrow(/REDIS_URL is required/);
     expect(prod({ DATABASE_SSL: "disable" })).toMatch(/not encrypted in transit/);

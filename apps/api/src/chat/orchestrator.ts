@@ -440,6 +440,8 @@ async function runTarget(
     const offered = prepared.offered;
     const system = buildSystemPrompt(prepared.request.mode, adapter, { toolsOffered: offered.size > 0 });
     let finishReason: "stop" | "length" | "refusal" = "stop";
+    /** The answer ended early at its spend reservation (it may legitimately have no text). */
+    let reservationStop = false;
     let servedModel: string | null | undefined;
     // A paid provider admitted on its worst case is held to it: no request of this answer may send
     // more than its round's input budget (null: nothing to enforce).
@@ -465,6 +467,7 @@ async function runTarget(
           if (sending > budgets[budgets.length - 1]!) {
             ctx.log.warn({ provider: adapter.id, round, sending, budget }, "answer stopped at its spend reservation");
             finishReason = "length";
+            reservationStop = true;
             break;
           }
           ctx.log.info({ provider: adapter.id, round, sending, budget }, "final answer early: tool results reached the spend reservation");
@@ -580,6 +583,7 @@ async function runTarget(
       }
       if (spendStop) {
         finishReason = "length";
+        reservationStop = true;
         break;
       }
       finishReason = roundFinish;
@@ -596,6 +600,11 @@ async function runTarget(
         { role: "assistant", content: roundText, toolCalls: calls, ...(continuation !== undefined ? { continuation } : {}) },
         { role: "tool", results },
       );
+    }
+    // An answer with no text is a failure, never a complete reply (as for automations, generate.ts).
+    // A refusal keeps its own status; an answer stopped at its spend reservation ends as "length".
+    if (content.trim() === "" && finishReason !== "refusal" && !reservationStop) {
+      throw new ProviderError("provider_error", `${adapter.displayName} returned an empty answer.`, true);
     }
     if (servedModel && servedModel !== adapter.model) {
       ctx.log.info({ provider: adapter.id, configuredModel: adapter.model, servedModel }, "provider served a different model id");

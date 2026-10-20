@@ -56,6 +56,18 @@ export class AppModel {
     this.composer.set((c) => ({ ...c, mode: s.defaultMode }));
     // Signed in according to settings but the token is gone (closed tab without "keep me signed in").
     if (!s.demoMode && s.account && !tokens.get()) this.settings.set((p) => ({ ...p, account: null, demoMode: true, started: false }));
+    this.sessionToken = tokens.get();
+  }
+
+  /** The token this tab signed in with. Another tab signing in or out changes the shared one. */
+  private sessionToken: string | null;
+
+  /**
+   * Called when another tab changes shared storage. Returns true when this tab must reload: its
+   * requests would otherwise carry another account's session (or none) while still showing this one.
+   */
+  sessionChangedElsewhere(): boolean {
+    return this.tokens.get() !== this.sessionToken;
   }
 
   get live(): boolean {
@@ -140,12 +152,14 @@ export class AppModel {
 
   signedIn(token: string, user: Account, remember: boolean): void {
     this.tokens.set(token, remember);
+    this.sessionToken = token;
     this.settings.set((s) => ({ ...s, account: user, demoMode: false, started: true }));
     this.switched();
   }
 
   startDemo(): void {
     this.tokens.set(null);
+    this.sessionToken = null;
     this.settings.set((s) => ({ ...s, account: null, demoMode: true, started: true }));
     this.switched();
   }
@@ -161,8 +175,16 @@ export class AppModel {
     this.clearSession();
   }
 
+  /** The account was deleted on the server: its session is gone too, so nothing is sent; local data leaves. */
+  accountDeleted(): void {
+    this.prompts.clear();
+    this.clearSession();
+    this.notify("Your account and its data were deleted.");
+  }
+
   private clearSession(): void {
     this.tokens.set(null);
+    this.sessionToken = null;
     this.settings.set((s) => ({ ...s, account: null, demoMode: true, started: false }));
     this.switched();
     navigate("/sign-in", true);

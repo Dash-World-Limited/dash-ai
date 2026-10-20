@@ -86,7 +86,7 @@ export function AccountScreen() {
     try {
       if (kind === "delete") {
         await app.api.deleteAccount();
-        await app.signOut(false).catch(() => undefined);
+        app.accountDeleted();
       } else {
         await app.signOut(kind === "everywhere");
       }

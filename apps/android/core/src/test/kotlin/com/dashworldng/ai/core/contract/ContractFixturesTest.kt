@@ -72,6 +72,8 @@ class ContractFixturesTest {
             assertTrue(it.messages.all { m -> m.origin == null && m.model == null })
             assertEquals(listOf("text_stats"), it.toolActivity.map { a -> a.tool })
             assertEquals(it.messages.last().id, it.toolActivity.single().messageId)
+            // A reopened user message keeps the documents it was sent with.
+            assertEquals(listOf("d2222222-2222-4222-8222-222222222222"), it.messages.first().attachmentIds)
         }
         strict.decodeFromString(DocumentResponseDto.serializer(), Fixtures.text("document-response.json"))
         strict.decodeFromString(ErrorResponseDto.serializer(), Fixtures.text("error-response.json")).also {

@@ -244,3 +244,41 @@ describe("when the shared backend fails", () => {
     expect(metrics.render()).not.toMatch(/someone|example\.com|127\.0\.0\.1/);
   });
 });
+
+describe("client IP behind a load balancer (TRUST_PROXY)", () => {
+  // The balancer appends the address it saw; anything before it was written by the client.
+  const spoofed = (n: number) => ({ "x-forwarded-for": `198.51.100.${n}, 203.0.113.7` });
+
+  async function signUpsAllowed(trustProxy: string): Promise<number> {
+    const { app } = await buildApp({
+      config: testConfig({ TRUST_PROXY: trustProxy, RATE_LIMIT_AUTH_PER_MINUTE: "3" }),
+      store: new MemoryStore(),
+      metrics: new Metrics(),
+    });
+    apps.push(app);
+    let allowed = 0;
+    for (let i = 0; i < 6; i++) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/auth/register",
+        remoteAddress: "10.0.0.2",
+        headers: spoofed(i),
+        payload: { email: `ip-${trustProxy.replace(/\W/g, "")}-${i}@example.com`, password: "correct horse battery", displayName: "IP" },
+      });
+      if (res.statusCode === 201) allowed += 1;
+    }
+    return allowed;
+  }
+
+  it("with one trusted hop, a client cannot pick its own IP to escape the per-IP sign-up limit", async () => {
+    expect(await signUpsAllowed("1")).toBe(3);
+  });
+
+  it("trusting the balancer's address works the same way", async () => {
+    expect(await signUpsAllowed("10.0.0.0/8")).toBe(3);
+  });
+
+  it("TRUST_PROXY=true believes every entry (why production warns about it)", async () => {
+    expect(await signUpsAllowed("true")).toBe(6);
+  });
+});

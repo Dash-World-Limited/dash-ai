@@ -245,6 +245,8 @@ private fun AppNavigation(services: AppServices, startDestination: String, setti
                 onBack = { if (!nav.popBackStack()) nav.goFresh(Routes.HOME) },
                 onOpenSettings = { nav.open(Routes.SETTINGS) },
                 onOpenTools = { nav.open(Routes.TOOLS) },
+                // Signing in again as the same account keeps this device's chats and unsynced changes.
+                onSignInAgain = { nav.open(Routes.AUTH) },
             )
         }
         composable(Routes.DOCUMENTS) {

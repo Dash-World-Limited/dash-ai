@@ -59,6 +59,7 @@ import com.dashworldng.ai.BuildConfig
 import com.dashworldng.ai.core.data.DataExport
 import com.dashworldng.ai.core.demo.DemoFailure
 import com.dashworldng.ai.core.model.AssistantMode
+import com.dashworldng.ai.core.presentation.ServerAddress
 import com.dashworldng.ai.core.presentation.SyncStatus
 import com.dashworldng.ai.core.presentation.SyncStatuses
 import com.dashworldng.ai.core.remote.DashApiClient
@@ -137,6 +138,11 @@ class SettingsViewModel(private val services: AppServices) : ViewModel() {
         val normalized = DashApiClient.normalizeBaseUrl(url)?.toString()
         if (normalized == null) {
             _extras.update { it.copy(notice = "That doesn't look like a valid server address.") }
+            return
+        }
+        val signedIn = services.tokens.get() != null
+        ServerAddress.changeRefusal(signedIn, settings.value.serverUrl, normalized)?.let { refusal ->
+            _extras.update { it.copy(notice = refusal) }
             return
         }
         update { it.copy(serverUrl = normalized) }

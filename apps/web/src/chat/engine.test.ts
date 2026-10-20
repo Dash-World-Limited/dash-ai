@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { ConversationDetailResponse, type ChatStreamRequest, type StreamEvent } from "@dash-ai/contracts";
+import { ChatStreamRequest, ConversationDetailResponse, LIMITS, type StreamEvent } from "@dash-ai/contracts";
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../api/client";
 import { DemoBackend } from "./backends";
@@ -50,6 +50,43 @@ describe("ChatEngine", () => {
     backend.get = async () => older;
     await engine.open(detail.conversation.id);
     expect(engine.value.messages.every((m) => m.tools.length === 0)).toBe(true);
+  });
+
+  it("regenerating a reopened question sends the documents it was asked with again", async () => {
+    const detail = ConversationDetailResponse.parse(fixture("conversation-detail.json"));
+    const backend = new Scripted(async function* (r) {
+      yield* answer("answer0002", `again with ${r.message.attachmentIds.length} document`);
+    });
+    backend.get = async () => detail;
+    const engine = new ChatEngine(backend);
+    await engine.open(detail.conversation.id);
+    expect(engine.value.messages[0]!.attachments.map((a) => a.id)).toEqual(["d2222222-2222-4222-8222-222222222222"]);
+    engine.regenerate(detail.messages[1]!.id);
+    await idle(engine);
+    expect(backend.requests[0]!.message).toMatchObject({ id: detail.messages[0]!.id, attachmentIds: ["d2222222-2222-4222-8222-222222222222"] });
+  });
+
+  it("knows when regenerating an answer would remove the messages after it", async () => {
+    const detail = ConversationDetailResponse.parse(fixture("conversation-detail.json"));
+    const backend = new Scripted(async function* () {});
+    backend.get = async () => ({ ...detail, messages: [...detail.messages, { ...detail.messages[0]!, id: "later0001" }] });
+    const engine = new ChatEngine(backend);
+    await engine.open(detail.conversation.id);
+    expect(engine.regenerateRemovesLater(detail.messages[1]!.id)).toBe(true);
+    backend.get = async () => detail;
+    await engine.open(detail.conversation.id);
+    expect(engine.regenerateRemovesLater(detail.messages[1]!.id)).toBe(false);
+  });
+
+  it("a very long earlier answer is cut to the per-message limit, so the chat can continue", () => {
+    const long = "x".repeat(LIMITS.maxMessageChars + 5_000);
+    const turns = buildHistory([
+      { id: "u1", role: "user", content: "Write a long draft", status: "complete", demo: false, createdAt: "", replyToId: null, attachments: [], errorMessage: null, retryable: false, tools: [], finishReason: null },
+      { id: "a1", role: "assistant", content: long, status: "complete", demo: false, createdAt: "", replyToId: "u1", attachments: [], errorMessage: null, retryable: false, tools: [], finishReason: "length" },
+    ] as ChatMsg[]);
+    expect(turns[1]!.content.length).toBe(LIMITS.maxMessageChars);
+    // Every turn is valid against the API's own request schema.
+    expect(ChatStreamRequest.safeParse({ conversationId: "c0000001", mode: "general", message: { id: "m0000001", content: "Next" }, history: turns }).success).toBe(true);
   });
 
   it("streams a labelled answer, records tool activity and applies the server title", async () => {

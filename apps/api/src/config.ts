@@ -109,8 +109,23 @@ const EnvSchema = z.object({
   REDIS_URL: optionalString,
   MAX_CONCURRENT_STREAMS_PER_USER: int(3, 1, 50),
   SESSION_TTL_DAYS: int(30, 1, 365),
-  /** Set to "true" only behind a trusted reverse proxy so client IPs come from X-Forwarded-For. */
-  TRUST_PROXY: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).default("false")),
+  /**
+   * Which X-Forwarded-For entries to believe for the client IP (per-IP rate limits depend on it):
+   * "false" (direct traffic), the number of proxies in front of the API (for example 1 behind one load
+   * balancer), or a comma-separated list of the proxies' addresses/CIDRs. "true" believes every entry,
+   * so a client can choose its own IP: development only.
+   */
+  TRUST_PROXY: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .trim()
+      .default("false")
+      .refine(
+        (v) => v === "true" || v === "false" || /^([1-9]|10)$/.test(v) || v.split(",").every((p) => /^[0-9a-fA-F.:]+(\/\d{1,3})?$/.test(p.trim())),
+        "TRUST_PROXY must be false, true, a proxy count from 1 to 10, or comma-separated proxy addresses/CIDRs",
+      ),
+  ),
 
   /** PostgreSQL connection string. Unset = in-memory store (development and tests only). */
   DATABASE_URL: optionalString,
@@ -225,7 +240,8 @@ export interface AppConfig {
   operatorToken: string | undefined;
   maxConcurrentStreamsPerUser: number;
   sessionTtlDays: number;
-  trustProxy: boolean;
+  /** Passed to Fastify: false, true (every hop; development only), a hop count, or proxy addresses. */
+  trustProxy: boolean | number | string;
   database: {
     url: string | undefined;
     ssl: "disable" | "require" | "no-verify";
@@ -419,7 +435,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     operatorToken: e.OPERATOR_TOKEN,
     maxConcurrentStreamsPerUser: e.MAX_CONCURRENT_STREAMS_PER_USER,
     sessionTtlDays: e.SESSION_TTL_DAYS,
-    trustProxy: e.TRUST_PROXY === "true",
+    trustProxy: e.TRUST_PROXY === "true" ? true : e.TRUST_PROXY === "false" ? false : /^\d+$/.test(e.TRUST_PROXY) ? Number(e.TRUST_PROXY) : e.TRUST_PROXY,
     database: {
       url: e.DATABASE_URL,
       ssl: e.DATABASE_SSL ?? (e.NODE_ENV === "production" ? "require" : "disable"),
@@ -502,6 +518,11 @@ export function configWarnings(config: AppConfig): string[] {
   }
   if (config.rateLimits.redisUrl?.startsWith("redis://") && config.rateLimits.backend === "redis") {
     warnings.push("REDIS_URL uses redis:// in production: traffic to Redis is not encrypted in transit. Use rediss:// unless Redis is on a private network.");
+  }
+  if (config.trustProxy === true) {
+    warnings.push(
+      "TRUST_PROXY=true in production: every X-Forwarded-For entry is believed, so a client can pick its own IP and get around per-IP rate limits. Set the number of proxies in front of the API (for example 1) or their addresses.",
+    );
   }
   if (config.push.transport === "fake") {
     warnings.push("PUSH_TRANSPORT=fake in production: push notifications are recorded but never delivered. Use fcm, or none.");

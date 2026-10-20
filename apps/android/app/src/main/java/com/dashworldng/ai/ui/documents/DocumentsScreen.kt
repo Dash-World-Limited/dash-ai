@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.dashworldng.ai.core.documents.DocumentRemoval
 import com.dashworldng.ai.core.documents.UploadSource
 import com.dashworldng.ai.core.model.AssistantMode
 import com.dashworldng.ai.core.model.DocumentItem
@@ -157,11 +158,16 @@ class DocumentsViewModel(private val services: AppServices) : ViewModel() {
 
     fun delete(doc: DocumentItem) {
         viewModelScope.launch {
-            if (!doc.isDemo && !services.settings.settings.value.demoMode) {
-                runCatching { services.documentGateway().delete(doc) }
+            val outcome = DocumentRemoval.remove(
+                document = doc,
+                demoMode = services.settings.settings.value.demoMode,
+                server = services::documentGateway,
+                deleteLocal = services.documents::delete,
+            )
+            notice.value = when (outcome) {
+                DocumentRemoval.Removed -> "Document removed"
+                is DocumentRemoval.Failed -> outcome.message
             }
-            services.documents.delete(doc.id)
-            notice.value = "Document removed"
         }
     }
 

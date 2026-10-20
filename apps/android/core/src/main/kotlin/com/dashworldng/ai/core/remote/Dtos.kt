@@ -114,6 +114,8 @@ data class ConversationMessageDto(
     val status: String,
     val compareGroupId: String?,
     val createdAt: String,
+    /** Server ids of the documents sent with a user message (absent from older servers). */
+    val attachmentIds: List<String> = emptyList(),
 )
 
 @Serializable

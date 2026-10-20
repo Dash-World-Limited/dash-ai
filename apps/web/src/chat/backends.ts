@@ -163,7 +163,7 @@ export class DemoBackend implements ChatBackend {
   save(conversation: Conversation, messages: ChatMsg[]): void {
     const stored: ConversationMessage[] = messages
       .filter((m) => m.status !== "streaming")
-      .map((m) => ({ id: m.id, role: m.role, content: m.content, origin: null, model: null, demo: true, status: m.status === "complete" ? "complete" : m.status === "stopped" ? "stopped" : "failed", compareGroupId: null, createdAt: m.createdAt }));
+      .map((m) => ({ id: m.id, role: m.role, content: m.content, origin: null, model: null, demo: true, status: m.status === "complete" ? "complete" : m.status === "stopped" ? "stopped" : "failed", compareGroupId: null, createdAt: m.createdAt, attachmentIds: [] }));
     const others = readDemo(this.storage).filter((d) => d.conversation.id !== conversation.id);
     this.write([{ conversation: { ...conversation, updatedAt: new Date().toISOString() }, messages: stored }, ...others].slice(0, 200));
   }
