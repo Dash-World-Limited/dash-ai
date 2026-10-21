@@ -42,6 +42,8 @@ import {
   type SpendScope,
   type SpendUsage,
   type UserRecord,
+  type ExportCursor,
+  type ExportItem,
 } from "./store.js";
 
 export interface PostgresOptions {
@@ -959,6 +961,19 @@ export class PostgresStore implements Store {
     return rows.map((r) => this.toConversation(r));
   }
 
+  async exportConversations(userId: string, after: ExportCursor | null, limit: number): Promise<Array<ExportItem<ConversationRecord>>> {
+    // Keyset on (updated_at DESC, id) over conversations_user_updated_idx. The timestamp goes back
+    // and forth as text, so the cursor keeps PostgreSQL's full precision.
+    const { rows } = await this.pool.query<ConversationRow & { updated_key: string }>(
+      `SELECT *, updated_at::text AS updated_key FROM conversations
+       WHERE user_id = $1 AND deleted_at IS NULL
+         AND ($2::timestamptz IS NULL OR updated_at < $2::timestamptz OR (updated_at = $2::timestamptz AND id > $3))
+       ORDER BY updated_at DESC, id LIMIT $4`,
+      [userId, after?.key ?? null, after?.conversationId ?? "", limit],
+    );
+    return rows.map((r) => ({ item: this.toConversation(r), cursor: { conversationId: r.id, key: r.updated_key } }));
+  }
+
   async deleteConversation(userId: string, id: string): Promise<boolean> {
     return this.tx(async (client) => {
       const res = await client.query(
@@ -1101,16 +1116,24 @@ export class PostgresStore implements Store {
     return rows[0] ? Number(rows[0].sync_counter) : 0;
   }
 
-  async listMessagesFor(userId: string, conversationIds: string[]): Promise<Map<string, MessageRecord[]>> {
-    const out = new Map<string, MessageRecord[]>(conversationIds.map((id) => [id, []]));
-    if (conversationIds.length === 0) return out;
-    const { rows } = await this.pool.query<MessageRow>(
-      `SELECT m.* FROM messages m JOIN conversations c ON c.id = m.conversation_id
-       WHERE m.conversation_id = ANY($1) AND c.user_id = $2 AND c.deleted_at IS NULL ORDER BY m.conversation_id, m.position`,
-      [conversationIds, userId],
+  async exportMessages(userId: string, conversationIds: string[], after: ExportCursor | null, limit: number): Promise<Array<ExportItem<MessageRecord>>> {
+    if (conversationIds.length === 0) return [];
+    // Keyset on (conversation_id, position). Each conversation is read through
+    // messages_conversation_position_idx in order and stops at `limit`, so one page reads at most
+    // `limit` rows per conversation however long the conversations are (a plain ANY(...) ORDER BY
+    // reads and sorts every message of the page's conversations on every page).
+    const { rows } = await this.pool.query<MessageRow & { position: string }>(
+      `SELECT m.* FROM unnest($1::text[]) AS k(cid)
+       JOIN conversations c ON c.id = k.cid AND c.user_id = $2 AND c.deleted_at IS NULL
+       CROSS JOIN LATERAL (
+         SELECT * FROM messages m
+         WHERE m.conversation_id = k.cid AND ($3::text IS NULL OR (m.conversation_id, m.position) > ($3::text, $4::bigint))
+         ORDER BY m.position LIMIT $5) m
+       WHERE $3::text IS NULL OR k.cid >= $3::text
+       ORDER BY m.conversation_id, m.position LIMIT $5`,
+      [conversationIds, userId, after?.conversationId ?? null, after?.key ?? "0", limit],
     );
-    for (const r of rows) out.get(r.conversation_id)?.push(this.toMessage(r));
-    return out;
+    return rows.map((r) => ({ item: this.toMessage(r), cursor: { conversationId: r.conversation_id, key: String(r.position) } }));
   }
 
   async listMessages(conversationId: string): Promise<MessageRecord[]> {
@@ -1359,11 +1382,23 @@ export class PostgresStore implements Store {
     return rows.map(toToolInvocation);
   }
 
-  async listToolInvocationsFor(userId: string, conversationIds: string[]): Promise<Map<string, ToolInvocationRow[]>> {
-    const out = new Map<string, ToolInvocationRow[]>(conversationIds.map((id) => [id, []]));
-    if (conversationIds.length === 0) return out;
-    for (const t of await this.readTools(this.pool, userId, conversationIds)) out.get(t.conversationId)?.push(t);
-    return out;
+  async exportToolInvocations(userId: string, conversationIds: string[], after: ExportCursor | null, limit: number): Promise<Array<ExportItem<ToolInvocationRow>>> {
+    if (conversationIds.length === 0) return [];
+    // Same rows as readTools, keyset on (conversation_id, id), read per conversation through
+    // tool_invocations_conversation_idx like exportMessages.
+    const { rows } = await this.pool.query<ToolInvocationDbRow & { id: string }>(
+      `SELECT t.* FROM unnest($2::text[]) AS k(cid)
+       CROSS JOIN LATERAL (
+         SELECT * FROM tool_invocations t
+         WHERE t.conversation_id = k.cid AND t.user_id = $1
+           AND EXISTS (SELECT 1 FROM messages m WHERE m.id = t.message_id AND m.conversation_id = t.conversation_id)
+           AND ($3::text IS NULL OR (t.conversation_id, t.id) > ($3::text, $4::bigint))
+         ORDER BY t.id LIMIT $5) t
+       WHERE $3::text IS NULL OR k.cid >= $3::text
+       ORDER BY t.conversation_id, t.id LIMIT $5`,
+      [userId, conversationIds, after?.conversationId ?? null, after?.key ?? "0", limit],
+    );
+    return rows.map((r) => ({ item: toToolInvocation(r), cursor: { conversationId: r.conversation_id, key: String(r.id) } }));
   }
 
   async listConversationToolInvocations(userId: string, conversationId: string): Promise<ToolInvocationRow[]> {
@@ -1415,15 +1450,17 @@ export class PostgresStore implements Store {
   }
 
   async listUsage(userId: string): Promise<UsageRow[]> {
-    const { rows } = await this.pool.query<{
-      user_id: string; conversation_id: string; message_id: string; provider: string; model: string; demo: boolean;
-      input_tokens: string | null; output_tokens: string | null; estimated_cost_usd: number | null; created_at: Date;
-    }>("SELECT * FROM usage_records WHERE user_id = $1 ORDER BY id", [userId]);
-    return rows.map((r) => ({
-      userId: r.user_id, conversationId: r.conversation_id, messageId: r.message_id, provider: r.provider as ProviderId,
-      model: r.model, demo: r.demo, inputTokens: num(r.input_tokens), outputTokens: num(r.output_tokens),
-      estimatedCostUsd: r.estimated_cost_usd, createdAt: iso(r.created_at),
-    }));
+    const { rows } = await this.pool.query<UsageDbRow>("SELECT * FROM usage_records WHERE user_id = $1 ORDER BY id", [userId]);
+    return rows.map(toUsageRow);
+  }
+
+  async exportUsage(userId: string, after: ExportCursor | null, limit: number): Promise<Array<ExportItem<UsageRow>>> {
+    // Keyset on id over usage_user_idx (user_id, id).
+    const { rows } = await this.pool.query<UsageDbRow & { id: string }>(
+      "SELECT * FROM usage_records WHERE user_id = $1 AND ($2::bigint IS NULL OR id > $2::bigint) ORDER BY id LIMIT $3",
+      [userId, after?.key ?? null, limit],
+    );
+    return rows.map((r) => ({ item: toUsageRow(r), cursor: { key: String(r.id) } }));
   }
   async recordInferenceAttempt(a: InferenceAttemptRow): Promise<void> {
     await this.pool.query(
@@ -1673,6 +1710,17 @@ export class PostgresStore implements Store {
   }
 
 }
+
+interface UsageDbRow {
+  user_id: string; conversation_id: string; message_id: string; provider: string; model: string; demo: boolean;
+  input_tokens: string | null; output_tokens: string | null; estimated_cost_usd: number | null; created_at: Date;
+}
+
+const toUsageRow = (r: UsageDbRow): UsageRow => ({
+  userId: r.user_id, conversationId: r.conversation_id, messageId: r.message_id, provider: r.provider as ProviderId,
+  model: r.model, demo: r.demo, inputTokens: num(r.input_tokens), outputTokens: num(r.output_tokens),
+  estimatedCostUsd: r.estimated_cost_usd, createdAt: iso(r.created_at),
+});
 
 interface ToolInvocationDbRow {
   user_id: string; conversation_id: string; message_id: string; call_id: string; provider: string; plugin_id: string;

@@ -34,6 +34,8 @@ import {
   type Store,
   type UsageRow,
   type UserRecord,
+  type ExportCursor,
+  type ExportItem,
 } from "./store.js";
 import type { ProviderId } from "@dash-ai/contracts";
 import { newId } from "../security/crypto.js";
@@ -231,6 +233,12 @@ export class MemoryStore implements Store {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
+  async exportConversations(userId: string, after: ExportCursor | null, limit: number): Promise<Array<ExportItem<ConversationRecord>>> {
+    const all = (await this.listConversations(userId)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+    const from = after ? all.filter((c) => c.updatedAt < after.key || (c.updatedAt === after.key && c.id > after.conversationId!)) : all;
+    return from.slice(0, limit).map((c) => ({ item: c, cursor: { conversationId: c.id, key: c.updatedAt } }));
+  }
+
   async deleteConversation(userId: string, id: string): Promise<boolean> {
     const c = this.live(id);
     if (!c || c.record.userId !== userId) return false;
@@ -313,13 +321,9 @@ export class MemoryStore implements Store {
     return (this.messages.get(conversationId) ?? []).map((m) => ({ ...m, attachmentIds: [...m.attachmentIds] }));
   }
 
-  async listMessagesFor(userId: string, conversationIds: string[]): Promise<Map<string, MessageRecord[]>> {
-    const out = new Map<string, MessageRecord[]>();
-    for (const id of conversationIds) {
-      const c = this.live(id);
-      out.set(id, c && c.record.userId === userId ? this.cloneMessages(id) : []);
-    }
-    return out;
+  async exportMessages(userId: string, conversationIds: string[], after: ExportCursor | null, limit: number): Promise<Array<ExportItem<MessageRecord>>> {
+    const owned = conversationIds.filter((id) => this.live(id)?.record.userId === userId);
+    return pageByConversation(owned, (id) => this.cloneMessages(id), after, limit);
   }
 
   async listMessages(conversationId: string): Promise<MessageRecord[]> {
@@ -401,6 +405,14 @@ export class MemoryStore implements Store {
 
   async listUsage(userId: string): Promise<UsageRow[]> {
     return this.usage.filter((u) => u.userId === userId).map((u) => ({ ...u }));
+  }
+
+  async exportUsage(userId: string, after: ExportCursor | null, limit: number): Promise<Array<ExportItem<UsageRow>>> {
+    const out: Array<ExportItem<UsageRow>> = [];
+    for (let i = after ? Number(after.key) + 1 : 0; i < this.usage.length && out.length < limit; i++) {
+      if (this.usage[i]!.userId === userId) out.push({ item: { ...this.usage[i]! }, cursor: { key: String(i) } });
+    }
+    return out;
   }
 
   async recordInferenceAttempt(row: InferenceAttemptRow): Promise<void> {
@@ -585,8 +597,8 @@ export class MemoryStore implements Store {
     return this.toolInvocations.filter((t) => t.userId === userId).slice(-limit).reverse().map((t) => ({ ...t }));
   }
 
-  async listToolInvocationsFor(userId: string, conversationIds: string[]): Promise<Map<string, ToolInvocationRow[]>> {
-    return new Map(conversationIds.map((id) => [id, this.conversationTools(userId, id)]));
+  async exportToolInvocations(userId: string, conversationIds: string[], after: ExportCursor | null, limit: number): Promise<Array<ExportItem<ToolInvocationRow>>> {
+    return pageByConversation(conversationIds, (id) => this.conversationTools(userId, id), after, limit);
   }
 
   async listConversationToolInvocations(userId: string, conversationId: string): Promise<ToolInvocationRow[]> {
@@ -880,3 +892,17 @@ export class MemoryStore implements Store {
 }
 
 const round10 = (usd: number): number => Math.round(usd * 1e10) / 1e10;
+
+/** Rows of several conversations by conversation id, then in their own order, from after `after`. */
+function pageByConversation<T>(conversationIds: string[], rowsOf: (id: string) => T[], after: ExportCursor | null, limit: number): Array<ExportItem<T>> {
+  const out: Array<ExportItem<T>> = [];
+  for (const id of [...new Set(conversationIds)].sort()) {
+    if (after && id < after.conversationId!) continue;
+    const rows = rowsOf(id);
+    for (let i = after && id === after.conversationId ? Number(after.key) + 1 : 0; i < rows.length; i++) {
+      if (out.length === limit) return out;
+      out.push({ item: rows[i]!, cursor: { conversationId: id, key: String(i) } });
+    }
+  }
+  return out;
+}

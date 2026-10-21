@@ -4,6 +4,7 @@ import { z } from "zod";
 import { currentUser } from "../auth/requireAuth.js";
 import { extractText, sanitizeFileName, signatureMatches } from "../documents/inspect.js";
 import { GateBusy } from "../documents/gate.js";
+import { ExtractionAborted } from "../documents/isolate.js";
 import { AppError, busyError, parseOrThrow } from "../errors.js";
 import { newId } from "../security/crypto.js";
 import { summarizeDocument } from "../store/store.js";
@@ -16,9 +17,16 @@ const limitReached = (max: number) =>
 export function documentRoutes(app: FastifyInstance, ctx: RouteContext): void {
   /** A busy gate becomes a neutral, retryable 503 (counted by reason); anything else passes through. */
   const refuse = (err: unknown): unknown => {
+    if (err instanceof ExtractionAborted) return abandoned();
     if (!(err instanceof GateBusy)) return err;
     ctx.metrics.extractionRejections.inc({ reason: err.reason });
     ctx.metrics.busyRejections.inc({ reason: "extraction_saturated" });
+    return busyError();
+  };
+
+  /** The upload was abandoned (client gone, or shutdown): nothing is saved; a client still listening sees "busy". */
+  const abandoned = (): AppError => {
+    ctx.metrics.extractionRejections.inc({ reason: "aborted" });
     return busyError();
   };
 
@@ -45,7 +53,9 @@ export function documentRoutes(app: FastifyInstance, ctx: RouteContext): void {
         throw refuse(err);
       }
       // The client went away (while uploading, queued or being parsed), or shutdown's drain window
-      // ended: stop working for it (the extraction process is killed, the place released).
+      // ended: stop working for it (the extraction process is killed, the place released) and save
+      // nothing. A malformed file, a parser timeout or the memory limit is a verdict on the file and
+      // still saves an "unsupported" document; an abandoned upload is not.
       const gone = new AbortController();
       reply.raw.on("close", () => {
         if (!reply.raw.writableFinished) gone.abort();
@@ -69,8 +79,10 @@ export function documentRoutes(app: FastifyInstance, ctx: RouteContext): void {
           // Only PDF and DOCX need an extraction process; the rest is read in place.
           extraction = check.kind === "pdf" || check.kind === "docx" ? await ticket.run(extract, stop) : await extract();
         } catch (err) {
-          throw refuse(err);
+          throw stop.aborted ? abandoned() : refuse(err);
         }
+        // Abandoned while being read or parsed: no document is saved and no place under the ceiling used.
+        if (stop.aborted) throw abandoned();
         ctx.metrics.documentExtractionSeconds.observe({ kind: check.kind, status: extraction.status }, (Date.now() - started) / 1000);
         if (extraction.status === "unsupported") ctx.metrics.documentRejections.inc({ kind: check.kind, reason: extraction.reason ?? "unreadable" });
         const record = {

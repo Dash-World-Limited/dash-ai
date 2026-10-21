@@ -58,12 +58,23 @@ async function residentBytes(pid: number): Promise<number | undefined> {
 }
 
 /**
+ * The caller abandoned the extraction (the client disconnected, or shutdown stopped the request).
+ * Not a verdict on the file: the upload ends without a document being saved.
+ */
+export class ExtractionAborted extends Error {
+  constructor() {
+    super("extraction aborted");
+  }
+}
+
+/**
  * Parses a PDF or DOCX in a separate Node process with an empty environment, a heap cap, a
  * resident-memory watchdog, a wall-clock limit and a raised OOM score (the kernel kills it before
- * this server). Whatever happens inside, the server gets back a bounded, validated result.
+ * this server). Whatever happens inside, the server gets back a bounded, validated result. If
+ * `signal` aborts, the process is killed and the promise rejects with ExtractionAborted.
  */
 export async function extractIsolated(kind: "pdf" | "docx", buf: Buffer, timeoutMs: number, signal?: AbortSignal): Promise<Extraction> {
-  return new Promise<Extraction>((resolve) => {
+  return new Promise<Extraction>((resolve, reject) => {
       const child = spawn(process.execPath, childCommand(kind), {
         env: childEnvironment(),
         stdio: ["pipe", "pipe", "ignore"],
@@ -73,14 +84,14 @@ export async function extractIsolated(kind: "pdf" | "docx", buf: Buffer, timeout
       const maxOutput = LIMITS.maxExtractedChars * 8 + 64 * 1024;
       const out: Buffer[] = [];
       let outBytes = 0;
-      let verdict: Extraction | undefined;
-      const stop = (result: Extraction) => {
+      let verdict: Extraction | "aborted" | undefined;
+      const stop = (result: Extraction | "aborted") => {
         verdict ??= result;
         child.kill("SIGKILL");
       };
       const timer = setTimeout(() => stop(failure(TIMED_OUT, "timeout")), timeoutMs);
-      // The client went away: nobody will read the result.
-      const onAbort = () => stop(failure(CRASHED, "crashed"));
+      // The client went away or the server is stopping: nobody will read the result.
+      const onAbort = () => stop("aborted");
       if (signal?.aborted) onAbort();
       else signal?.addEventListener("abort", onAbort, { once: true });
       const watchdog = setInterval(() => {
@@ -101,6 +112,7 @@ export async function extractIsolated(kind: "pdf" | "docx", buf: Buffer, timeout
         clearTimeout(timer);
         clearInterval(watchdog);
         signal?.removeEventListener("abort", onAbort);
+        if (verdict === "aborted") return reject(new ExtractionAborted());
         if (verdict) return resolve(verdict);
         if (code !== 0) return resolve(failure(CRASHED, "crashed"));
         try {

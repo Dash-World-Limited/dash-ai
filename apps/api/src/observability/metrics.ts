@@ -169,7 +169,7 @@ export class Metrics {
   readonly shutdownDrains = new Counter("dash_shutdown_drains_total", "Shutdown drains by outcome (drained = all work finished in the window, deadline = remaining work was stopped).", ["outcome"]);
   readonly extractionActive = new Gauge("dash_document_extraction_active", "Document extraction processes running on this instance.", []);
   readonly extractionWaiting = new Gauge("dash_document_extraction_waiting", "Uploads waiting for an extraction process on this instance.", []);
-  readonly extractionRejections = new Counter("dash_document_extraction_rejections_total", "Uploads refused as busy by the extraction gate (saturated, account, wait_timeout, closed).", ["reason"]);
+  readonly extractionRejections = new Counter("dash_document_extraction_rejections_total", "Uploads refused as busy by the extraction gate (saturated, account, wait_timeout, closed), or abandoned before saving (aborted).", ["reason"]);
   readonly databasePool = new Gauge("dash_database_pool_connections", "This instance's PostgreSQL pool when /metrics was read: total, idle, waiting (queries queued for a connection) and max.", ["state"]);
   readonly eventLoopDelay = new Gauge("dash_event_loop_delay_seconds", "Event-loop delay on this instance since /metrics was last read (p50, p99, max).", ["stat"]);
   readonly residentMemory = new Gauge("dash_process_resident_memory_bytes", "Resident memory of this API process when /metrics was read.", []);

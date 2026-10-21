@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import { ExtractionGate, GateBusy } from "../src/documents/gate.js";
-import { activeExtractionProcesses } from "../src/documents/isolate.js";
+import { activeExtractionProcesses, ExtractionAborted, extractIsolated } from "../src/documents/isolate.js";
 import type { RouteContext } from "../src/routes/context.js";
 import { malformedPdf, slowPdf, smallPdf, upload } from "./cluster/documents.js";
 import { makeApp, register, USING_POSTGRES } from "./helpers.js";
@@ -101,6 +101,23 @@ describe("extraction gate", () => {
   });
 });
 
+describe("isolated extraction", () => {
+  it("an external abort kills the process and rejects as aborted (not an unreadable-file verdict); a timeout is still a verdict", async () => {
+    const controller = new AbortController();
+    const running = extractIsolated("pdf", slowPdf(512 * 1024), 20_000, controller.signal);
+    for (let i = 0; i < 40 && activeExtractionProcesses() === 0; i++) await sleep(25);
+    expect(activeExtractionProcesses()).toBe(1);
+    controller.abort();
+    await expect(running).rejects.toBeInstanceOf(ExtractionAborted);
+    expect(activeExtractionProcesses()).toBe(0);
+    const already = new AbortController();
+    already.abort();
+    await expect(extractIsolated("pdf", smallPdf("x"), 20_000, already.signal)).rejects.toBeInstanceOf(ExtractionAborted);
+    expect(await extractIsolated("pdf", slowPdf(512 * 1024), 300)).toMatchObject({ status: "unsupported", reason: "timeout" });
+    expect(activeExtractionProcesses()).toBe(0);
+  }, 30_000);
+});
+
 describe("uploads through the API under pressure", () => {
   const apps: FastifyInstance[] = [];
   afterEach(async () => {
@@ -174,8 +191,8 @@ describe("uploads through the API under pressure", () => {
     await idle(context);
   }, 30_000);
 
-  it("a client that disconnects while queued or while its file is parsed frees its place and its extraction process", async () => {
-    const { context, url } = await start({ DOCUMENT_EXTRACTION_CONCURRENCY: "1", DOCUMENT_EXTRACTION_QUEUE: "2", DOCUMENT_EXTRACTION_TIMEOUT_MS: "20000" });
+  it("a client that disconnects while queued or while its file is parsed frees its place and its extraction process, and saves nothing", async () => {
+    const { context, url } = await start({ DOCUMENT_EXTRACTION_CONCURRENCY: "1", DOCUMENT_EXTRACTION_QUEUE: "2", DOCUMENT_EXTRACTION_TIMEOUT_MS: "20000", DOCUMENTS_MAX_PER_ACCOUNT: "1" });
     const inject = { inject: (o: never) => fetchInject(url, o) } as never;
     const [a, b] = [await register(inject), await register(inject)];
     const file = slowPdf(512 * 1024);
@@ -191,9 +208,19 @@ describe("uploads through the API under pressure", () => {
     parsing.abort();
     await Promise.all([p1, p2]);
     await idle(context);
+    await sleep(200);
+    // Neither abandoned upload may leave a document behind or use up the account's ceiling (1 here).
+    expect(await context.store.listDocuments(a.user.id)).toEqual([]);
+    expect(await context.store.listDocuments(b.user.id)).toEqual([]);
+    const after = await upload(url, a.auth, "ok.pdf", "application/pdf", smallPdf("after the abort"));
+    expect(after.status).toBe(201);
+    expect((await context.store.listDocuments(a.user.id)).map((d) => d.name)).toEqual(["ok.pdf"]);
+    expect((await upload(url, b.auth, "ok.pdf", "application/pdf", smallPdf("after the abort"))).status).toBe(201);
+    expect(context.metrics.extractionRejections.get({ reason: "aborted" })).toBe(2);
+    await idle(context);
   }, 30_000);
 
-  it("shutdown refuses the queue and kills extraction processes; close() does not wait for the parser", async () => {
+  it("shutdown refuses the queue and kills extraction processes, saving nothing; close() does not wait for the parser", async () => {
     const { app, context, url } = await start({ DOCUMENT_EXTRACTION_CONCURRENCY: "1", DOCUMENT_EXTRACTION_QUEUE: "2", DOCUMENT_EXTRACTION_TIMEOUT_MS: "60000" });
     const inject = { inject: (o: never) => fetchInject(url, o) } as never;
     const [a, b] = [await register(inject), await register(inject)];
@@ -209,6 +236,12 @@ describe("uploads through the API under pressure", () => {
     await Promise.all([p1, p2]);
     expect(activeExtractionProcesses()).toBe(0);
     expect(context.extraction.state).toEqual({ active: 0, waiting: 0, held: 0 });
+    await sleep(200);
+    // The upload stopped by shutdown is not saved (as an "unreadable" document or otherwise).
+    if (!USING_POSTGRES) {
+      expect(await context.store.listDocuments(a.user.id)).toEqual([]);
+      expect(await context.store.listDocuments(b.user.id)).toEqual([]);
+    }
   }, 30_000);
 
   it("the per-account document ceiling holds, also for simultaneous uploads", async () => {

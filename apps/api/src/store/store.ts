@@ -80,6 +80,19 @@ export const summarizeDocument = (d: DocumentRecord): DocumentSummary => {
 
 export type { PluginSettingRecord, ToolInvocationRow };
 
+/**
+ * Keyset position for the export's paged reads: opaque to callers, who pass back the cursor of the
+ * last item of the previous page. `conversationId` is set for per-conversation rows.
+ */
+export interface ExportCursor {
+  conversationId?: string;
+  key: string;
+}
+export interface ExportItem<T> {
+  item: T;
+  cursor: ExportCursor;
+}
+
 export interface UsageRow {
   userId: string;
   conversationId: string;
@@ -486,6 +499,11 @@ export interface Store {
   saveConversation(conversation: ConversationRecord): Promise<void>;
   /** Live (not deleted) conversations, most recently updated first. */
   listConversations(userId: string): Promise<ConversationRecord[]>;
+  /**
+   * One page of listConversations for the streamed export (same order, at most `limit`). `after` is
+   * the cursor of the previous page's last item.
+   */
+  exportConversations(userId: string, after: ExportCursor | null, limit: number): Promise<Array<ExportItem<ConversationRecord>>>;
   /** Soft-deletes: removes the messages and leaves a tombstone for sync. */
   deleteConversation(userId: string, id: string): Promise<boolean>;
   /** Conversations (with messages) and tombstones whose seq is greater than afterSeq, oldest first. */
@@ -512,8 +530,11 @@ export interface Store {
   latestSyncSeq(userId: string): Promise<number>;
 
   listMessages(conversationId: string): Promise<MessageRecord[]>;
-  /** listMessages for several of this account's conversations in one read (export), by conversation id. */
-  listMessagesFor(userId: string, conversationIds: string[]): Promise<Map<string, MessageRecord[]>>;
+  /**
+   * One page of the messages of several of this account's live conversations for the streamed
+   * export, ordered by conversation id, then by position in the conversation (at most `limit`).
+   */
+  exportMessages(userId: string, conversationIds: string[], after: ExportCursor | null, limit: number): Promise<Array<ExportItem<MessageRecord>>>;
   /** Creates or replaces by id within the conversation. A no-op if the conversation was deleted. */
   saveMessage(message: MessageRecord): Promise<void>;
   /** Removes the message with this id and every later message in the conversation. */
@@ -531,6 +552,8 @@ export interface Store {
 
   recordUsage(row: UsageRow): Promise<void>;
   listUsage(userId: string): Promise<UsageRow[]>;
+  /** One page of listUsage (same order, at most `limit`) for the streamed export. */
+  exportUsage(userId: string, after: ExportCursor | null, limit: number): Promise<Array<ExportItem<UsageRow>>>;
   /** Per-provider totals over every usage row, and the newest `recent` rows (newest first), computed in the store. */
   usageSummary(userId: string, recent: number): Promise<{ totals: Array<{ provider: ProviderId; requests: number; inputTokens: number; outputTokens: number }>; recent: UsageRow[] }>;
 
@@ -591,8 +614,8 @@ export interface Store {
    * exist (a regenerated or truncated message takes its tool calls with it).
    */
   listConversationToolInvocations(userId: string, conversationId: string): Promise<ToolInvocationRow[]>;
-  /** listConversationToolInvocations for several conversations in one read (export), by conversation id. */
-  listToolInvocationsFor(userId: string, conversationIds: string[]): Promise<Map<string, ToolInvocationRow[]>>;
+  /** exportMessages for listConversationToolInvocations: by conversation id, then oldest first. */
+  exportToolInvocations(userId: string, conversationIds: string[], after: ExportCursor | null, limit: number): Promise<Array<ExportItem<ToolInvocationRow>>>;
 
   // ---- DASH Automates ----
   countAutomations(userId: string): Promise<number>;
