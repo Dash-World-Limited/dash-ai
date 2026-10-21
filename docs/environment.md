@@ -71,6 +71,11 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `TOOL_TIMEOUT_MS` | `10000` | Default per-tool-call timeout (a tool may set a shorter one; 120 s ceiling). |
 | `TOOL_MAX_ROUNDS` | `4` | Maximum model → tool → model rounds per answer; the last round keeps the same tools but switches tool use off (tool choice "none"). |
 | `TOOL_MAX_RESULT_CHARS` | `20000` | Tool output beyond this is truncated before it reaches the model. |
+| `ROUTER_POLICY` | — | Optional JSON merged over the DASH Intelligence Router's default policy (provider profiles, task weights, preferences, circuit breaker). Invalid JSON or values stop start-up. See [intelligence-router.md](intelligence-router.md). |
+| `AUTOMATIONS_ENABLED` | `true` | DASH Automates scheduler on this instance. `false` stops it and refuses new runs (automations are kept). See [automates.md](automates.md). |
+| `AUTOMATIONS_TICK_MS` | `15000` | How often each instance looks for due automations and queued runs. |
+| `AUTOMATIONS_CONCURRENCY` | `2` | Automation runs one instance executes at once (each run is leased on the database clock, so instances never run the same one twice). |
+| `AUTOMATIONS_MAX_PER_USER` | `25` | Automations one account may keep. |
 | `PUSH_TRANSPORT` | `none` | Automates push notifications: `none`, `fcm` or `fake` (recorded, never sent; production warns). See [push-notifications.md](push-notifications.md). |
 | `FCM_SERVICE_ACCOUNT` | — | **Secret.** Firebase service-account JSON (raw or base64). Required with `PUSH_TRANSPORT=fcm`. |
 | `PUSH_TICK_MS` | `5000` | How often each instance sends due pushes. |
@@ -96,7 +101,7 @@ invalid Region, or both an API key and `BEDROCK_AUTH=iam`; and, with a paid prov
 or `no-verify`, `LOG_LEVEL=debug`/`trace`, `PROVIDER_MODE=fake`, only one live provider
 (nothing to fail over to), `RATE_LIMIT_BACKEND=memory` (limits are per instance) and an unencrypted
 `redis://` `REDIS_URL`. A staging template with production-safe values is
-`deploy/staging/staging.env.example`; the procedure is [staging-runbook.md](staging-runbook.md). Set `NODE_ENV=production` in every
+`deploy/staging/staging.env.example` (with `deploy/staging/first-bringup.env.example` on top for a first bring-up without paid inference or push); the procedure is [staging-runbook.md](staging-runbook.md). Set `NODE_ENV=production` in every
 deployment: without it the development defaults apply (no database TLS by default, migrations at
 start-up, in-memory store allowed).
 

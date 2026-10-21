@@ -56,7 +56,7 @@ async function main(): Promise<void> {
   reportRateLimitError = (errorName) =>
     app.log.warn({ errorName }, "rate-limit backend unavailable; using per-instance limits for a few seconds");
   if (!sharedLimitsReady) {
-    app.log.warn("Redis is not reachable yet: rate limits are per instance until it is (it is retried automatically).");
+    app.log.warn("Redis is not reachable yet: rate limits are per instance and new chat answers are refused as busy until it is (it is retried automatically).");
   }
   app.log.info({ backend: rateLimitStore.kind }, "rate limiting");
   for (const warning of [...configWarnings(config), ...selection.warnings, ...context.providers.warnings]) app.log.warn(warning);

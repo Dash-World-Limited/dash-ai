@@ -130,6 +130,45 @@ describe("config", () => {
       expect(configWarnings(filled)).toEqual([]);
       expect(filled).toMatchObject({ nodeEnv: "production", providerMode: "live", trustProxy: 1, database: { ssl: "require", autoMigrate: false, allowMemoryStore: false }, rateLimits: { backend: "redis" } });
     });
+
+    describe("first bring-up overlay (deploy/staging/first-bringup.env.example)", () => {
+      const overlay = new Map(
+        readFileSync(new URL("../../../deploy/staging/first-bringup.env.example", import.meta.url), "utf8")
+          .split("\n")
+          .map((line) => /^([A-Z][A-Z0-9_]*)=(.*)$/.exec(line))
+          .filter((m): m is RegExpExecArray => m !== null)
+          .map((m) => [m[1]!, m[2]!] as const),
+      );
+      const infra = { DATABASE_URL: "postgres://placeholder", REDIS_URL: "rediss://placeholder" };
+
+      it("names only known variables and no secret slot", () => {
+        for (const key of overlay.keys()) {
+          expect(ENV_KEYS, key).toContain(key);
+          expect(secrets, key).not.toContain(key);
+        }
+      });
+
+      it("starts in production with no provider key or Firebase credential, demonstration adapters only", () => {
+        const config = loadConfig({ ...Object.fromEntries(template), ...Object.fromEntries(overlay), ...infra });
+        expect(config).toMatchObject({
+          nodeEnv: "production", providerMode: "fake", providerDetails: "hidden", trustProxy: 1,
+          ai: { paidProvidersEnabled: false, freePoolEnabled: false, bedrockEnabled: false },
+          push: { transport: "none", fcm: undefined },
+          database: { ssl: "require", autoMigrate: false, allowMemoryStore: false },
+          rateLimits: { backend: "redis" },
+        });
+        expect(configWarnings(config)).toEqual([expect.stringMatching(/^PROVIDER_MODE=fake in production/)]);
+        const registry = ProviderRegistry.fromConfig(config);
+        expect([...registry.configured()].every((p) => registry.get(p)!.demo)).toBe(true);
+      });
+
+      it("ignores provider keys copied in by mistake: nothing live is registered", () => {
+        const config = loadConfig({ ...Object.fromEntries(template), ...Object.fromEntries(overlay), ...infra, ...TEST_PROVIDERS, ...TEST_COST_CONTROLS });
+        const registry = ProviderRegistry.fromConfig(config);
+        expect(registry.configured().size).toBeGreaterThan(0);
+        expect([...registry.configured()].every((p) => registry.get(p)!.demo)).toBe(true);
+      });
+    });
   });
 
   it("warns about deliberate insecure choices in production only", () => {

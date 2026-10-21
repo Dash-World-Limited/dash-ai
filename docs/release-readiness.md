@@ -98,9 +98,17 @@ authoring environment; "not verified" means it has not run anywhere yet, and why
    *Actions → Live provider smoke*. Cost: a few dozen small requests.
 3. **For staging** (prepared, not started): follow [staging-runbook.md](staging-runbook.md) — managed
    PostgreSQL with TLS and backups, Redis with TLS, a secret manager, an HTTPS reverse proxy, and the
-   deliberate migrate → data:encrypt steps; template in `deploy/staging/staging.env.example`.
+   read-only migration-history check, then the deliberate snapshot → migrate → data:encrypt steps;
+   template in `deploy/staging/staging.env.example` with `deploy/staging/first-bringup.env.example` on
+   top for the first bring-up (demonstration adapters only: no paid inference, no push).
 4. **Release signing** (not set up): a signing key in a protected environment; `release.yml` builds an
    unsigned APK only.
+
+## Release blockers that do not block a staging test
+
+- **PAGINATION REQUIRED BEFORE RELEASE:** `GET /v1/conversations` still returns every conversation of
+  the account in one response (ADR 0018). Fine for controlled staging with test accounts; it must be
+  paginated (API, Web and Android) before customer release.
 
 ## Known limitations that do not block a staging test
 

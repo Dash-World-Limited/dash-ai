@@ -21,16 +21,23 @@ async function ensureTable(client: PoolClient): Promise<void> {
   )`);
 }
 
-async function readApplied(client: PoolClient): Promise<Map<number, string>> {
-  const { rows } = await client.query<{ id: number; checksum: string }>("SELECT id, checksum FROM schema_migrations");
-  return new Map(rows.map((r) => [r.id, r.checksum]));
+async function readApplied(client: PoolClient): Promise<Map<number, { name: string; checksum: string }>> {
+  const { rows } = await client.query<{ id: number; name: string; checksum: string }>("SELECT id, name, checksum FROM schema_migrations");
+  return new Map(rows.map((r) => [r.id, { name: r.name, checksum: r.checksum }]));
 }
 
-function verify(applied: Map<number, string>): void {
-  for (const [id, sum] of applied) {
+function verify(applied: Map<number, { name: string; checksum: string }>): void {
+  for (const [id, row] of applied) {
     const known = MIGRATIONS.find((m) => m.id === id);
     if (!known) throw new Error(`The database has migration ${id}, which this server version does not know. Deploy a newer server.`);
-    if (checksum(known) !== sum) throw new Error(`Migration ${id} (${known.name}) was modified after it was applied.`);
+    // A different name means a different migration history (two branches once both used id 10), not an edit.
+    if (row.name !== known.name) {
+      throw new Error(
+        `Migration ${id} in the database is "${row.name}", but this server's migration ${id} is "${known.name}": the database ran a ` +
+          "different migration history. Do not migrate or repair it; see docs/provider-platform.md (Safe production rollout, step 0).",
+      );
+    }
+    if (checksum(known) !== row.checksum) throw new Error(`Migration ${id} (${known.name}) was modified after it was applied.`);
   }
 }
 
