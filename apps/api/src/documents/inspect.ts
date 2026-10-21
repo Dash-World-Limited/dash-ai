@@ -79,7 +79,7 @@ export const TOO_LARGE_DETAIL =
  * complex formats parsed by large third-party libraries, and a hostile file must not be able to
  * exhaust this server's memory or CPU.
  */
-export async function extractText(kind: DocumentKind, buf: Buffer, options: { timeoutMs: number }): Promise<Extraction> {
+export async function extractText(kind: DocumentKind, buf: Buffer, options: { timeoutMs: number; signal?: AbortSignal }): Promise<Extraction> {
   switch (kind) {
     case "txt": {
       let text: string;
@@ -92,7 +92,7 @@ export async function extractText(kind: DocumentKind, buf: Buffer, options: { ti
     }
     case "pdf":
     case "docx":
-      return extractIsolated(kind, buf, options.timeoutMs);
+      return extractIsolated(kind, buf, options.timeoutMs, options.signal);
     case "image":
       return unsupported(
         "Image understanding is not available yet. The image passed validation, but Dash AI cannot read its contents.",

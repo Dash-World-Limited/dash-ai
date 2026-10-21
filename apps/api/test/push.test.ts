@@ -404,13 +404,37 @@ describe("delivery, retry and failure", () => {
     await runNow(app, context, user.auth, (await createAutomation(app, user.auth)).id);
     clock.t += 60_000;
     // Another instance claims it and disappears before recording the outcome.
-    expect(await context.store.claimPushDeliveries(new Date(clock.t).toISOString(), new Date(clock.t + 1_000).toISOString(), 10)).toHaveLength(1);
+    // (A 400 ms lease: PostgreSQL measures it on the database clock, so it must really pass.)
+    expect(await context.store.claimPushDeliveries(new Date(clock.t).toISOString(), 400, 10)).toHaveLength(1);
     fake.script = () => ({ ok: true });
     await context.push.tick();
     expect(fake.sent).toEqual([]);
     clock.t += 2_000;
+    await new Promise((r) => setTimeout(r, 450));
     await context.push.tick();
     expect(fake.sent).toHaveLength(1);
+  });
+});
+
+describe("push leases on the database clock", () => {
+  it.runIf(USING_POSTGRES)("an instance an hour fast cannot take a delivery another instance is still sending", async () => {
+    const pg = await createTestPgStore();
+    try {
+      const { app, user, context, clock, fake } = await setup({ store: pg.store, transport: new FakePushTransport() });
+      await registerDevice(app, user.auth, TOKEN_A);
+      fake.script = () => ({ ok: false, kind: "retryable", code: "unavailable" });
+      await runNow(app, context, user.auth, (await createAutomation(app, user.auth)).id);
+      clock.t += 60_000;
+      // A healthy instance holds the delivery for 60 s (database clock).
+      expect(await pg.store.claimPushDeliveries(new Date(clock.t).toISOString(), 60_000, 10)).toHaveLength(1);
+      fake.script = () => ({ ok: true });
+      clock.t += 3_600_000; // this instance's clock is an hour ahead
+      await context.push.tick();
+      expect(fake.sent).toEqual([]);
+    } finally {
+      for (const a of opened.splice(0)) await a.close();
+      await pg.dispose();
+    }
   });
 });
 

@@ -104,6 +104,16 @@ const EnvSchema = z.object({
   FAKE_STREAM_DELAY_MS: int(25, 0, 5_000),
   /** Wall-clock limit for parsing one PDF or DOCX in the isolated extraction process. */
   DOCUMENT_EXTRACTION_TIMEOUT_MS: int(20_000, 1_000, 120_000),
+  /** Extraction processes running at once per instance. */
+  DOCUMENT_EXTRACTION_CONCURRENCY: int(2, 1, 16),
+  /** Uploads that may wait for an extraction process per instance (their bodies are in memory); more are refused as busy. */
+  DOCUMENT_EXTRACTION_QUEUE: int(6, 0, 100),
+  /** Uploads one account may have in progress per instance (receiving, waiting or extracting). */
+  DOCUMENT_UPLOADS_PER_ACCOUNT: int(4, 1, 100),
+  /** How long an upload may wait for an extraction process before it is refused as busy. */
+  DOCUMENT_EXTRACTION_QUEUE_WAIT_MS: int(15_000, 100, 120_000),
+  /** Documents one account may keep (each holds at most 200,000 extracted characters). */
+  DOCUMENTS_MAX_PER_ACCOUNT: int(200, 1, 10_000),
   RATE_LIMIT_CHAT_PER_MINUTE: int(20, 1, 10_000),
   RATE_LIMIT_SYNC_PER_MINUTE: int(60, 1, 10_000),
   RATE_LIMIT_AUTH_PER_MINUTE: int(10, 1, 10_000),
@@ -153,6 +163,7 @@ const EnvSchema = z.object({
   /** TLS to the database. Defaults to "require" in production and "disable" elsewhere. */
   DATABASE_SSL: z.preprocess(emptyToUndefined, z.enum(["disable", "require", "no-verify"]).optional()),
   DATABASE_POOL_MAX: int(10, 1, 100),
+  DATABASE_POOL_ACQUIRE_TIMEOUT_MS: int(5_000, 250, 60_000),
   /** Apply pending migrations at startup. Defaults to true outside production, false in production. */
   DATABASE_AUTO_MIGRATE: z.preprocess(emptyToUndefined, z.enum(["true", "false"]).optional()),
   /** Base64 of 32 random bytes (openssl rand -base64 32). Encrypts document text at rest. */
@@ -246,6 +257,8 @@ export interface AppConfig {
   maxOutputTokens: number;
   fakeStreamDelayMs: number;
   documentExtractionTimeoutMs: number;
+  documentExtraction: { concurrency: number; queue: number; queueWaitMs: number; perAccount: number };
+  documentsMaxPerAccount: number;
   rateLimits: {
     chatPerMinute: number;
     authPerMinute: number;
@@ -270,6 +283,7 @@ export interface AppConfig {
     url: string | undefined;
     ssl: "disable" | "require" | "no-verify";
     poolMax: number;
+    acquireTimeoutMs: number;
     autoMigrate: boolean;
     allowMemoryStore: boolean;
   };
@@ -459,6 +473,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     maxOutputTokens: e.MAX_OUTPUT_TOKENS,
     fakeStreamDelayMs: e.FAKE_STREAM_DELAY_MS,
     documentExtractionTimeoutMs: e.DOCUMENT_EXTRACTION_TIMEOUT_MS,
+    documentExtraction: { concurrency: e.DOCUMENT_EXTRACTION_CONCURRENCY, queue: e.DOCUMENT_EXTRACTION_QUEUE, queueWaitMs: e.DOCUMENT_EXTRACTION_QUEUE_WAIT_MS, perAccount: e.DOCUMENT_UPLOADS_PER_ACCOUNT },
+    documentsMaxPerAccount: e.DOCUMENTS_MAX_PER_ACCOUNT,
     rateLimits: {
       chatPerMinute: e.RATE_LIMIT_CHAT_PER_MINUTE,
       syncPerMinute: e.RATE_LIMIT_SYNC_PER_MINUTE,
@@ -481,6 +497,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       url: e.DATABASE_URL,
       ssl: e.DATABASE_SSL ?? (e.NODE_ENV === "production" ? "require" : "disable"),
       poolMax: e.DATABASE_POOL_MAX,
+      acquireTimeoutMs: e.DATABASE_POOL_ACQUIRE_TIMEOUT_MS,
       autoMigrate: e.DATABASE_AUTO_MIGRATE ? e.DATABASE_AUTO_MIGRATE === "true" : e.NODE_ENV !== "production",
       allowMemoryStore: e.ALLOW_MEMORY_STORE === "true",
     },

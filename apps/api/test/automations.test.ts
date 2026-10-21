@@ -439,6 +439,84 @@ describe("the server-side scheduler", () => {
     }
   });
 
+  it.runIf(USING_POSTGRES)("an instance whose clock runs an hour fast never interrupts a healthy run elsewhere (leases use the database clock)", async () => {
+    // Before: the lease was written with the claiming instance's clock and checked with the checking
+    // instance's, so an instance 15 minutes fast already saw a healthy run (780 s lease) as abandoned.
+    const pg = await createTestPgStore();
+    try {
+      const gated = { openai: new GatedAdapter("openai"), anthropic: new GatedAdapter("anthropic") };
+      // Real time (the database's clock is real), and an hour ahead of it.
+      const a = await setup({ store: pg.store, providers: new ProviderRegistry(gated), start: new Date().toISOString() });
+      const b = await setup({ store: pg.store, start: new Date(Date.now() + 3_600_000).toISOString() });
+      const { automation } = await create(a.app, a.user.auth);
+      expect((await a.app.inject({ method: "POST", url: `/v1/automations/${automation!.id}/run`, headers: a.user.auth })).statusCode).toBe(202);
+      await waitForRequest(gated);
+      await b.context.automations.tick();
+      await b.context.automations.idle();
+      gated.openai.open();
+      gated.anthropic.open();
+      await a.context.automations.idle();
+      const runs = await pg.store.listRuns(a.user.user.id, automation!.id, 10);
+      expect(runs.map((r) => r.status)).toEqual(["ready"]);
+      expect((await pg.store.listNotifications(a.user.user.id, 10)).map((n) => n.kind)).toEqual(["automation.ready"]);
+      expect(b.context.metrics.automationLeaseRecoveries.get()).toBe(0);
+    } finally {
+      for (const app of opened.splice(0)) await app.close();
+      await pg.dispose();
+    }
+  });
+
+  it.runIf(USING_POSTGRES)("three instances and many due automations: every occurrence runs exactly once, with one notice each", async () => {
+    const pg = await createTestPgStore();
+    try {
+      const instances = await Promise.all([0, 1, 2].map(() => setup({ store: pg.store, env: { AUTOMATIONS_CONCURRENCY: "3" } })));
+      const owners = [instances[0]!.user, instances[1]!.user];
+      const ids: string[] = [];
+      for (let i = 0; i < 12; i++) ids.push((await create(instances[0]!.app, owners[i % 2]!.auth, { ...daily, name: `Brief ${i}` })).automation!.id);
+      for (const x of instances) x.clock.t = at("2026-10-07T07:01:00Z");
+      await Promise.all(instances.flatMap((x) => [x.context.automations.tick(), x.context.automations.tick()]));
+      for (let round = 0; round < 5; round++) {
+        await Promise.all(instances.map((x) => x.context.automations.idle()));
+        await Promise.all(instances.map((x) => x.context.automations.tick()));
+      }
+      await Promise.all(instances.map((x) => x.context.automations.idle()));
+      for (const [i, id] of ids.entries()) {
+        const runs = await pg.store.listRuns(owners[i % 2]!.user.id, id, 10);
+        expect(runs.map((r) => [r.trigger, r.status])).toEqual([["schedule", "ready"]]);
+      }
+      for (const owner of owners) expect(await pg.store.listNotifications(owner.user.id, 100)).toHaveLength(6);
+      // Each account sees only its own runs.
+      expect(await pg.store.listRuns(owners[1]!.user.id, ids[0]!, 10)).toEqual([]);
+    } finally {
+      for (const app of opened.splice(0)) await app.close();
+      await pg.dispose();
+    }
+  });
+
+  it.runIf(USING_POSTGRES)("an instance whose clock runs an hour slow still recovers a run whose instance crashed (the lease expires on the database clock)", async () => {
+    const pg = await createTestPgStore();
+    try {
+      const slow = await setup({ store: pg.store, start: new Date(Date.now() - 3_600_000).toISOString() });
+      const { automation } = await create(slow.app, slow.user.auth);
+      const record = (await pg.store.getAutomation(slow.user.user.id, automation!.id))!;
+      await pg.store.enqueueRun(newRun(record, "manual", new Date(slow.clock.t)));
+      // A crashed instance held a 200 ms lease (database clock).
+      expect(await pg.store.claimQueuedRun(new Date().toISOString(), 200)).toBeDefined();
+      await slow.context.automations.tick();
+      await slow.context.automations.idle();
+      expect((await pg.store.listRuns(slow.user.user.id, automation!.id, 10)).map((r) => r.status)).toEqual(["running"]);
+      await new Promise((r) => setTimeout(r, 300));
+      await slow.context.automations.tick();
+      await slow.context.automations.idle();
+      const runs = await pg.store.listRuns(slow.user.user.id, automation!.id, 10);
+      expect(runs.map((r) => r.status)).toEqual(["failed"]);
+      expect(slow.context.metrics.automationLeaseRecoveries.get()).toBe(1);
+    } finally {
+      for (const app of opened.splice(0)) await app.close();
+      await pg.dispose();
+    }
+  });
+
   it("recovers a run whose instance stopped mid-run (expired lease) as interrupted", async () => {
     const { app, user, context, clock } = await setup();
     const { automation } = await create(app, user.auth);
@@ -446,8 +524,10 @@ describe("the server-side scheduler", () => {
     const record = (await store.getAutomation(user.user.id, automation!.id))!;
     await store.enqueueRun({ ...(await import("../src/automations/service.js")).newRun(record, "manual", new Date(clock.t)) });
     // Another instance claimed it and then disappeared.
-    expect(await store.claimQueuedRun(new Date(clock.t).toISOString(), new Date(clock.t + 1_000).toISOString())).toBeDefined();
+    // (A 50 ms lease: PostgreSQL measures it on the database clock, so it must really pass.)
+    expect(await store.claimQueuedRun(new Date(clock.t).toISOString(), 50)).toBeDefined();
     clock.t += 60_000;
+    await new Promise((r) => setTimeout(r, 100));
     await context.automations.tick();
     await context.automations.idle();
     const detail = AutomationDetailResponse.parse((await app.inject({ method: "GET", url: `/v1/automations/${automation!.id}`, headers: user.auth })).json());

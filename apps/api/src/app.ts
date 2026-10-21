@@ -4,6 +4,7 @@ import Fastify, { type FastifyError, type FastifyInstance, type FastifyRequest }
 import { makeRequireAuth } from "./auth/requireAuth.js";
 import type { RedisStreamControl } from "./chat/streamControl.js";
 import { StreamRegistry } from "./chat/streamRegistry.js";
+import { ExtractionGate } from "./documents/gate.js";
 import type { AppConfig } from "./config.js";
 import { AppError, busyError } from "./errors.js";
 import { loggerOptions, type LogStream } from "./logging.js";
@@ -28,6 +29,7 @@ import { syncRoutes } from "./routes/sync.js";
 import { systemRoutes } from "./routes/system.js";
 import { Metrics } from "./observability/metrics.js";
 import { MemoryRateLimitStore, RateLimitService, type RateLimitStore } from "./security/rateLimit.js";
+import { databaseFailure } from "./store/dbErrors.js";
 import { MemoryStore } from "./store/memoryStore.js";
 import type { Store } from "./store/store.js";
 import { ToolRuntime } from "./tools/runtime.js";
@@ -181,7 +183,19 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
       },
       onActiveChange: (active) => metrics.activeStreams.set({}, active),
     }),
-    lifecycle: { draining: false },
+    lifecycle: { draining: false, stopped: new AbortController() },
+    extraction: new ExtractionGate(
+      {
+        maxActive: config.documentExtraction.concurrency,
+        maxWaiting: config.documentExtraction.queue,
+        maxPerAccount: config.documentExtraction.perAccount,
+        maxWaitMs: config.documentExtraction.queueWaitMs,
+      },
+      (state) => {
+        metrics.extractionActive.set({}, state.active);
+        metrics.extractionWaiting.set({}, state.waiting);
+      },
+    ),
     rateLimits,
     metrics,
     requireAuth: makeRequireAuth(store, now),
@@ -232,8 +246,13 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   });
 
   app.setErrorHandler((err: FastifyError, request, reply) => {
-    const appError = toAppError(err);
-    if (appError.statusCode >= 500) request.log.error({ err }, "request failed");
+    const dbFailure = err instanceof AppError ? null : databaseFailure(err);
+    const appError = dbFailure ? busyError() : toAppError(err);
+    if (dbFailure) {
+      metrics.databaseErrors.inc({ kind: dbFailure });
+      metrics.busyRejections.inc({ reason: "database" });
+      request.log.warn({ kind: dbFailure, err: { code: (err as { code?: string }).code, message: err.message } }, "database unavailable or overloaded");
+    } else if (appError.statusCode >= 500) request.log.error({ err }, "request failed");
     else request.log.info({ code: appError.code, statusCode: appError.statusCode }, "request rejected");
     if (appError.retryAfterSeconds !== undefined) reply.header("Retry-After", String(appError.retryAfterSeconds));
     void reply.code(appError.statusCode).send(appError.toResponse());
@@ -259,6 +278,11 @@ export async function buildApp(deps: AppDependencies): Promise<DashApp> {
   app.addHook("preClose", async () => {
     context.lifecycle.draining = true;
     context.streams.cancelAll("shutdown");
+    context.extraction.close();
+    context.lifecycle.stopped.abort("shutdown");
+    // What was stopped writes its last event within milliseconds; after that, any connection still
+    // open (a stuck client, an idle keep-alive) is closed so close() can never hang on it.
+    setTimeout(() => app.server.closeAllConnections(), 1_500).unref();
     automations.beginDrain();
     push.beginDrain();
   });

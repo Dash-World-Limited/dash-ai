@@ -34,7 +34,10 @@ import {
   type Store,
   type UsageRow,
   type UserRecord,
+  type ExportCursor,
+  type ExportItem,
 } from "./store.js";
+import type { ProviderId } from "@dash-ai/contracts";
 import { newId } from "../security/crypto.js";
 import type { PluginSettingRecord, ToolInvocationRow } from "../tools/types.js";
 
@@ -230,6 +233,12 @@ export class MemoryStore implements Store {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
+  async exportConversations(userId: string, after: ExportCursor | null, limit: number): Promise<Array<ExportItem<ConversationRecord>>> {
+    const all = (await this.listConversations(userId)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+    const from = after ? all.filter((c) => c.updatedAt < after.key || (c.updatedAt === after.key && c.id > after.conversationId!)) : all;
+    return from.slice(0, limit).map((c) => ({ item: c, cursor: { conversationId: c.id, key: c.updatedAt } }));
+  }
+
   async deleteConversation(userId: string, id: string): Promise<boolean> {
     const c = this.live(id);
     if (!c || c.record.userId !== userId) return false;
@@ -312,6 +321,11 @@ export class MemoryStore implements Store {
     return (this.messages.get(conversationId) ?? []).map((m) => ({ ...m, attachmentIds: [...m.attachmentIds] }));
   }
 
+  async exportMessages(userId: string, conversationIds: string[], after: ExportCursor | null, limit: number): Promise<Array<ExportItem<MessageRecord>>> {
+    const owned = conversationIds.filter((id) => this.live(id)?.record.userId === userId);
+    return pageByConversation(owned, (id) => this.cloneMessages(id), after, limit);
+  }
+
   async listMessages(conversationId: string): Promise<MessageRecord[]> {
     return this.live(conversationId) ? this.cloneMessages(conversationId) : [];
   }
@@ -343,6 +357,15 @@ export class MemoryStore implements Store {
     this.documents.set(document.id, { ...document });
   }
 
+  async addDocument(document: DocumentRecord, maxPerAccount: number): Promise<"ok" | "limit" | "gone"> {
+    if (!this.owned(document.userId)) return "gone";
+    let n = 0;
+    for (const d of this.documents.values()) if (d.userId === document.userId) n++;
+    if (n >= maxPerAccount) return "limit";
+    this.documents.set(document.id, { ...document });
+    return "ok";
+  }
+
   async getDocument(userId: string, id: string): Promise<DocumentRecord | undefined> {
     const d = this.documents.get(id);
     return d && d.userId === userId ? { ...d } : undefined;
@@ -367,8 +390,29 @@ export class MemoryStore implements Store {
     this.usage.push({ ...row, estimatedCostUsd: row.estimatedCostUsd ?? null });
   }
 
+  async usageSummary(userId: string, recent: number) {
+    const rows = this.usage.filter((u) => u.userId === userId);
+    const totals = new Map<ProviderId, { provider: ProviderId; requests: number; inputTokens: number; outputTokens: number }>();
+    for (const r of rows) {
+      const t = totals.get(r.provider) ?? { provider: r.provider, requests: 0, inputTokens: 0, outputTokens: 0 };
+      t.requests += 1;
+      t.inputTokens += r.inputTokens ?? 0;
+      t.outputTokens += r.outputTokens ?? 0;
+      totals.set(r.provider, t);
+    }
+    return { totals: [...totals.values()], recent: rows.slice(-recent).reverse().map((u) => ({ ...u })) };
+  }
+
   async listUsage(userId: string): Promise<UsageRow[]> {
     return this.usage.filter((u) => u.userId === userId).map((u) => ({ ...u }));
+  }
+
+  async exportUsage(userId: string, after: ExportCursor | null, limit: number): Promise<Array<ExportItem<UsageRow>>> {
+    const out: Array<ExportItem<UsageRow>> = [];
+    for (let i = after ? Number(after.key) + 1 : 0; i < this.usage.length && out.length < limit; i++) {
+      if (this.usage[i]!.userId === userId) out.push({ item: { ...this.usage[i]! }, cursor: { key: String(i) } });
+    }
+    return out;
   }
 
   async recordInferenceAttempt(row: InferenceAttemptRow): Promise<void> {
@@ -553,6 +597,10 @@ export class MemoryStore implements Store {
     return this.toolInvocations.filter((t) => t.userId === userId).slice(-limit).reverse().map((t) => ({ ...t }));
   }
 
+  async exportToolInvocations(userId: string, conversationIds: string[], after: ExportCursor | null, limit: number): Promise<Array<ExportItem<ToolInvocationRow>>> {
+    return pageByConversation(conversationIds, (id) => this.conversationTools(userId, id), after, limit);
+  }
+
   async listConversationToolInvocations(userId: string, conversationId: string): Promise<ToolInvocationRow[]> {
     return this.conversationTools(userId, conversationId);
   }
@@ -640,12 +688,12 @@ export class MemoryStore implements Store {
     return true;
   }
 
-  async claimQueuedRun(now: string, leaseUntil: string): Promise<AutomationRunRecord | undefined> {
+  async claimQueuedRun(now: string, leaseMs: number): Promise<AutomationRunRecord | undefined> {
     for (const r of this.runs.values()) {
       if (r.status !== "queued") continue;
       r.status = "running";
       r.startedAt = now;
-      r.leaseUntil = leaseUntil;
+      r.leaseUntil = new Date(Date.parse(now) + leaseMs).toISOString();
       return structuredClone(r);
     }
     return undefined;
@@ -800,8 +848,9 @@ export class MemoryStore implements Store {
     else this.pushOff.add(userId);
   }
 
-  async claimPushDeliveries(now: string, leaseUntil: string, limit: number): Promise<ClaimedPushDelivery[]> {
+  async claimPushDeliveries(now: string, leaseMs: number, limit: number): Promise<ClaimedPushDelivery[]> {
     const t = Date.parse(now);
+    const leaseUntil = new Date(t + leaseMs).toISOString();
     const due = [...this.pushDeliveries.values()]
       .filter(
         (d) =>
@@ -843,3 +892,17 @@ export class MemoryStore implements Store {
 }
 
 const round10 = (usd: number): number => Math.round(usd * 1e10) / 1e10;
+
+/** Rows of several conversations by conversation id, then in their own order, from after `after`. */
+function pageByConversation<T>(conversationIds: string[], rowsOf: (id: string) => T[], after: ExportCursor | null, limit: number): Array<ExportItem<T>> {
+  const out: Array<ExportItem<T>> = [];
+  for (const id of [...new Set(conversationIds)].sort()) {
+    if (after && id < after.conversationId!) continue;
+    const rows = rowsOf(id);
+    for (let i = after && id === after.conversationId ? Number(after.key) + 1 : 0; i < rows.length; i++) {
+      if (out.length === limit) return out;
+      out.push({ item: rows[i]!, cursor: { conversationId: id, key: String(i) } });
+    }
+  }
+  return out;
+}

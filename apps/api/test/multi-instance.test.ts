@@ -332,3 +332,43 @@ describe.skipIf(!ENABLED)("several API instances: failures", () => {
 });
 
 
+
+describe.skipIf(!ENABLED)("several API instances: Redis outage and the general limits", () => {
+  /** Wrong-password sign-ins for one account, spread round-robin over the instances. */
+  async function guesses(cluster: Cluster, email: string, n: number): Promise<{ allowed: number; limited: number }> {
+    let allowed = 0;
+    let limited = 0;
+    for (let i = 0; i < n; i++) {
+      const node = cluster.node(i % cluster.nodes.length);
+      const res = await fetch(`${node.url}/v1/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": `198.51.100.${(i % 200) + 1}` },
+        body: JSON.stringify({ email, password: `wrong guess ${i}` }),
+      });
+      if (res.status === 429) limited++;
+      else allowed++;
+      await res.arrayBuffer();
+    }
+    return { allowed, limited };
+  }
+
+  it("sign-in brute force: shared limit with Redis up; with Redis down each instance limits on its own (at most instances × limit), never unlimited", async () => {
+    const cluster = await Cluster.start({ instances: 2, env: { RATE_LIMIT_LOGIN_PER_ACCOUNT: "5", RATE_LIMIT_AUTH_PER_MINUTE: "1000" } });
+    try {
+      const up = await signUp(cluster.node(0).url, "brute-up");
+      expect(await guesses(cluster, up.email, 20)).toEqual({ allowed: 5, limited: 15 });
+
+      const down = await signUp(cluster.node(0).url, "brute-down");
+      cluster.redisProxy!.down();
+      const during = await guesses(cluster, down.email, 40);
+      // Degraded, bounded: each of the 2 instances allows its own 5, so at most 10 of 40 get through.
+      expect(during.allowed).toBeGreaterThanOrEqual(5);
+      expect(during.allowed).toBeLessThanOrEqual(10);
+      const metrics = await cluster.metrics(cluster.node(0));
+      expect(metricValue(metrics, "dash_rate_limit_backend_errors_total")).toBeGreaterThanOrEqual(1);
+      cluster.redisProxy!.up();
+    } finally {
+      await cluster.stop();
+    }
+  }, 90_000);
+});

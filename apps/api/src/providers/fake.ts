@@ -11,13 +11,24 @@ import { ProviderError, isToolResultTurn, type ProviderAdapter, type ProviderChu
  *                   could, whether or not that tool was offered (so tests can prove the backend,
  *                   not the model, decides what runs). After the result arrives it summarises it.
  *   [[fake:lookalike]] — answer with text that merely LOOKS like a tool call (must never execute).
+ *   [[fake:ttfb]]  — wait two seconds before the first token (slow time to first byte)
+ *   [[fake:stall]] — send the first words, then never send anything again (idle timeout mid-stream)
+ *   [[fake:partial]] — send the first words, then fail as a broken connection (no retry: output was sent)
+ *   [[fake:flaky]] — fail the first attempt for this prompt with a retryable error, then answer
+ *   [[fake:down-<id>]] — this fake provider (e.g. down-openai) fails retryably; others answer (fallback)
  */
 export const FAKE_TRIGGERS = {
   error: "[[fake:error]]",
   hang: "[[fake:hang]]",
   slow: "[[fake:slow]]",
   lookalike: "[[fake:lookalike]]",
+  ttfb: "[[fake:ttfb]]",
+  stall: "[[fake:stall]]",
+  partial: "[[fake:partial]]",
+  flaky: "[[fake:flaky]]",
 } as const;
+/** Prompts that already failed once under [[fake:flaky]] (bounded: test-only trigger). */
+const flakySeen = new Set<string>();
 const FAKE_TOOL = /\[\[fake:tool ([^\s\]]+)(?: (\{.*?\}))?\]\]/s;
 
 type FakeProviderId = Extract<BuiltinProviderId, "openai" | "anthropic">;
@@ -52,6 +63,26 @@ export class FakeAdapter implements ProviderAdapter {
       if (last.includes(FAKE_TRIGGERS.error)) {
         await sleep(this.delayMs, undefined, { signal: request.signal });
         throw new ProviderError("provider_error", `${this.displayName} (fake) was asked to fail for testing.`, true);
+      }
+      if (last.includes(`[[fake:down-${this.id}]]`)) {
+        await sleep(this.delayMs, undefined, { signal: request.signal });
+        throw new ProviderError("provider_error", `${this.displayName} (fake) is down for testing.`, true);
+      }
+      if (last.includes(FAKE_TRIGGERS.flaky)) {
+        if (!flakySeen.has(last)) {
+          if (flakySeen.size > 1_000) flakySeen.clear();
+          flakySeen.add(last);
+          await sleep(this.delayMs, undefined, { signal: request.signal });
+          throw new ProviderError("provider_error", `${this.displayName} (fake) failed once for testing.`, true);
+        }
+        flakySeen.delete(last);
+      }
+      if (last.includes(FAKE_TRIGGERS.ttfb)) await sleep(2_000, undefined, { signal: request.signal });
+      if (last.includes(FAKE_TRIGGERS.stall) || last.includes(FAKE_TRIGGERS.partial)) {
+        await sleep(this.delayMs, undefined, { signal: request.signal });
+        yield { type: "text", text: "Demonstration answer " };
+        if (last.includes(FAKE_TRIGGERS.partial)) throw new ProviderError("provider_error", `${this.displayName} (fake) connection broke for testing.`, true);
+        await sleep(24 * 60 * 60 * 1000, undefined, { signal: request.signal });
       }
       if (last.includes(FAKE_TRIGGERS.hang)) {
         await sleep(24 * 60 * 60 * 1000, undefined, { signal: request.signal });

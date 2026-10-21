@@ -39,6 +39,11 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `MAX_OUTPUT_TOKENS` | `16000` | Output token limit per provider request. Includes thinking/reasoning tokens on models that think, so leave room for both. Adapters that know a model's lower limit (Amazon Nova Micro/Lite: 5,000) send and reserve that instead. |
 | `FAKE_STREAM_DELAY_MS` | `25` | Delay between chunks of fake answers. |
 | `DOCUMENT_EXTRACTION_TIMEOUT_MS` | `20000` | Time limit for parsing one PDF or DOCX. Parsing runs in a separate process with no secrets in its environment, a memory cap and decompression budgets (see [security.md](security.md)); a file that exceeds any limit is stored as `unsupported` with an explanation. |
+| `DOCUMENT_EXTRACTION_CONCURRENCY` | `2` | PDF/DOCX extraction processes at once per instance. |
+| `DOCUMENT_EXTRACTION_QUEUE` | `6` | Uploads that may wait for an extraction process per instance. Every upload takes a place **before** its body is read, so at most concurrency + queue uploads (each ≤ 10 MB) are in memory; when full, uploads are refused at once as busy (503, retryable). |
+| `DOCUMENT_EXTRACTION_QUEUE_WAIT_MS` | `15000` | How long an upload may wait for an extraction process before it is refused as busy. A client that disconnects leaves the queue at once (and its extraction process is killed). |
+| `DOCUMENT_UPLOADS_PER_ACCOUNT` | `4` | Uploads one account may have in progress per instance, so one account cannot take every place. |
+| `DOCUMENTS_MAX_PER_ACCOUNT` | `200` | Documents one account may keep (checked atomically per account); more answer 409 "Delete some to upload more". A technical ceiling, not a plan limit. |
 | `RATE_LIMIT_CHAT_PER_MINUTE` | `20` | Chat requests per user per minute. |
 | `RATE_LIMIT_AUTH_PER_MINUTE` | `10` | Sign-in/registration attempts per IP per minute. |
 | `RATE_LIMIT_UPLOAD_PER_MINUTE` | `10` | Uploads per user per minute. |
@@ -56,6 +61,7 @@ Invalid values stop the server at start-up with a message that names the variabl
 | `DATABASE_URL` | — | PostgreSQL connection string. Empty = in-memory store (development/tests only; **production refuses to start without it**). Keep it out of git; it usually contains a password. |
 | `DATABASE_SSL` | `require` in production, else `disable` | `disable`, `require` (verify certificate) or `no-verify`. `disable` or `no-verify` in production log a start-up warning. |
 | `DATABASE_POOL_MAX` | `10` | Connection pool size. |
+| `DATABASE_POOL_ACQUIRE_TIMEOUT_MS` | `5000` | How long a request may wait for a pooled connection (or for an unreachable database) before it is refused as busy (503, retryable). 250–60000. |
 | `DATABASE_AUTO_MIGRATE` | `true` outside production, `false` in production | Apply pending migrations at start-up. When off, start-up fails if the schema is not current; run `pnpm --filter @dash-ai/api migrate`. |
 | `DATA_ENCRYPTION_KEY` | — | **Required with `DATABASE_URL`.** Base64 (or base64url) of 32 random bytes (`openssl rand -base64 32`). Encrypts conversation titles, message content and document text at rest. Start-up refuses malformed or obviously patterned keys, and a key that does not match data stored under its key id. Back it up separately: losing it makes stored conversations and document text unreadable. |
 | `DATA_ENCRYPTION_KEY_ID` | `k1` | Label stored with each ciphertext; change it when you rotate the key. |

@@ -1,6 +1,7 @@
 import type { FastifyRequest, preHandlerAsyncHookHandler } from "fastify";
 import type { AppConfig } from "../config.js";
 import type { StreamRegistry } from "../chat/streamRegistry.js";
+import type { ExtractionGate } from "../documents/gate.js";
 import type { AutomationService } from "../automations/service.js";
 import type { PushService } from "../push/service.js";
 import type { AiPlatform } from "../intelligence/platform.js";
@@ -26,8 +27,10 @@ export interface RouteContext {
   push: PushService;
   tools: ToolRuntime;
   streams: StreamRegistry;
+  /** Bounded document-upload backpressure on this instance. */
+  extraction: ExtractionGate;
   /** Set when shutdown begins: /ready answers 503 and new answers and uploads are refused. */
-  lifecycle: { draining: boolean };
+  lifecycle: { draining: boolean; /** Aborted when the drain window is over: remaining work stops. */ stopped: AbortController };
   rateLimits: RateLimitService;
   metrics: Metrics;
   requireAuth: (request: FastifyRequest) => Promise<void>;

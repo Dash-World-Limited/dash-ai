@@ -43,6 +43,7 @@ export async function createStore(config: AppConfig): Promise<StoreSelection> {
       cipher,
       ssl: database.ssl,
       poolMax: database.poolMax,
+      acquireTimeoutMs: database.acquireTimeoutMs,
       autoMigrate: database.autoMigrate,
     });
   } catch (err) {

@@ -105,7 +105,7 @@ export class PushService {
         for (;;) {
           if (this.stopped) return;
           const now = this.deps.now();
-          const batch = await this.deps.store.claimPushDeliveries(now.toISOString(), new Date(now.getTime() + LEASE_MS).toISOString(), BATCH);
+          const batch = await this.deps.store.claimPushDeliveries(now.toISOString(), LEASE_MS, BATCH);
           if (batch.length === 0) break;
           await Promise.all(batch.map((c) => this.deliver(c)));
         }
