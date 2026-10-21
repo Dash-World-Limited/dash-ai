@@ -572,7 +572,10 @@ export function configWarnings(config: AppConfig): string[] {
     warnings.push(`LOG_LEVEL=${config.logLevel} in production: verbose logs are larger and record more request detail. Use info.`);
   }
   if (config.rateLimits.backend === "memory") {
-    warnings.push("RATE_LIMIT_BACKEND=memory in production: rate limits are per instance. With more than one API instance, set RATE_LIMIT_BACKEND=redis and REDIS_URL.");
+    warnings.push(
+      "RATE_LIMIT_BACKEND=memory in production: rate limits, the per-account stream limit, Stop and account-deletion cancels are per instance. " +
+        "With more than one API instance, set RATE_LIMIT_BACKEND=redis and REDIS_URL (a multi-instance deployment without shared Redis is not valid).",
+    );
   }
   if (config.rateLimits.redisUrl?.startsWith("redis://") && config.rateLimits.backend === "redis") {
     warnings.push("REDIS_URL uses redis:// in production: traffic to Redis is not encrypted in transit. Use rediss:// unless Redis is on a private network.");

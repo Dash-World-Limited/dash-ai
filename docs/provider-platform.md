@@ -361,14 +361,25 @@ Nothing here is deployed by merging. When the operator decides to roll it out:
    ORDER BY id;
    ```
 
-   - **Safe:** no rows (the database predates both; it will receive 9 if missing, then 10 and 11), or
-     `10 | inference_ledger` alone, or `10 | inference_ledger` then `11 | inference_ledger_integrity`.
-   - **Unsafe:** `10 | inference_attempt_ledger`, or any other name for 10 or 11, or an id above 11.
-     That database ran the other implementation's migration. Do not deploy to it. The new server would
-     refuse to start anyway (each applied migration's checksum is verified), so nothing is corrupted
-     silently; the remedy (restoring a snapshot taken before that migration, or rebuilding a disposable
-     staging database) needs the owner's approval first.
-   - If `schema_migrations` does not exist, the database was never migrated: safe.
+   Compare the rows with the migration list in `apps/api/src/store/migrations.ts` (read the file, not
+   this page, if they ever disagree). Today the adopted history after 9 is exactly:
+   `10 inference_ledger`, `11 inference_ledger_integrity`, `12 spend_reservations`,
+   `13 spend_reservation_attempts`. Classify the database as exactly one of:
+
+   - **A. Clean / compatible:** the rows are a prefix of that list, with the same ids and names and no
+     gap (for example `10`, `10–11`, `10–12` or `10–13`). Safe to migrate forward.
+   - **B. Fresh / no 10+ history:** no rows (the database predates both implementations; it will
+     receive 9 if missing, then 10–13). Safe to migrate forward.
+   - **C. Legacy collision:** an adopted id with a different name, above all `10 | inference_attempt_ledger`
+     (the competing implementation, branch `feature/provider-cost-control-foundation`), or any id above
+     the newest adopted one. That database ran other code. **Stop: do not migrate, deploy to it or
+     "repair" it.** The new server would refuse to start anyway (each applied migration's name and
+     checksum are verified; a different name is reported as "a different migration history"), so nothing is corrupted silently; the remedy (restoring a snapshot taken before that
+     migration, or rebuilding a disposable staging database) is a separate, owner-approved recovery plan.
+   - **D. Partial / unknown:** anything else (a gap such as `10` and `12` without `11`, duplicate-looking
+     rows, a `schema_migrations` table with unexpected columns, or a query error other than "relation
+     does not exist"). Stop exactly as for C.
+   - If `schema_migrations` does not exist, the database was never migrated: B (safe).
 
 1. **Back up the database** (snapshot) before upgrading.
 2. **Migrations.** These releases add five additive migrations (no existing data is changed or deleted):

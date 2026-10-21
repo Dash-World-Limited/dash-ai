@@ -173,6 +173,16 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL", () => {
       // Editing an applied migration is detected.
       await pool.query("UPDATE schema_migrations SET checksum = 'deadbeef' WHERE id = 1");
       await expect(migrate(pool)).rejects.toThrow(/modified after it was applied/);
+      await pool.query("UPDATE schema_migrations SET checksum = $1 WHERE id = 1", [rows[0].checksum]);
+
+      // A different migration under an adopted id (the competing 10 inference_attempt_ledger) is named as
+      // a different history, by both the migrator and start-up, and nothing is applied or changed.
+      await pool.query("UPDATE schema_migrations SET name = 'inference_attempt_ledger' WHERE id = 10");
+      await expect(migrate(pool)).rejects.toThrow(/migration 10 in the database is "inference_attempt_ledger".*different migration history/i);
+      await expect(assertMigrated(pool)).rejects.toThrow(/different migration history/);
+      await pool.query("UPDATE schema_migrations SET name = 'inference_ledger' WHERE id = 10");
+      await assertMigrated(pool);
+
       // A database from a newer server is refused.
       await pool.query("UPDATE schema_migrations SET checksum = (SELECT checksum FROM schema_migrations WHERE id = 1) WHERE id = 1");
     } finally {
