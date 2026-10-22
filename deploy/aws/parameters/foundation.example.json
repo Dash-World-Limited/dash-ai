@@ -1,0 +1,6 @@
+[
+  { "ParameterKey": "EnvironmentName", "ParameterValue": "staging" },
+  { "ParameterKey": "ExpectedAccountId", "ParameterValue": "<12-digit staging account id>" },
+  { "ParameterKey": "AlertEmail", "ParameterValue": "<owner alert email>" },
+  { "ParameterKey": "VpcCidr", "ParameterValue": "10.40.0.0/16" }
+]

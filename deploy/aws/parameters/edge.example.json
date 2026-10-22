@@ -1,0 +1,6 @@
+[
+  { "ParameterKey": "EnvironmentName", "ParameterValue": "staging" },
+  { "ParameterKey": "ExpectedAccountId", "ParameterValue": "<12-digit staging account id>" },
+  { "ParameterKey": "StagingApiHostname", "ParameterValue": "<owner-chosen hostname containing 'staging'>" },
+  { "ParameterKey": "CertificateValidationHostedZoneId", "ParameterValue": "" }
+]

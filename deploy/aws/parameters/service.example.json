@@ -1,0 +1,8 @@
+[
+  { "ParameterKey": "EnvironmentName", "ParameterValue": "staging" },
+  { "ParameterKey": "ExpectedAccountId", "ParameterValue": "<12-digit staging account id>" },
+  { "ParameterKey": "ImageDigest", "ParameterValue": "<sha256:... digest resolved from ECR in Phase 5>" },
+  { "ParameterKey": "DesiredCount", "ParameterValue": "0" },
+  { "ParameterKey": "ApiTaskCpu", "ParameterValue": "512" },
+  { "ParameterKey": "EnableExecuteCommand", "ParameterValue": "false" }
+]

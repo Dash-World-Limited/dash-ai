@@ -1,0 +1,244 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  DASH AI STAGING (eu-west-1) 2/4 data: private RDS PostgreSQL 16 (TLS forced, 7-day PITR, single-AZ)
+  and private ElastiCache Redis OSS 7.1 (one node, cluster mode off, TLS + AUTH, no persistence).
+  Creates an EMPTY database: no schema, no application role, no migration. Not production.
+
+Rules:
+  StagingRegionOnly:
+    Assertions:
+      - Assert: !Equals [!Ref "AWS::Region", eu-west-1]
+        AssertDescription: DASH AI staging is defined for eu-west-1 (Ireland) only.
+  ExpectedAccountOnly:
+    Assertions:
+      - Assert: !Equals [!Ref "AWS::AccountId", !Ref ExpectedAccountId]
+        AssertDescription: ExpectedAccountId must be the account this stack is being deployed into.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    AllowedValues: [staging]
+    Default: staging
+  ExpectedAccountId:
+    Type: String
+    AllowedPattern: "^[0-9]{12}$"
+  PostgresEngineVersion:
+    Type: String
+    Default: "16"
+    AllowedPattern: "^16(\\.[0-9]+)?$"
+    Description: PostgreSQL 16 (the major version CI tests). "16" lets RDS choose the default 16.x minor.
+  DatabaseInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    AllowedValues: [db.t4g.micro]
+  DatabaseAllocatedStorageGiB:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 20
+  DatabaseMaxAllocatedStorageGiB:
+    Type: Number
+    Default: 50
+    MinValue: 21
+    MaxValue: 50
+    Description: Storage autoscaling ceiling.
+  RedisNodeType:
+    Type: String
+    Default: cache.t4g.micro
+    AllowedValues: [cache.t4g.micro]
+  RedisEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      "false" removes only the Redis replication group (and its alarm) to stop its hourly charge
+      between sessions; set the API to 0 tasks first. "true" recreates it with the same id. The
+      database is never affected by this parameter.
+  RedisAuthTokenParameterName:
+    Type: String
+    Default: /dash-ai/staging/REDIS_AUTH_TOKEN
+    AllowedPattern: "^/dash-ai/staging/[A-Z_]+$"
+    Description: >-
+      SSM SecureString the OWNER creates before this stack (16-128 printable characters, no @ " /;
+      openssl rand -hex 32). CloudFormation resolves it at deploy time; it is never stored here.
+
+Conditions:
+  WithRedis: !Equals [!Ref RedisEnabled, "true"]
+
+Resources:
+  # ---- PostgreSQL 16 ---------------------------------------------------------------------------
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: DASH AI staging PostgreSQL - private subnets only
+      SubnetIds: !Split [",", !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-PrivateSubnetIds" }]
+
+  DatabaseParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Family: postgres16
+      Description: DASH AI staging PostgreSQL 16 - TLS required
+      Parameters:
+        rds.force_ssl: "1"
+        ssl_min_protocol_version: TLSv1.2
+
+  # Single-AZ, no standby (staging). The database "dash_staging" is created empty and owned by the
+  # break-glass master user; the application role dash_app is created only in Phase 8 (separate
+  # owner approval), and migrations only after that (docs/aws-staging.md).
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub "dash-ai-${EnvironmentName}-postgres"
+      Engine: postgres
+      EngineVersion: !Ref PostgresEngineVersion
+      DBInstanceClass: !Ref DatabaseInstanceClass
+      DBName: dash_staging
+      MasterUsername: dash_master
+      # The master password is generated and kept by RDS in Secrets Manager; nobody types it.
+      ManageMasterUserPassword: true
+      DBParameterGroupName: !Ref DatabaseParameterGroup
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups:
+        - !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-DatabaseSecurityGroupId" }
+      PubliclyAccessible: false
+      MultiAZ: false
+      Port: "5432"
+      StorageType: gp3
+      AllocatedStorage: !Ref DatabaseAllocatedStorageGiB
+      MaxAllocatedStorage: !Ref DatabaseMaxAllocatedStorageGiB
+      StorageEncrypted: true
+      # The server certificate chains to this root, which is in the image's reviewed RDS bundle.
+      CACertificateIdentifier: rds-ca-rsa2048-g1
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: "02:00-02:30"
+      PreferredMaintenanceWindow: "sun:03:00-sun:03:30"
+      CopyTagsToSnapshot: true
+      DeletionProtection: true
+      AutoMinorVersionUpgrade: true
+      EnablePerformanceInsights: false
+      MonitoringInterval: 0
+      EnableIAMDatabaseAuthentication: false
+
+  DatabaseFreeStorageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "dash-ai-${EnvironmentName}-postgres-free-storage"
+      AlarmDescription: Less than 4 GiB free on the staging database.
+      Namespace: AWS/RDS
+      MetricName: FreeStorageSpace
+      Dimensions:
+        - { Name: DBInstanceIdentifier, Value: !Ref Database }
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 4294967296
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-AlarmTopicArn" }
+
+  DatabaseConnectionsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "dash-ai-${EnvironmentName}-postgres-connections"
+      AlarmDescription: More than 80 database connections (2 tasks x DATABASE_POOL_MAX 10 is the plan).
+      Namespace: AWS/RDS
+      MetricName: DatabaseConnections
+      Dimensions:
+        - { Name: DBInstanceIdentifier, Value: !Ref Database }
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-AlarmTopicArn" }
+
+  # ---- Redis OSS 7.1 (cluster mode DISABLED: the stream-slot Lua scripts use multiple keys) -----
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      Description: DASH AI staging Redis - private subnets only
+      SubnetIds: !Split [",", !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-PrivateSubnetIds" }]
+
+  # noeviction: a stream slot or cancel marker is never silently evicted; a full Redis fails closed.
+  RedisParameterGroup:
+    Type: AWS::ElastiCache::ParameterGroup
+    Properties:
+      CacheParameterGroupFamily: redis7
+      Description: DASH AI staging Redis 7 - noeviction
+      Properties:
+        maxmemory-policy: noeviction
+
+  # Ephemeral by design (rate-limit counters and stream slots): no snapshots, safe to delete and
+  # recreate between sessions with the same id (docs/aws-staging.md, "Shutting staging down").
+  Redis:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Condition: WithRedis
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      ReplicationGroupId: !Sub "dash-ai-${EnvironmentName}-redis"
+      ReplicationGroupDescription: DASH AI staging Redis - shared rate limits and stream state
+      Engine: redis
+      EngineVersion: "7.1"
+      CacheNodeType: !Ref RedisNodeType
+      ClusterMode: disabled
+      NumCacheClusters: 1
+      AutomaticFailoverEnabled: false
+      MultiAZEnabled: false
+      Port: 6379
+      NetworkType: ipv4
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      SecurityGroupIds:
+        - !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-RedisSecurityGroupId" }
+      CacheParameterGroupName: !Ref RedisParameterGroup
+      TransitEncryptionEnabled: true
+      TransitEncryptionMode: required
+      AtRestEncryptionEnabled: true
+      AuthToken: !Sub "{{resolve:ssm-secure:${RedisAuthTokenParameterName}}}"
+      SnapshotRetentionLimit: 0
+      AutoMinorVersionUpgrade: true
+      PreferredMaintenanceWindow: "sun:03:30-sun:04:30"
+
+  RedisMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: WithRedis
+    Properties:
+      AlarmName: !Sub "dash-ai-${EnvironmentName}-redis-memory"
+      AlarmDescription: Redis memory above 80 % (noeviction - writes fail when full).
+      Namespace: AWS/ElastiCache
+      MetricName: DatabaseMemoryUsagePercentage
+      Dimensions:
+        - { Name: CacheClusterId, Value: !Sub "dash-ai-${EnvironmentName}-redis-001" }
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-AlarmTopicArn" }
+
+Outputs:
+  DatabaseAddress:
+    Value: !GetAtt Database.Endpoint.Address
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-DatabaseAddress" }
+  DatabasePort:
+    Value: !GetAtt Database.Endpoint.Port
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-DatabasePort" }
+  DatabaseMasterSecretArn:
+    Description: RDS-managed break-glass master credentials (read only by the ops task execution role).
+    Value: !GetAtt Database.MasterUserSecret.SecretArn
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-DatabaseMasterSecretArn" }
+  RedisAddress:
+    Condition: WithRedis
+    Value: !GetAtt Redis.PrimaryEndPoint.Address
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-RedisAddress" }
+  RedisPort:
+    Condition: WithRedis
+    Value: !GetAtt Redis.PrimaryEndPoint.Port
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-RedisPort" }

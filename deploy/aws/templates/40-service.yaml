@@ -1,0 +1,512 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  DASH AI STAGING (eu-west-1) 4/4 service: API task definition (image pinned by digest, Linux X86_64,
+  0.5 vCPU / 2 GB, fake providers only), the ECS service behind the ALB, least-privilege IAM, and two
+  one-off database task definitions that run only when an operator starts them. Nothing here runs a
+  migration. Not production.
+
+Rules:
+  StagingRegionOnly:
+    Assertions:
+      - Assert: !Equals [!Ref "AWS::Region", eu-west-1]
+        AssertDescription: DASH AI staging is defined for eu-west-1 (Ireland) only.
+  ExpectedAccountOnly:
+    Assertions:
+      - Assert: !Equals [!Ref "AWS::AccountId", !Ref ExpectedAccountId]
+        AssertDescription: ExpectedAccountId must be the account this stack is being deployed into.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    AllowedValues: [staging]
+    Default: staging
+  ExpectedAccountId:
+    Type: String
+    AllowedPattern: "^[0-9]{12}$"
+  ImageDigest:
+    Type: String
+    AllowedPattern: "^sha256:[a-f0-9]{64}$"
+    Description: >-
+      Digest of the reviewed linux/amd64 image in the staging ECR repository (never a tag, never
+      "latest"). Resolved after the push in Phase 5 (docs/aws-staging.md).
+  DesiredCount:
+    Type: Number
+    Default: 1
+    AllowedValues: [0, 1, 2]
+    Description: >-
+      API tasks. 1 normally; 0 until the database is migrated (Phase 5) and between sessions; 2 only for
+      the multi-instance session (Phase 10), then back to 1 (Phase 11).
+  ApiTaskCpu:
+    Type: Number
+    Default: 512
+    AllowedValues: [512, 1024]
+    Description: 512 = 0.5 vCPU (normal). 1024 only for a temporary document-extraction test revision.
+  EnableExecuteCommand:
+    Type: String
+    Default: "false"
+    AllowedValues: ["false", "true"]
+    Description: >-
+      ECS Exec for a diagnostic session. "true" adds a task role with SSM session permissions and turns
+      the read-only root filesystem off for that revision (the ECS Exec agent needs to write). Return
+      to "false" after the session.
+
+Conditions:
+  ExecEnabled: !Equals [!Ref EnableExecuteCommand, "true"]
+
+Resources:
+  # ---- IAM -------------------------------------------------------------------------------------
+  # Execution role: used by ECS (not by the application) to pull the image, write logs and inject
+  # the five API secrets. It cannot read anything else.
+  ApiExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "dash-ai-${EnvironmentName}-api-execution"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { "aws:SourceAccount": !Ref "AWS::AccountId" }
+              ArnLike: { "aws:SourceArn": !Sub "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*" }
+      Policies:
+        - PolicyName: pull-log-secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: EcrAuthTokenIsAccountWide
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: PullStagingImageOnly
+                Effect: Allow
+                Action: [ecr:BatchCheckLayerAvailability, ecr:GetDownloadUrlForLayer, ecr:BatchGetImage]
+                Resource: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-ApiRepositoryArn" }
+              - Sid: WriteStagingLogsOnly
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub
+                  - "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${LogGroup}:*"
+                  - LogGroup: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-ApiLogGroupName" }
+              - Sid: ReadTheFiveApiSecretsOnly
+                Effect: Allow
+                Action: ssm:GetParameters
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dash-ai/${EnvironmentName}/DATABASE_URL"
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dash-ai/${EnvironmentName}/REDIS_URL"
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dash-ai/${EnvironmentName}/DATA_ENCRYPTION_KEY"
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dash-ai/${EnvironmentName}/METRICS_TOKEN"
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dash-ai/${EnvironmentName}/OPERATOR_TOKEN"
+
+  # Application role: by default the API task has NO role, so no AWS credentials exist inside the
+  # container at all (nothing to steal through the task metadata endpoint; no Bedrock, no S3, no
+  # secrets). This role exists only for an ECS Exec session and allows the SSM session channel only.
+  ApiExecSessionTaskRole:
+    Type: AWS::IAM::Role
+    Condition: ExecEnabled
+    Properties:
+      RoleName: !Sub "dash-ai-${EnvironmentName}-api-exec-session"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { "aws:SourceAccount": !Ref "AWS::AccountId" }
+              ArnLike: { "aws:SourceArn": !Sub "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*" }
+      Policies:
+        - PolicyName: ecs-exec-session-channel
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: SsmSessionChannelHasNoResourceScope
+                Effect: Allow
+                Action:
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                Resource: "*"
+
+  # One-off database tasks: pull, log, and read the RDS-managed master secret and DATABASE_URL.
+  OpsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "dash-ai-${EnvironmentName}-ops-execution"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { "aws:SourceAccount": !Ref "AWS::AccountId" }
+              ArnLike: { "aws:SourceArn": !Sub "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*" }
+      Policies:
+        - PolicyName: pull-log-master-secret
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: EcrAuthTokenIsAccountWide
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: PullStagingImageOnly
+                Effect: Allow
+                Action: [ecr:BatchCheckLayerAvailability, ecr:GetDownloadUrlForLayer, ecr:BatchGetImage]
+                Resource: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-ApiRepositoryArn" }
+              - Sid: WriteStagingLogsOnly
+                Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub
+                  - "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${LogGroup}:*"
+                  - LogGroup: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-ApiLogGroupName" }
+              - Sid: ReadMasterSecretOnly
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-DatabaseMasterSecretArn" }
+              - Sid: ReadAppDatabaseUrlOnly
+                Effect: Allow
+                Action: ssm:GetParameters
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dash-ai/${EnvironmentName}/DATABASE_URL"
+
+  # ---- API task --------------------------------------------------------------------------------
+  # Environment = deploy/staging/staging.env.example with deploy/staging/first-bringup.env.example
+  # applied on top (non-secret, non-empty values; a test keeps them identical). Secrets come from
+  # SSM Parameter Store at task start and never appear in the task definition.
+  ApiTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "dash-ai-${EnvironmentName}-api"
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+        CpuArchitecture: X86_64
+      Cpu: !Ref ApiTaskCpu
+      Memory: "2048"
+      ExecutionRoleArn: !GetAtt ApiExecutionRole.Arn
+      TaskRoleArn: !If [ExecEnabled, !GetAtt ApiExecSessionTaskRole.Arn, !Ref "AWS::NoValue"]
+      ContainerDefinitions:
+        - Name: api
+          Image: !Sub
+            - "${Repository}@${ImageDigest}"
+            - Repository: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-ApiRepositoryUri" }
+          Essential: true
+          # The image's own command (node dist/index.js, node as PID 1); repeated so the record is explicit.
+          Command: [node, dist/index.js]
+          User: "1000:1000"
+          ReadonlyRootFilesystem: !If [ExecEnabled, false, true]
+          LinuxParameters:
+            Capabilities:
+              Drop: [ALL]
+            InitProcessEnabled: false
+          PortMappings:
+            - { ContainerPort: 8787, Protocol: tcp }
+          # Above SHUTDOWN_DRAIN_MS (20 s): SIGTERM, drain, then exit on its own before SIGKILL.
+          StopTimeout: 30
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-ApiLogGroupName" }
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: api
+          Environment:
+            - { Name: NODE_ENV, Value: "production" }
+            - { Name: HOST, Value: "0.0.0.0" }
+            - { Name: PORT, Value: "8787" }
+            - { Name: LOG_LEVEL, Value: "info" }
+            - { Name: PROVIDER_MODE, Value: "fake" }
+            - { Name: PROVIDER_DETAILS, Value: "hidden" }
+            - { Name: OPENAI_ENCRYPTED_REASONING, Value: "false" }
+            - { Name: BEDROCK_AUTH, Value: "iam" }
+            - { Name: BEDROCK_REGION, Value: "eu-west-1" }
+            - { Name: AI_ENABLED, Value: "true" }
+            - { Name: FREE_POOL_ENABLED, Value: "false" }
+            - { Name: PAID_PROVIDERS_ENABLED, Value: "false" }
+            - { Name: BEDROCK_ENABLED, Value: "false" }
+            - { Name: AI_DEFAULT_PLAN, Value: "standard" }
+            - { Name: AI_DEFAULT_SENSITIVITY, Value: "sensitive" }
+            - { Name: PROVIDER_TIMEOUT_MS, Value: "120000" }
+            - { Name: PROVIDER_IDLE_TIMEOUT_MS, Value: "45000" }
+            - { Name: PROVIDER_MAX_RETRIES, Value: "2" }
+            - { Name: PROVIDER_RETRY_BASE_MS, Value: "500" }
+            - { Name: MAX_OUTPUT_TOKENS, Value: "16000" }
+            - { Name: FAKE_STREAM_DELAY_MS, Value: "25" }
+            - { Name: DOCUMENT_EXTRACTION_TIMEOUT_MS, Value: "20000" }
+            - { Name: DOCUMENT_EXTRACTION_CONCURRENCY, Value: "2" }
+            - { Name: DOCUMENT_EXTRACTION_QUEUE, Value: "6" }
+            - { Name: DOCUMENT_EXTRACTION_QUEUE_WAIT_MS, Value: "15000" }
+            - { Name: DOCUMENT_UPLOADS_PER_ACCOUNT, Value: "4" }
+            - { Name: DOCUMENTS_MAX_PER_ACCOUNT, Value: "200" }
+            - { Name: RATE_LIMIT_CHAT_PER_MINUTE, Value: "20" }
+            - { Name: RATE_LIMIT_AUTH_PER_MINUTE, Value: "10" }
+            - { Name: RATE_LIMIT_UPLOAD_PER_MINUTE, Value: "10" }
+            - { Name: RATE_LIMIT_API_PER_MINUTE, Value: "240" }
+            - { Name: RATE_LIMIT_SYNC_PER_MINUTE, Value: "60" }
+            - { Name: RATE_LIMIT_LOGIN_PER_ACCOUNT, Value: "20" }
+            - { Name: MAX_CONCURRENT_STREAMS_PER_USER, Value: "3" }
+            - { Name: STREAM_SLOT_TTL_MS, Value: "20000" }
+            - { Name: REDIS_KEY_PREFIX, Value: "dash:" }
+            - { Name: SHUTDOWN_DRAIN_MS, Value: "20000" }
+            - { Name: RATE_LIMIT_BACKEND, Value: "redis" }
+            - { Name: SESSION_TTL_DAYS, Value: "30" }
+            - { Name: TRUST_PROXY, Value: "1" }
+            - { Name: DATABASE_SSL, Value: "require" }
+            - { Name: DATABASE_POOL_MAX, Value: "10" }
+            - { Name: DATABASE_POOL_ACQUIRE_TIMEOUT_MS, Value: "5000" }
+            - { Name: DATABASE_AUTO_MIGRATE, Value: "false" }
+            - { Name: DATA_ENCRYPTION_KEY_ID, Value: "k1" }
+            - { Name: ALLOW_MEMORY_STORE, Value: "false" }
+            - { Name: TOOLS_ENABLED, Value: "true" }
+            - { Name: TOOL_TIMEOUT_MS, Value: "10000" }
+            - { Name: TOOL_MAX_ROUNDS, Value: "4" }
+            - { Name: TOOL_MAX_RESULT_CHARS, Value: "20000" }
+            - { Name: AUTOMATIONS_ENABLED, Value: "true" }
+            - { Name: AUTOMATIONS_TICK_MS, Value: "15000" }
+            - { Name: AUTOMATIONS_CONCURRENCY, Value: "2" }
+            - { Name: AUTOMATIONS_MAX_PER_USER, Value: "25" }
+            - { Name: PUSH_TRANSPORT, Value: "none" }
+            - { Name: PUSH_TICK_MS, Value: "5000" }
+            - { Name: PUSH_MAX_ATTEMPTS, Value: "5" }
+            - { Name: PUSH_RETRY_BASE_MS, Value: "30000" }
+            - { Name: PUSH_TTL_SECONDS, Value: "86400" }
+          Secrets:
+            - Name: DATABASE_URL
+              ValueFrom: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dash-ai/${EnvironmentName}/DATABASE_URL"
+            - Name: REDIS_URL
+              ValueFrom: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dash-ai/${EnvironmentName}/REDIS_URL"
+            - Name: DATA_ENCRYPTION_KEY
+              ValueFrom: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dash-ai/${EnvironmentName}/DATA_ENCRYPTION_KEY"
+            - Name: METRICS_TOKEN
+              ValueFrom: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dash-ai/${EnvironmentName}/METRICS_TOKEN"
+            - Name: OPERATOR_TOKEN
+              ValueFrom: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dash-ai/${EnvironmentName}/OPERATOR_TOKEN"
+
+  ApiService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "dash-ai-${EnvironmentName}-api"
+      Cluster: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-ClusterName" }
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      TaskDefinition: !Ref ApiTaskDefinition
+      DesiredCount: !Ref DesiredCount
+      EnableExecuteCommand: !If [ExecEnabled, true, false]
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      HealthCheckGracePeriodSeconds: 60
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      LoadBalancers:
+        - ContainerName: api
+          ContainerPort: 8787
+          TargetGroupArn: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-ApiTargetGroupArn" }
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          # Public address for EGRESS only (ECR, CloudWatch Logs, SSM) instead of a NAT gateway. The
+          # security group's only inbound rule is tcp/8787 from the ALB's security group.
+          AssignPublicIp: ENABLED
+          Subnets: !Split [",", !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-PublicSubnetIds" }]
+          SecurityGroups:
+            - !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-ApiSecurityGroupId" }
+
+  # ---- One-off database tasks (never started by CloudFormation; an operator runs them) ---------
+  # Same reviewed image (it already holds the pg client and the RDS CA bundle, so TLS is verified),
+  # no task role (no AWS credentials inside), no environment from the API, read-only filesystem.
+
+  # PHASE 6: the mandatory read-only migration-history query, inside a READ ONLY transaction that is
+  # rolled back. Prints one JSON line; classification (A/B/C/D) is done by a person.
+  DbClassifyTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "dash-ai-${EnvironmentName}-db-classify"
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+        CpuArchitecture: X86_64
+      Cpu: "256"
+      Memory: "512"
+      ExecutionRoleArn: !GetAtt OpsExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: db-classify
+          Image: !Sub
+            - "${Repository}@${ImageDigest}"
+            - Repository: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-ApiRepositoryUri" }
+          Essential: true
+          User: "1000:1000"
+          ReadonlyRootFilesystem: true
+          LinuxParameters:
+            Capabilities:
+              Drop: [ALL]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-ApiLogGroupName" }
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: ops
+          Environment:
+            - Name: DB_HOST
+              Value: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-DatabaseAddress" }
+            - Name: DB_PORT
+              Value: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-DatabasePort" }
+            - { Name: DB_NAME, Value: dash_staging }
+          Secrets:
+            - Name: DB_USER
+              ValueFrom: !Sub
+                - "${Secret}:username::"
+                - Secret: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-DatabaseMasterSecretArn" }
+            - Name: DB_PASSWORD
+              ValueFrom: !Sub
+                - "${Secret}:password::"
+                - Secret: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-DatabaseMasterSecretArn" }
+          Command:
+            - node
+            - -e
+            - |
+              const { Client } = require("pg");
+              const report = (o) => console.log(JSON.stringify({ step: "phase-6-migration-history", ...o }));
+              const client = new Client({
+                host: process.env.DB_HOST, port: Number(process.env.DB_PORT), database: process.env.DB_NAME,
+                user: process.env.DB_USER, password: process.env.DB_PASSWORD,
+                ssl: { rejectUnauthorized: true }, connectionTimeoutMillis: 15000, statement_timeout: 15000,
+                application_name: "dash-ops-classify",
+              });
+              (async () => {
+                await client.connect();
+                await client.query("BEGIN TRANSACTION READ ONLY");
+                const readOnly = (await client.query("SHOW transaction_read_only")).rows[0].transaction_read_only;
+                let result;
+                try {
+                  const r = await client.query("SELECT id, name FROM schema_migrations WHERE id >= 10 ORDER BY id");
+                  result = { query: "ok", rowCount: r.rowCount, rows: r.rows };
+                } catch (e) {
+                  result = { query: "error", sqlstate: e.code, message: e.message };
+                }
+                await client.query("ROLLBACK");
+                await client.end();
+                report({ transactionReadOnly: readOnly, ...result, next: "Classify A/B/C/D by hand, report to the owner and STOP." });
+              })().catch((e) => {
+                report({ failed: true, sqlstate: e.code, message: e.message });
+                process.exit(1);
+              });
+
+  # PHASE 8 ONLY (after the owner's separate snapshot + migration approval): creates the application
+  # role dash_app from the owner-written DATABASE_URL parameter and makes it owner of dash_staging.
+  # The password never reaches the server in clear text: a SCRAM-SHA-256 verifier is sent instead.
+  # Refuses to run if dash_app already exists or the URL is not exactly this database.
+  DbAppRoleTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "dash-ai-${EnvironmentName}-db-app-role"
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+        CpuArchitecture: X86_64
+      Cpu: "256"
+      Memory: "512"
+      ExecutionRoleArn: !GetAtt OpsExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: db-app-role
+          Image: !Sub
+            - "${Repository}@${ImageDigest}"
+            - Repository: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-ApiRepositoryUri" }
+          Essential: true
+          User: "1000:1000"
+          ReadonlyRootFilesystem: true
+          LinuxParameters:
+            Capabilities:
+              Drop: [ALL]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-ApiLogGroupName" }
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: ops
+          Environment:
+            - Name: DB_HOST
+              Value: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-DatabaseAddress" }
+            - Name: DB_PORT
+              Value: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-DatabasePort" }
+            - { Name: DB_NAME, Value: dash_staging }
+          Secrets:
+            - Name: DB_USER
+              ValueFrom: !Sub
+                - "${Secret}:username::"
+                - Secret: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-DatabaseMasterSecretArn" }
+            - Name: DB_PASSWORD
+              ValueFrom: !Sub
+                - "${Secret}:password::"
+                - Secret: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-DatabaseMasterSecretArn" }
+            - Name: APP_DATABASE_URL
+              ValueFrom: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/dash-ai/${EnvironmentName}/DATABASE_URL"
+          Command:
+            - node
+            - -e
+            - |
+              const { Client } = require("pg");
+              const crypto = require("node:crypto");
+              const report = (o) => console.log(JSON.stringify({ step: "phase-8-app-role", ...o }));
+              const fail = (problems) => { report({ failed: true, problems }); process.exit(1); };
+              let url;
+              try { url = new URL(process.env.APP_DATABASE_URL); } catch { fail(["DATABASE_URL is not a URL"]); }
+              const user = decodeURIComponent(url.username);
+              const password = decodeURIComponent(url.password);
+              const problems = [];
+              if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") problems.push("scheme must be postgres://");
+              if (url.hostname !== process.env.DB_HOST) problems.push("host is not this staging database");
+              if (url.port !== "" && url.port !== process.env.DB_PORT) problems.push("port is not this staging database");
+              if (url.pathname !== "/" + process.env.DB_NAME) problems.push("database must be " + process.env.DB_NAME);
+              if (user !== "dash_app") problems.push("user must be dash_app");
+              if (!/^[A-Za-z0-9]{32,}$/.test(password)) problems.push("password must be 32+ letters/digits (openssl rand -hex 32)");
+              if (url.search !== "") problems.push("no query parameters (no sslmode): TLS is DATABASE_SSL=require");
+              if (problems.length > 0) fail(problems);
+              const salt = crypto.randomBytes(16);
+              const salted = crypto.pbkdf2Sync(password, salt, 4096, 32, "sha256");
+              const clientKey = crypto.createHmac("sha256", salted).update("Client Key").digest();
+              const storedKey = crypto.createHash("sha256").update(clientKey).digest("base64");
+              const serverKey = crypto.createHmac("sha256", salted).update("Server Key").digest("base64");
+              const verifier = `SCRAM-SHA-256$4096:${salt.toString("base64")}$${storedKey}:${serverKey}`;
+              const client = new Client({
+                host: process.env.DB_HOST, port: Number(process.env.DB_PORT), database: process.env.DB_NAME,
+                user: process.env.DB_USER, password: process.env.DB_PASSWORD,
+                ssl: { rejectUnauthorized: true }, connectionTimeoutMillis: 15000, statement_timeout: 15000,
+                application_name: "dash-ops-app-role",
+              });
+              (async () => {
+                await client.connect();
+                if ((await client.query("SELECT 1 FROM pg_roles WHERE rolname = 'dash_app'")).rowCount > 0) {
+                  await client.end();
+                  fail(["role dash_app already exists: STOP and report to the owner"]);
+                }
+                await client.query("BEGIN");
+                await client.query(`CREATE ROLE dash_app LOGIN PASSWORD ${client.escapeLiteral(verifier)}`);
+                await client.query("GRANT dash_app TO CURRENT_USER WITH INHERIT TRUE, SET TRUE");
+                await client.query(`ALTER DATABASE ${client.escapeIdentifier(process.env.DB_NAME)} OWNER TO dash_app`);
+                await client.query("COMMIT");
+                await client.end();
+                report({ created: "dash_app", databaseOwner: "dash_app", next: "Phase 8 continues in docs/aws-staging.md (owner-approved migration step)." });
+              })().catch((e) => {
+                report({ failed: true, sqlstate: e.code, message: e.message });
+                process.exit(1);
+              });
+
+Outputs:
+  ApiServiceName:
+    Value: !GetAtt ApiService.Name
+  ApiTaskDefinitionArn:
+    Value: !Ref ApiTaskDefinition
+  DbClassifyTaskDefinitionArn:
+    Value: !Ref DbClassifyTaskDefinition
+  DbAppRoleTaskDefinitionArn:
+    Value: !Ref DbAppRoleTaskDefinition
+  DeployedImageDigest:
+    Value: !Ref ImageDigest

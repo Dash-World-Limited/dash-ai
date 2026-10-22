@@ -1,0 +1,7 @@
+[
+  { "ParameterKey": "EnvironmentName", "ParameterValue": "staging" },
+  { "ParameterKey": "ExpectedAccountId", "ParameterValue": "<12-digit staging account id>" },
+  { "ParameterKey": "PostgresEngineVersion", "ParameterValue": "16" },
+  { "ParameterKey": "RedisEnabled", "ParameterValue": "true" },
+  { "ParameterKey": "RedisAuthTokenParameterName", "ParameterValue": "/dash-ai/staging/REDIS_AUTH_TOKEN" }
+]
