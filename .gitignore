@@ -8,6 +8,8 @@ local.properties
 google-services.json
 # Keys, certificates with keys, cloud credentials (none belong in the repository)
 *.pem
+# The one intentional exception: Amazon RDS public CA roots for eu-west-1 (no key; see docs/container.md).
+!deploy/container/certs/rds-eu-west-1-bundle.pem
 *.p12
 *.pfx
 *.key

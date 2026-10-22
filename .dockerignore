@@ -1,0 +1,61 @@
+# Build context for the API image (Dockerfile, docs/container.md).
+#
+# Allowlist: everything is excluded, then only the files the API build reads are let back in. A file
+# added anywhere else in the repository (a local .env, a key, a dump, an APK, scratch output) can
+# never reach the build context by accident.
+*
+
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!.npmrc
+!tsconfig.base.json
+!packages/contracts/package.json
+!packages/contracts/tsconfig.json
+!packages/contracts/tsconfig.build.json
+!packages/contracts/src/
+!apps/api/package.json
+!apps/api/tsconfig.json
+!apps/api/tsconfig.build.json
+!apps/api/src/
+!apps/web/package.json
+!deploy/container/certs/rds-eu-west-1-bundle.pem
+!deploy/container/certs/SHA256SUMS
+
+# Defence in depth: even inside the allowed directories, never send secrets, local state or output.
+**/.git
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.keystore
+**/*.jks
+**/id_rsa*
+**/id_ed25519*
+**/*service-account*.json
+**/*-credentials.json
+**/google-services.json
+**/.netrc
+**/*.tfstate*
+**/*.rdb
+**/*.sqlite*
+**/*.db
+**/*.dump
+**/*.sql.gz
+**/*.apk
+**/*.aab
+**/node_modules
+**/dist
+**/coverage
+**/.data
+**/test-results
+**/playwright-report
+**/screenshots
+**/*.tsbuildinfo
+**/.claude
+**/.pnpm-store
+
+# The one certificate file the image needs (public RDS CA roots), re-allowed after the *.pem rule.
+!deploy/container/certs/rds-eu-west-1-bundle.pem
