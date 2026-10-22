@@ -1,10 +1,16 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
+#
+# The BuildKit frontend above (docker/dockerfile:1) is pinned by digest like the base image below, so
+# this file is always parsed by the same frontend. Update both deliberately (docs/container.md).
 #
 # DASH AI API container image (docs/container.md). Only the API is packaged: the web app and the
 # Android app are built elsewhere. No secret is ever an input to this build: configuration and
 # credentials are supplied at run time by the platform (environment variables / secret manager).
 #
-#   docker build -t dash-ai-api:local .
+#   docker build --platform=linux/amd64 -t dash-ai-api:local .
+#
+# Target platform: linux/amd64 (ECS Fargate runtime platform X86_64). Always pass --platform so an
+# ARM workstation does not produce an ARM image; deploy/container/smoke.sh checks the result.
 #
 # Base image: Node 22 (22.23.4) on Debian bookworm-slim, pinned by digest so a rebuild of the same
 # commit uses the same base. Update the digest deliberately (docs/container.md "Updating the base").

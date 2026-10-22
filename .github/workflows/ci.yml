@@ -273,11 +273,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - name: Build the image (no build arguments, no secrets)
-        run: docker build -t dash-ai-api:ci .
+      - name: Build the image for linux/amd64, the Fargate X86_64 target (no build arguments, no secrets)
+        run: docker build --platform=linux/amd64 -t dash-ai-api:ci .
+      - name: The image is linux/amd64
+        run: test "$(docker image inspect dash-ai-api:ci --format '{{.Os}}/{{.Architecture}}')" = "linux/amd64"
       - name: Local container smoke test (throwaway PostgreSQL and Redis with TLS, fake providers only)
         run: deploy/container/smoke.sh dash-ai-api:ci
       - name: Image summary
         run: |
-          docker image inspect dash-ai-api:ci --format 'user={{.Config.User}} cmd={{json .Config.Cmd}} entrypoint={{json .Config.Entrypoint}} ports={{json .Config.ExposedPorts}} size={{.Size}}'
+          docker image inspect dash-ai-api:ci --format 'user={{.Config.User}} cmd={{json .Config.Cmd}} entrypoint={{json .Config.Entrypoint}} ports={{json .Config.ExposedPorts}} platform={{.Os}}/{{.Architecture}} size={{.Size}}'
           docker history --no-trunc dash-ai-api:ci

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # LOCAL container smoke test for the DASH AI API image (docs/container.md). Not a staging check.
 #
-#   deploy/container/smoke.sh [image]        (default image: dash-ai-api:local, built beforehand)
+#   deploy/container/smoke.sh [image]        (default image: dash-ai-api:local, built beforehand with
+#                                             docker build --platform=linux/amd64)
 #
 # Everything is throwaway and local: a private Docker network, PostgreSQL 16 and Redis 7, both with
 # TLS from a test CA generated for this run, and the API in the first bring-up configuration
@@ -101,7 +102,12 @@ grep -q '^PROVIDER_MODE=fake$' "$ENV_FILE" || fail "the first bring-up overlay n
 HARDEN=(--read-only --cap-drop ALL --security-opt no-new-privileges --network "$NET")
 run_tool() { docker run --rm "${HARDEN[@]}" -v "$WORK/ca.pem:/smoke/ca.pem:ro" --env-file "$ENV_FILE" "$@"; }
 
-# --- A/B. The image runs as non-root, with Node 22 and the expected command --------------------------
+# --- A/B. The image targets linux/amd64, runs as non-root, with Node 22 and the expected command ------
+# The staging task runs on Fargate X86_64; an image built for another platform must never pass.
+platform="$(docker image inspect "$IMAGE" --format '{{.Os}}/{{.Architecture}}')"
+[ "$platform" = "linux/amd64" ] || fail "the image platform is $platform, expected linux/amd64 (build with --platform=linux/amd64)"
+[ "$(docker run --rm --entrypoint uname "$IMAGE" -m)" = "x86_64" ] || fail "the image does not run as x86_64"
+pass "image platform: linux/amd64 (runs as x86_64)"
 [ "$(docker run --rm --entrypoint id "$IMAGE" -u)" != "0" ] || fail "the image runs as root"
 docker run --rm --entrypoint node "$IMAGE" -e 'process.exit(process.versions.node.startsWith("22.") ? 0 : 1)' || fail "not Node 22"
 docker run --rm --entrypoint sh "$IMAGE" -c 'test -f dist/index.js && test -f dist/migrate-cli.js && test -f dist/data-cli.js && test -f dist/documents/extractChild.js && test ! -e dist/smoke' \
