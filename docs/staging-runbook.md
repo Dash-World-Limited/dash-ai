@@ -43,7 +43,8 @@ first deployment, because `TRUST_PROXY` (§3) depends on them.
 
 - **PostgreSQL**: 14 or newer (CI and local tests use 16), reachable only from the API instances, TLS
   with a certificate the server can verify (`DATABASE_SSL=require` verifies it; `no-verify` and
-  `disable` log warnings at start-up). Point-in-time recovery or at least daily snapshots (§8).
+  `disable` log warnings at start-up). For Amazon RDS the image adds the RDS eu-west-1 root CAs through
+  `NODE_EXTRA_CA_CERTS` (docs/container.md, "Database TLS"); verification stays on. Point-in-time recovery or at least daily snapshots (§8).
   Server settings are used as the provider ships them; nothing in DASH AI needs a changed setting:
   - Pool: `DATABASE_POOL_MAX` (10) connections per instance; plan `instances × 10 + migrations + operators`
     against the server's `max_connections`.
@@ -90,8 +91,10 @@ first deployment, because `TRUST_PROXY` (§3) depends on them.
   read timeout above `PROVIDER_TIMEOUT_MS` (120 s; 180 s is a safe choice), request body limit ≥ 11 MB
   (10 MB uploads). Only the proxy may reach the API port (security group / firewall), otherwise a
   client could connect directly and choose its own `X-Forwarded-For`.
-- **Runtime**: Node 22, `pnpm install --frozen-lockfile && pnpm build`, start with
-  `node apps/api/dist/index.js`. Memory per instance at the default settings: document parsing runs in
+- **Runtime**: the container image built by the repository's `Dockerfile` (docs/container.md:
+  Node 22, non-root, read-only root filesystem, `node dist/index.js`; migrations with
+  `node dist/migrate-cli.js` from the same image). Without a container: Node 22,
+  `pnpm install --frozen-lockfile && pnpm build`, start with `node apps/api/dist/index.js`. Memory per instance at the default settings: document parsing runs in
   child processes of the same Node binary, each stopped above 640 MB resident, at most
   `DOCUMENT_EXTRACTION_CONCURRENCY` (2) at once, plus at most (2 + `DOCUMENT_EXTRACTION_QUEUE` 6) × 10 MB
   of upload bodies in memory, plus the server itself. Start with a **2 GB** memory limit per instance
@@ -223,6 +226,7 @@ fallback), `[[fake:slow]]`. Record each result with the deployed SHA.
 **System**
 - [ ] `/health` 200 and `/ready` 200 `ready` on every instance; start-up log: `"backend":"redis"`, only the two expected `PROVIDER_MODE=fake` warnings, no stack traces.
 - [ ] `/metrics` with the token shows the series in §5; without it 401; `/v1/providers` without the operator token 404.
+- [ ] **Blocker before the first deployment:** the committed RDS CA bundle's SHA-256 and certificate fingerprints match an independent download made on a trusted workstation (docs/container.md, "Before the first staging deployment"); the check is recorded.
 - [ ] Database TLS: `DATABASE_SSL=require` with no start-up warning.
 - [ ] SIGTERM one instance while idle: `/ready` 503 `draining` at once, exits within a few seconds, load balancer stops routing to it.
 

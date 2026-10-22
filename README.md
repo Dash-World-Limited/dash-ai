@@ -104,6 +104,7 @@ answers are clearly labelled simulations. To use a live server, open *Settings �
 | Store contract, migration, encryption and restart tests on a real PostgreSQL; whole API suite on PostgreSQL | `apps/api/test` (`test:pg`) | ✅ (Postgres service container) |
 | Adversarial tool-invocation and hostile-document tests | `apps/api/test` | ✅ |
 | Live provider smoke test | `pnpm smoke:live`, `live-smoke.yml` | Manual only (real keys from a protected environment, real cost); providers without credentials are skipped and reported as not verified |
+| API container image: build, then a local smoke test (throwaway TLS PostgreSQL + Redis, fake providers, read-only non-root container); never pushed | `Dockerfile`, `deploy/container/smoke.sh` | ✅ |
 | Workflow lint (actionlint) | `ci.yml` | ✅ |
 | Android app module: compile, Robolectric/Room tests, lint, debug APK check | `android.yml` | ✅ when Android or contract files change, or on demand |
 | Unsigned release APK | `release.yml` | Manual only |
@@ -133,6 +134,7 @@ before a runner starts (an account-level restriction), so the local results in
 - [Roadmap](docs/roadmap.md) — including every mocked or unfinished capability
 - [Release readiness](docs/release-readiness.md) — every gate, its evidence, and what it still needs
 - [Staging runbook](docs/staging-runbook.md) — prepared (not executed) staging deployment, secrets, rollback, smoke checklist
+- [API container image](docs/container.md) — Dockerfile, RDS CA trust, runtime layout and the local container smoke test (no deployment)
 
 ## Brand asset notice
 
