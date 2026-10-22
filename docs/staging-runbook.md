@@ -6,6 +6,12 @@ and the repository contains no deployment workflow. This is the procedure for th
 so that session does not need to redesign anything. No real hostname, account, credential or key exists
 in this repository: every `<…>` below is yours to choose.
 
+**AWS staging (prepared 2026-10-22, not executed).** The platform is now chosen: AWS eu-west-1, ALB →
+ECS Fargate → RDS PostgreSQL 16 + ElastiCache Redis OSS 7.1, defined as code in `deploy/aws/` with
+the controlled Phase 1–11 sequence in [aws-staging.md](aws-staging.md). The sections below remain the
+platform-neutral reference (smoke plan, TRUST_PROXY test, rollback); where they differ in mechanics,
+aws-staging.md is the AWS procedure. No AWS resource exists yet.
+
 **Mutation gate.** Every step that changes infrastructure needs the owner's explicit approval first:
 creating or rebuilding a staging database, applying migrations, creating or changing staging secrets,
 provisioning cloud resources, DNS, and starting a deployment. The only step allowed without that is

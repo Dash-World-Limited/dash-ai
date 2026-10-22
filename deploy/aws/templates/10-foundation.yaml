@@ -1,0 +1,439 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  DASH AI STAGING (eu-west-1) 1/4 foundation: VPC without a NAT gateway, security groups, ECR
+  repository, API log group, ECS cluster, alarm topic and the monthly cost budget. Not production.
+  See docs/aws-staging.md. Deployed only through a reviewed change set (Phase 3).
+
+# Every template refuses to run outside eu-west-1, outside the account the owner names, or for any
+# environment other than "staging". Nothing here can be pointed at production by changing a parameter.
+Rules:
+  StagingRegionOnly:
+    Assertions:
+      - Assert: !Equals [!Ref "AWS::Region", eu-west-1]
+        AssertDescription: DASH AI staging is defined for eu-west-1 (Ireland) only.
+  ExpectedAccountOnly:
+    Assertions:
+      - Assert: !Equals [!Ref "AWS::AccountId", !Ref ExpectedAccountId]
+        AssertDescription: ExpectedAccountId must be the account this stack is being deployed into.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    AllowedValues: [staging]
+    Default: staging
+    Description: Fixed. These templates describe the staging environment only.
+  ExpectedAccountId:
+    Type: String
+    AllowedPattern: "^[0-9]{12}$"
+    Description: The 12-digit AWS account id the owner approved for staging (a guard, not a secret).
+  AlertEmail:
+    Type: String
+    AllowedPattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+    Description: Receives budget and alarm emails (the SNS subscription must be confirmed by email).
+  VpcCidr:
+    Type: String
+    Default: 10.40.0.0/16
+    AllowedPattern: "^10\\.[0-9]{1,3}\\.0\\.0/16$"
+    Description: Private /16 for the staging VPC; four /24 subnets are carved from it.
+
+Resources:
+  # ---- Network: 2 public subnets (ALB, API tasks) and 2 private subnets (RDS, Redis), no NAT ----
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - { Key: Name, Value: !Sub "dash-ai-${EnvironmentName}" }
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - { Key: Name, Value: !Sub "dash-ai-${EnvironmentName}" }
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [0, !Cidr [!GetAtt Vpc.CidrBlock, 4, 8]]
+      # Public addresses are assigned explicitly per ECS task (AssignPublicIp), never by default.
+      MapPublicIpOnLaunch: false
+      Tags:
+        - { Key: Name, Value: !Sub "dash-ai-${EnvironmentName}-public-a" }
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [1, !Cidr [!GetAtt Vpc.CidrBlock, 4, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - { Key: Name, Value: !Sub "dash-ai-${EnvironmentName}-public-b" }
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [2, !Cidr [!GetAtt Vpc.CidrBlock, 4, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - { Key: Name, Value: !Sub "dash-ai-${EnvironmentName}-private-a" }
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [3, !Cidr [!GetAtt Vpc.CidrBlock, 4, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - { Key: Name, Value: !Sub "dash-ai-${EnvironmentName}-private-b" }
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - { Key: Name, Value: !Sub "dash-ai-${EnvironmentName}-public" }
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  # Private subnets have only the implicit local route: no internet route in or out.
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - { Key: Name, Value: !Sub "dash-ai-${EnvironmentName}-private" }
+
+  PrivateSubnetARoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetBRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
+
+  # ---- Security groups. Rules are separate resources so groups can reference each other. --------
+  # A group created without egress rules allows all egress, so groups that must send nothing get a
+  # single placeholder egress rule (ICMP type 255 to 127.0.0.1/32), which matches no real traffic.
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: DASH AI staging ALB - HTTPS (and HTTP redirect) from the internet
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS from the internet }
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0, Description: HTTP from the internet (301 to HTTPS only) }
+      SecurityGroupEgress:
+        - { IpProtocol: icmp, FromPort: 255, ToPort: 255, CidrIp: 127.0.0.1/32, Description: placeholder - no default egress }
+      Tags:
+        - { Key: Name, Value: !Sub "dash-ai-${EnvironmentName}-alb" }
+
+  ApiSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: DASH AI staging API tasks - inbound from the ALB only
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        # ECR, CloudWatch Logs and SSM are reached over HTTPS through the task's public address.
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS to AWS service endpoints }
+      Tags:
+        - { Key: Name, Value: !Sub "dash-ai-${EnvironmentName}-api" }
+
+  OpsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: DASH AI staging one-off database tasks - no inbound
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS to AWS service endpoints }
+      Tags:
+        - { Key: Name, Value: !Sub "dash-ai-${EnvironmentName}-ops" }
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: DASH AI staging PostgreSQL - from API and ops tasks only
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - { IpProtocol: icmp, FromPort: 255, ToPort: 255, CidrIp: 127.0.0.1/32, Description: placeholder - no default egress }
+      Tags:
+        - { Key: Name, Value: !Sub "dash-ai-${EnvironmentName}-db" }
+
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: DASH AI staging Redis - from API tasks only
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - { IpProtocol: icmp, FromPort: 255, ToPort: 255, CidrIp: 127.0.0.1/32, Description: placeholder - no default egress }
+      Tags:
+        - { Key: Name, Value: !Sub "dash-ai-${EnvironmentName}-redis" }
+
+  AlbToApiEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref AlbSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8787
+      ToPort: 8787
+      DestinationSecurityGroupId: !Ref ApiSecurityGroup
+      Description: ALB to the API port only
+
+  ApiFromAlbIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ApiSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8787
+      ToPort: 8787
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Description: The only inbound rule of the API - from the ALB
+
+  ApiToDatabaseEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ApiSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
+      Description: API to PostgreSQL
+
+  ApiToRedisEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ApiSecurityGroup
+      IpProtocol: tcp
+      FromPort: 6379
+      ToPort: 6379
+      DestinationSecurityGroupId: !Ref RedisSecurityGroup
+      Description: API to Redis
+
+  OpsToDatabaseEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref OpsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
+      Description: One-off database tasks to PostgreSQL
+
+  DatabaseFromApiIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DatabaseSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref ApiSecurityGroup
+      Description: PostgreSQL from API tasks
+
+  DatabaseFromOpsIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DatabaseSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref OpsSecurityGroup
+      Description: PostgreSQL from one-off database tasks
+
+  RedisFromApiIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref RedisSecurityGroup
+      IpProtocol: tcp
+      FromPort: 6379
+      ToPort: 6379
+      SourceSecurityGroupId: !Ref ApiSecurityGroup
+      Description: Redis from API tasks
+
+  # ---- Image registry: private, immutable tags; deployments reference the image digest ---------
+  ApiRepository:
+    Type: AWS::ECR::Repository
+    # Images are the deployment record: deleting the stack never deletes them.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RepositoryName: !Sub "dash-ai-${EnvironmentName}/api"
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules":[{"rulePriority":1,"description":"Keep the 15 most recent images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":15},"action":{"type":"expire"}}]}
+
+  # ---- Logs: API and one-off tasks; no request bodies, prompts or secrets are logged by the API ---
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/dash-ai/${EnvironmentName}/api"
+      RetentionInDays: 14
+
+  # Error-level lines (pino level >= 50), e.g. "shutdown did not finish in time", a missing migration.
+  ErrorLogMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApiLogGroup
+      FilterPattern: "{ $.level >= 50 }"
+      MetricTransformations:
+        - MetricNamespace: !Sub "DashAI/${EnvironmentName}"
+          MetricName: ApiErrorLogLines
+          MetricValue: "1"
+          DefaultValue: 0
+
+  ErrorLogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "dash-ai-${EnvironmentName}-api-error-logs"
+      AlarmDescription: The API logged at error level or above.
+      Namespace: !Sub "DashAI/${EnvironmentName}"
+      MetricName: ApiErrorLogLines
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  # ---- Compute cluster (no capacity of its own; Fargate only). Container Insights off (cost). ----
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "dash-ai-${EnvironmentName}"
+      CapacityProviders: [FARGATE]
+      ClusterSettings:
+        - { Name: containerInsights, Value: disabled }
+
+  # ---- Alerts --------------------------------------------------------------------------------
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "dash-ai-${EnvironmentName}-alarms"
+
+  AlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # AWS Budgets NOTIFIES; it does not cap or stop spending. Account-wide on purpose: it also sees
+  # anything created outside these stacks. Thresholds: $40 actual, $50 forecast, $60 actual.
+  MonthlyCostBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub "dash-ai-${EnvironmentName}-monthly-cost"
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: 60
+          Unit: USD
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 40
+            ThresholdType: ABSOLUTE_VALUE
+          Subscribers:
+            - { SubscriptionType: EMAIL, Address: !Ref AlertEmail }
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 50
+            ThresholdType: ABSOLUTE_VALUE
+          Subscribers:
+            - { SubscriptionType: EMAIL, Address: !Ref AlertEmail }
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 60
+            ThresholdType: ABSOLUTE_VALUE
+          Subscribers:
+            - { SubscriptionType: EMAIL, Address: !Ref AlertEmail }
+
+Outputs:
+  VpcId:
+    Value: !Ref Vpc
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-VpcId" }
+  PublicSubnetIds:
+    Value: !Join [",", [!Ref PublicSubnetA, !Ref PublicSubnetB]]
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-PublicSubnetIds" }
+  PrivateSubnetIds:
+    Value: !Join [",", [!Ref PrivateSubnetA, !Ref PrivateSubnetB]]
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-PrivateSubnetIds" }
+  AlbSecurityGroupId:
+    Value: !Ref AlbSecurityGroup
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-AlbSecurityGroupId" }
+  ApiSecurityGroupId:
+    Value: !Ref ApiSecurityGroup
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-ApiSecurityGroupId" }
+  OpsSecurityGroupId:
+    Value: !Ref OpsSecurityGroup
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-OpsSecurityGroupId" }
+  DatabaseSecurityGroupId:
+    Value: !Ref DatabaseSecurityGroup
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-DatabaseSecurityGroupId" }
+  RedisSecurityGroupId:
+    Value: !Ref RedisSecurityGroup
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-RedisSecurityGroupId" }
+  ApiRepositoryName:
+    Value: !Ref ApiRepository
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-ApiRepositoryName" }
+  ApiRepositoryArn:
+    Value: !GetAtt ApiRepository.Arn
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-ApiRepositoryArn" }
+  ApiRepositoryUri:
+    Value: !GetAtt ApiRepository.RepositoryUri
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-ApiRepositoryUri" }
+  ApiLogGroupName:
+    Value: !Ref ApiLogGroup
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-ApiLogGroupName" }
+  ClusterName:
+    Value: !Ref Cluster
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-ClusterName" }
+  AlarmTopicArn:
+    Value: !Ref AlarmTopic
+    Export: { Name: !Sub "dash-ai-${EnvironmentName}-AlarmTopicArn" }

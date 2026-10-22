@@ -222,12 +222,13 @@ Firebase key; a demonstration chat; PDF and DOCX extraction in a child process; 
 in flight (drained, exit 0); no file written; a new container decrypting the same data with the same
 key; and a different key refused. No provider, Firebase or cloud service is contacted.
 
-## Future image path (not implemented here)
+## Image path to staging (prepared, not executed)
 
-GitHub (reviewed commit) or an approved workstation → `docker build --platform=linux/amd64` → push
-to Amazon ECR (eu-west-1) → ECS Fargate task definition with runtime platform `LINUX` / `X86_64`,
-referencing the image by digest → service behind the ALB. Before the first push, the RDS bundle's
-provenance must be verified (see "Before the first staging deployment").
-Secrets are referenced from AWS Secrets Manager in the task definition, never baked into the image.
-How images are pushed and deployed (and with what credentials) is a separate, owner-approved change;
-this repository contains no deployment pipeline and no AWS credentials.
+GitHub (reviewed commit, CI green) → `docker build --platform=linux/amd64` on an approved workstation
+→ local smoke → push to the private, tag-immutable Amazon ECR repository `dash-ai-staging/api`
+(eu-west-1) → resolve the image **digest** → ECS Fargate task definition (runtime platform `LINUX` /
+`X86_64`) referencing `<repository>@sha256:…` → service behind the ALB. The exact commands and
+approval gates are docs/aws-staging.md Phase 5; the RDS bundle's provenance check (Phase 4) comes
+first. Runtime secrets are SSM Parameter Store SecureString values injected by ECS at task start,
+never baked into the image. No push or deployment has been performed, and this repository contains
+no deployment pipeline and no AWS credentials.

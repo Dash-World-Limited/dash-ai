@@ -57,3 +57,7 @@ dump.rdb
 # Web app build and browser-test output
 apps/web/test-results/
 apps/web/playwright-report/
+
+# Python bytecode (deploy/aws/tests)
+__pycache__/
+*.pyc

@@ -283,3 +283,29 @@ jobs:
         run: |
           docker image inspect dash-ai-api:ci --format 'user={{.Config.User}} cmd={{json .Config.Cmd}} entrypoint={{json .Config.Entrypoint}} ports={{json .Config.ExposedPorts}} platform={{.Os}}/{{.Architecture}} size={{.Size}}'
           docker history --no-trunc dash-ai-api:ci
+
+  infrastructure:
+    name: Staging infrastructure code (cfn-lint, policy tests, one-off database scripts on local TLS PostgreSQL; no AWS)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Offline only: this job has no AWS credentials, calls no AWS API and deploys nothing.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Build the API (the one-off database scripts use its pg client and migrate-cli)
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @dash-ai/contracts build
+          pnpm --filter @dash-ai/api build
+      - name: Pinned validation tools (hash-checked)
+        run: |
+          python3 -m venv /tmp/iac-venv
+          /tmp/iac-venv/bin/pip install --require-hashes -r deploy/aws/requirements.txt
+      - name: cfn-lint, policy tests and the one-off database scripts (local PostgreSQL 16 with TLS)
+        run: PATH="/tmp/iac-venv/bin:$PATH" deploy/aws/validate.sh --ops-db
