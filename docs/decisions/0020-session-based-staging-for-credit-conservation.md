@@ -1,6 +1,6 @@
 # ADR 0020: Session-based staging for AWS credit conservation
 
-**Status:** proposed (awaiting the owner's review and merge outside Claude). Nothing has been provisioned.
+**Status:** accepted (merged by the owner on 2026-10-23 in PR #22, merge commit `b7471ce`). Nothing has been provisioned.
 
 ## Context
 

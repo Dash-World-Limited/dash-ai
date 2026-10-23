@@ -15,6 +15,8 @@ readiness (see `docs/staging-runbook.md` and `docs/release-readiness.md` for wha
 - Infrastructure code: `deploy/aws/templates/*.yaml` (AWS CloudFormation, ADR 0019; session-based staging, ADR 0020)
 - Parameter examples: `deploy/aws/parameters/*.example.json` (placeholders only)
 - Offline validation: `deploy/aws/validate.sh` (cfn-lint, policy tests, one-off database scripts)
+- Owner helper for Phases 3–6: `deploy/aws/staging-bringup.sh` (each AWS step separate; change sets
+  created and reviewed before execution)
 - Image: the existing `Dockerfile` (docs/container.md); no second Dockerfile
 - Application configuration model: `deploy/staging/staging.env.example` +
   `deploy/staging/first-bringup.env.example` (docs/staging-runbook.md)
@@ -53,8 +55,10 @@ Four stacks, each deployed only through a reviewed change set:
 Every template refuses to deploy outside **eu-west-1**, into any account other than the
 `ExpectedAccountId` the owner passes, or for any environment name other than `staging`
 (CloudFormation `Rules`). The edge stack only accepts a hostname containing the word `staging`. There
-is no Lambda, custom resource, scheduler or pipeline: CloudFormation creates resources and runs no code
-(a test forbids any other resource type).
+is no Lambda, custom resource or pipeline, and CloudFormation runs no code (a test forbids any other
+resource type). The one scheduled action is the data stack's EventBridge Scheduler schedule
+(`DatabaseAutoStop`), which calls `rds:StopDBInstance` on the staging database at 01:00 UTC; it runs no
+code either.
 
 ## 2. Security model
 
@@ -151,8 +155,8 @@ Common change-set pattern (used for every stack; `<n>` is a short label such as 
 
 ```sh
 R=eu-west-1
-# TYPE=CREATE for a new stack, UPDATE for an existing one. Add --capabilities CAPABILITY_NAMED_IAM
-# for the service stack only (it creates named IAM roles).
+# TYPE=CREATE for a new stack, UPDATE for an existing one.
+# Add --capabilities CAPABILITY_NAMED_IAM for the data and service stacks (both create named IAM roles).
 aws cloudformation create-change-set --region $R --stack-name <stack> --change-set-name <n> \
   --change-set-type $TYPE \
   --template-body file://deploy/aws/templates/<template>.yaml \
@@ -188,10 +192,15 @@ keys, and never credentials injected into an AI session's environment.
 In order:
 
 1. `dash-ai-staging-foundation` (change set; needs `ExpectedAccountId`, `AlertEmail`). Confirm the
-   SNS subscription email. The budget starts notifying at $40 actual / $50 forecast / $60 actual.
+   SNS subscription email. The budget (gross usage, credits excluded) notifies at $10 actual / $15
+   forecast / $25 actual, and Cost Anomaly Detection emails daily for anomalies of $3 or more. If
+   `aws ce get-anomaly-monitors --region us-east-1` already lists an AWS-services (`DIMENSIONAL`,
+   `SERVICE`) monitor, set `CostAnomalyMonitorEnabled=false` (an account can hold only one); the change
+   set then adds 35 resources instead of 37.
 2. Create `/dash-ai/staging/REDIS_AUTH_TOKEN`, `DATA_ENCRYPTION_KEY` (+ offline escrow),
    `METRICS_TOKEN`, `OPERATOR_TOKEN` (§4).
-3. `dash-ai-staging-data` (change set). Takes ~10–20 minutes. Then enable termination protection:
+3. `dash-ai-staging-data` (change set, `CAPABILITY_NAMED_IAM` for the daily-stop role). Takes
+   ~10–20 minutes. Then enable termination protection:
    `aws cloudformation update-termination-protection --region eu-west-1 --stack-name dash-ai-staging-data --enable-termination-protection`.
 4. Create `/dash-ai/staging/REDIS_URL` from the data stack output `RedisAddress`.
 5. `dash-ai-staging-edge` (change set; `StagingApiHostname`). **DNS gate:** the stack waits on the

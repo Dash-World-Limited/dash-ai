@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DASH AI staging bring-up helper (Phases 3-6 of docs/aws-staging.md), session-based layout (ADR 0020).
-# Requires the merged credit-conservation PR: set EXPECTED_SHA to the commit DAVID merged.
+# Set EXPECTED_SHA to the approved commit of claude/mvp-foundation that contains this file.
 #
 # RUN ONLY ON THE OWNER'S TRUSTED WORKSTATION, with a short-lived MFA/SSO session
 # (aws sso login --profile <profile>). Never with static access keys. Never in an AI session's env.
@@ -30,6 +30,8 @@
 #   image                           PHASE 5: build, smoke, push by SHA tag, digest, ECR scan
 #   service-verify                  read-only: service desired/running = 0, task definition checks
 #   classify                        PHASE 6: the read-only migration-history task, then prints the log
+#   capabilities foundation|data|edge|service        no AWS call: the IAM capability cs-create passes
+#   expected-resources foundation|data|edge|service  no AWS call: the resources a CREATE must add
 #
 # Required environment (non-secret):
 #   DASH_REPO            path to a clean checkout of Dash-World-Limited/dash-ai at the SHA below
@@ -42,7 +44,7 @@
 set -euo pipefail
 
 R=eu-west-1
-SHA="${EXPECTED_SHA:?set EXPECTED_SHA to the merged commit of the credit-conservation PR}"
+SHA="${EXPECTED_SHA:?set EXPECTED_SHA to the approved commit of claude/mvp-foundation}"
 ENV_NAME=staging
 WORK_DIR="${DASH_STAGING_DIR:-$HOME/dash-ai-staging}"
 PARAMS="$WORK_DIR/params"
@@ -69,10 +71,48 @@ template_for() {
     *) die "unknown stack '$1' (foundation|data|edge|service)" ;;
   esac
 }
-# Resource counts of the reviewed templates for this configuration
-# (RedisEnabled=true, no Route 53 validation, EnableExecuteCommand=false).
-# foundation incl. the anomaly monitor; data incl. Redis and the daily DB stop; service with ServiceEnabled=false.
-expected_adds() { case "$1" in foundation) echo 37 ;; data) echo 11 ;; edge) echo 11 ;; service) echo 5 ;; esac; }
+# IAM capability each stack's change set needs. data (postgres-autostop, with DatabaseAutoStop=true) and
+# service create NAMED IAM roles; without CAPABILITY_NAMED_IAM CloudFormation rejects the change set.
+# deploy/aws/tests/test_bringup_helper.py keeps this in step with the templates.
+stack_capabilities() { case "$1" in data|service) echo CAPABILITY_NAMED_IAM ;; foundation|edge) ;; *) die "unknown stack '$1'" ;; esac; }
+# param_value FILE KEY DEFAULT: a parameter from a filled parameter file, or the template default.
+param_value() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import json, sys
+path, key, default = sys.argv[1:]
+print(next((e["ParameterValue"] for e in json.load(open(path)) if e["ParameterKey"] == key), default))
+PY
+}
+# The logical ids a CREATE change set must add: every unconditional resource of the reviewed template,
+# plus the conditional ones this stack's parameter file switches on (defaults = the template defaults).
+# deploy/aws/tests/test_bringup_helper.py checks these lists against the templates' Conditions.
+expected_resources() {
+  local s="$1" f="$PARAMS/$1.json"
+  [ -f "$f" ] || die "missing $f (run params / image first)"
+  case "$s" in
+    foundation)
+      echo Vpc InternetGateway InternetGatewayAttachment PublicSubnetA PublicSubnetB PrivateSubnetA PrivateSubnetB \
+        PublicRouteTable PublicDefaultRoute PublicSubnetARoutes PublicSubnetBRoutes PrivateRouteTable PrivateSubnetARoutes \
+        PrivateSubnetBRoutes AlbSecurityGroup ApiSecurityGroup OpsSecurityGroup DatabaseSecurityGroup RedisSecurityGroup \
+        AlbToApiEgress ApiFromAlbIngress ApiToDatabaseEgress ApiToRedisEgress OpsToDatabaseEgress DatabaseFromApiIngress \
+        DatabaseFromOpsIngress RedisFromApiIngress ApiRepository ApiLogGroup ErrorLogMetricFilter ErrorLogAlarm Cluster \
+        AlarmTopic AlarmEmailSubscription MonthlyCostBudget
+      [ "$(param_value "$f" CostAnomalyMonitorEnabled true)" != true ] || echo CostAnomalyMonitor CostAnomalySubscription ;;
+    data)
+      echo DatabaseSubnetGroup DatabaseParameterGroup Database DatabaseFreeStorageAlarm DatabaseConnectionsAlarm \
+        RedisSubnetGroup RedisParameterGroup
+      [ "$(param_value "$f" DatabaseAutoStop true)" != true ] || echo DatabaseAutoStopRole DatabaseAutoStopSchedule
+      [ "$(param_value "$f" RedisEnabled true)" != true ] || echo Redis RedisMemoryAlarm ;;
+    edge)
+      echo Certificate LoadBalancer ApiTargetGroup HttpListener HttpsListener MetricsNotFoundRule UnhealthyTargetsAlarm \
+        Target5xxAlarm Elb5xxAlarm SecondTaskLeftRunningAlarm SessionLeftRunningAlarm ;;
+    service)
+      echo ApiExecutionRole OpsExecutionRole ApiTaskDefinition DbClassifyTaskDefinition DbAppRoleTaskDefinition
+      [ "$(param_value "$f" EnableExecuteCommand false)" != true ] || echo ApiExecSessionTaskRole
+      [ "$(param_value "$f" ServiceEnabled false)" != true ] || echo ApiService ;;
+    *) die "unknown stack '$s' (foundation|data|edge|service)" ;;
+  esac | tr ' ' '\n' | grep -v '^$' | sort
+}
 # Removals a reviewed UPDATE may contain (parking Redis, ending a session). Never the database.
 allowed_removals() { case "$1" in data) echo "Redis RedisMemoryAlarm" ;; service) echo "ApiService" ;; esac; }
 allowed_types() {
@@ -110,7 +150,7 @@ check_no_database_url() {
 step_preflight() {
   command -v aws >/dev/null || die "AWS CLI v2 not installed"
   aws --version 2>&1 | grep -q 'aws-cli/2' || die "AWS CLI v2 required"
-  command -v git >/dev/null && command -v openssl >/dev/null || die "git and openssl are required"
+  command -v git >/dev/null && command -v openssl >/dev/null && command -v python3 >/dev/null || die "git, openssl and python3 are required"
   check_identity; check_repo
   for s in foundation data edge service; do info "$(stack_name $s): $(stack_status "$(stack_name $s)")"; done
   info "existing parameters under /dash-ai/$ENV_NAME/ (names only):"
@@ -162,7 +202,7 @@ EOF
 }
 
 step_cs_create() {
-  local s="$1" st tpl type name caps=()
+  local s="$1" st tpl type name cap caps=()
   check_identity; check_repo
   st="$(stack_name "$s")"; tpl="$DASH_REPO/deploy/aws/templates/$(template_for "$s")"
   [ -f "$PARAMS/$s.json" ] || die "missing $PARAMS/$s.json (run params / image first)"
@@ -170,10 +210,11 @@ step_cs_create() {
     data) for p in REDIS_AUTH_TOKEN DATA_ENCRYPTION_KEY METRICS_TOKEN OPERATOR_TOKEN; do param_exists "/dash-ai/$ENV_NAME/$p" || die "create the initial secrets first (step: secrets)"; done ;;
     edge) case "$(stack_status "$(stack_name data)")" in CREATE_COMPLETE|UPDATE_COMPLETE) ;; *) die "data stack is not complete" ;; esac
           param_exists "/dash-ai/$ENV_NAME/REDIS_URL" || die "create REDIS_URL first (step: redis-url)" ;;
-    service) caps=(--capabilities CAPABILITY_NAMED_IAM); check_no_database_url
+    service) check_no_database_url
              grep -q '"ServiceEnabled", "ParameterValue": "false"' "$PARAMS/service.json" \
                || case "$(stack_status "$(stack_name edge)")" in CREATE_COMPLETE|UPDATE_COMPLETE) ;; *) die "ServiceEnabled=true needs the edge stack" ;; esac ;;
   esac
+  cap="$(stack_capabilities "$s")"; [ -z "$cap" ] || caps=(--capabilities "$cap")
   case "$(stack_status "$st")" in ABSENT|REVIEW_IN_PROGRESS) type=CREATE ;; *) type=UPDATE ;; esac
   name="$s-$(date -u +%Y%m%dT%H%M%SZ)"
   awsr cloudformation create-change-set --stack-name "$st" --change-set-name "$name" --change-set-type "$type" \
@@ -187,7 +228,7 @@ step_cs_create() {
 }
 
 step_cs_review() {
-  local s="$1" st name f bad adds types t
+  local s="$1" st name f bad adds want types t
   check_identity
   st="$(stack_name "$s")"; name="$(cat "$REVIEW/$s.changeset")"; f="$REVIEW/$s-$name.json"
   awsr cloudformation describe-change-set --stack-name "$st" --change-set-name "$name" --include-property-values >"$f" 2>/dev/null \
@@ -202,9 +243,13 @@ step_cs_review() {
     case " $(allowed_removals "$s") " in *" $bad "*) info "reviewed removal: $bad" ;; *) die "change set REMOVES $bad: do not execute; report to the owner" ;; esac
   done
   if [ "$(awsr cloudformation describe-change-set --stack-name "$st" --change-set-name "$name" --query 'length(Changes[?ResourceChange.Action!=`Add`])' --output text)" = 0 ]; then
-    adds="$(awsr cloudformation describe-change-set --stack-name "$st" --change-set-name "$name" --query 'length(Changes)' --output text)"
-    [ "$adds" = "$(expected_adds "$s")" ] || die "$adds resources to add, the reviewed template has $(expected_adds "$s"): report to the owner"
-    ok "$adds additions, matching the reviewed template"
+    adds="$(awsr cloudformation describe-change-set --stack-name "$st" --change-set-name "$name" --query 'Changes[].ResourceChange.LogicalResourceId' --output text | tr '\t' '\n' | grep -v '^$' | sort)"
+    want="$(expected_resources "$s")"
+    if [ "$adds" != "$want" ]; then
+      diff <(printf '%s\n' "$want") <(printf '%s\n' "$adds") | sed 's/^/        /' || true
+      die "the change set does not add exactly the reviewed resources for these parameters (< expected, > change set): report to the owner"
+    fi
+    ok "$(printf '%s\n' "$adds" | wc -l | tr -d ' ') additions, exactly the reviewed resources for these parameters"
   else
     info "UPDATE change set: review every Modify line above by hand"
   fi
@@ -488,5 +533,7 @@ case "$step" in
   image) step_image ;;
   service-verify) step_service_verify ;;
   classify) step_classify ;;
-  *) sed -n '2,40p' "$0"; exit 2 ;;
+  capabilities) stack_capabilities "${1:?stack}" ;;
+  expected-resources) expected_resources "${1:?stack}" ;;
+  *) sed -n '2,43p' "$0"; exit 2 ;;
 esac

@@ -10,6 +10,7 @@ approval gates: [docs/aws-staging.md](../../docs/aws-staging.md). Decision: ADR 
 | `templates/30-edge.yaml` | ACM certificate, ALB, target group, listeners |
 | `templates/40-service.yaml` | IAM, API task definition, one-off database task definitions, the ECS service only while `ServiceEnabled=true` |
 | `parameters/*.example.json` | Parameter files with placeholders (copy outside the repository and fill in) |
+| `staging-bringup.sh` | Owner helper for Phases 3–6 (run on the owner's workstation; each AWS step separate) |
 | `validate.sh` | Offline validation: cfn-lint, policy tests, `--ops-db` database script tests |
 | `tests/` | The tests and a throwaway local TLS PostgreSQL helper |
 | `requirements.txt` | cfn-lint and dependencies, pinned with hashes |
