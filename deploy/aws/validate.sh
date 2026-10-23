@@ -19,6 +19,8 @@ echo "== cfn-lint"
 cfn-lint deploy/aws/templates/*.yaml
 echo "== policy tests"
 python3 -m unittest discover -s deploy/aws/tests -p 'test_templates.py'
+echo "== bring-up helper and runbook (no AWS: a recording stand-in replaces the aws command)"
+python3 -m unittest discover -s deploy/aws/tests -p 'test_bringup_helper.py'
 
 if [ "${1:-}" = "--ops-db" ]; then
   dir="$(mktemp -d)"
