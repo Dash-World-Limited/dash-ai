@@ -2,7 +2,8 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   DASH AI STAGING (eu-west-1) 2/4 data: private RDS PostgreSQL 16 (TLS forced, 7-day PITR, single-AZ)
   and private ElastiCache Redis OSS 7.1 (one node, cluster mode off, TLS + AUTH, no persistence).
-  Creates an EMPTY database: no schema, no application role, no migration. Not production.
+  Creates an EMPTY database: no schema, no application role, no migration. Optional daily stop of the
+  database instance (credit conservation; it never deletes or changes data). Not production.
 
 Rules:
   StagingRegionOnly:
@@ -61,9 +62,18 @@ Parameters:
     Description: >-
       SSM SecureString the OWNER creates before this stack (16-128 printable characters, no @ " /;
       openssl rand -hex 32). CloudFormation resolves it at deploy time; it is never stored here.
+  DatabaseAutoStop:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      "true" stops the database instance every day at 01:00 UTC (EventBridge Scheduler, no Lambda).
+      Staging is used in sessions; AWS restarts a stopped instance by itself after 7 days, and this
+      stops it again. A stop never deletes data; start it with aws rds start-db-instance.
 
 Conditions:
   WithRedis: !Equals [!Ref RedisEnabled, "true"]
+  WithDatabaseAutoStop: !Equals [!Ref DatabaseAutoStop, "true"]
 
 Resources:
   # ---- PostgreSQL 16 ---------------------------------------------------------------------------
@@ -156,6 +166,49 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions:
         - !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-AlarmTopicArn" }
+
+  # ---- Daily database stop (credit conservation) --------------------------------------------------
+  # The scheduler calls exactly one API, rds:StopDBInstance, on exactly this instance. A call while the
+  # instance is already stopped (or starting) fails harmlessly and is not retried.
+  DatabaseAutoStopRole:
+    Type: AWS::IAM::Role
+    Condition: WithDatabaseAutoStop
+    Properties:
+      RoleName: !Sub "dash-ai-${EnvironmentName}-postgres-autostop"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals: { "aws:SourceAccount": !Ref "AWS::AccountId" }
+      Policies:
+        - PolicyName: stop-staging-database-only
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: StopThisInstanceOnly
+                Effect: Allow
+                Action: rds:StopDBInstance
+                Resource: !Sub "arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:db:${Database}"
+
+  DatabaseAutoStopSchedule:
+    Type: AWS::Scheduler::Schedule
+    Condition: WithDatabaseAutoStop
+    Properties:
+      Name: !Sub "dash-ai-${EnvironmentName}-postgres-daily-stop"
+      Description: Stops the staging database daily at 01:00 UTC (it keeps all data).
+      ScheduleExpression: cron(0 1 * * ? *)
+      ScheduleExpressionTimezone: UTC
+      FlexibleTimeWindow: { Mode: "OFF" }
+      State: ENABLED
+      Target:
+        Arn: !Sub "arn:${AWS::Partition}:scheduler:::aws-sdk:rds:stopDBInstance"
+        RoleArn: !GetAtt DatabaseAutoStopRole.Arn
+        Input: !Sub '{"DbInstanceIdentifier":"${Database}"}'
+        RetryPolicy:
+          MaximumRetryAttempts: 0
 
   # ---- Redis OSS 7.1 (cluster mode DISABLED: the stream-slot Lua scripts use multiple keys) -----
   RedisSubnetGroup:

@@ -2,5 +2,10 @@
   { "ParameterKey": "EnvironmentName", "ParameterValue": "staging" },
   { "ParameterKey": "ExpectedAccountId", "ParameterValue": "<12-digit staging account id>" },
   { "ParameterKey": "AlertEmail", "ParameterValue": "<owner alert email>" },
-  { "ParameterKey": "VpcCidr", "ParameterValue": "10.40.0.0/16" }
+  { "ParameterKey": "VpcCidr", "ParameterValue": "10.40.0.0/16" },
+  { "ParameterKey": "BudgetLimitUsd", "ParameterValue": "25" },
+  { "ParameterKey": "BudgetActualWarningUsd", "ParameterValue": "10" },
+  { "ParameterKey": "BudgetForecastWarningUsd", "ParameterValue": "15" },
+  { "ParameterKey": "CostAnomalyMonitorEnabled", "ParameterValue": "true" },
+  { "ParameterKey": "CostAnomalyThresholdUsd", "ParameterValue": "3" }
 ]
