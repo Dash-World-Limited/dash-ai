@@ -224,3 +224,125 @@ class RunbookCost(unittest.TestCase):
         for f in found:
             self.assertEqual(f, want)
         self.assertIn(f"${p['CostAnomalyThresholdUsd']['Default']} or more", text)
+
+
+class ReviewGate(unittest.TestCase):
+    """cs-review, end to end against a stand-in aws: the reviewed change sets pass, anything else STOPs."""
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.work = Path(self._d.name)
+        (self.work / "review").mkdir()
+        self.state = self.work / "cs"
+        self.state.mkdir()
+        bindir = self.work / "bin"
+        bindir.mkdir()
+        fake = bindir / "aws"
+        # Answers each describe-change-set query cs-review makes from files the test writes.
+        fake.write_text(f"""#!/usr/bin/env bash
+S={self.state}
+case "$*" in
+  *"sts get-caller-identity"*Account*) echo 111122223333 ;;
+  *"sts get-caller-identity"*Arn*) echo arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_Test_0/test ;;
+  *"--include-property-values"*) echo '{{"Changes": []}}' ;;
+  *"ResourceChange.[Action"*) echo table ;;
+  *"--query ExecutionStatus"*) echo AVAILABLE ;;
+  *"--query Parameters[]"*) echo ;;
+  *"ResourceChange.Replacement=='True'"*) cat "$S/replacements" ;;
+  *"Action=='Remove'"*) cat "$S/removes" ;;
+  *"Action!=\\`Add\\`"*) cat "$S/non_adds" ;;
+  *"--query Changes[].ResourceChange.LogicalResourceId"*) cat "$S/ids" ;;
+  *"--query Changes[].ResourceChange.ResourceType"*) cat "$S/types" ;;
+  *) echo "unexpected aws call: $*" >&2; exit 99 ;;
+esac
+""")
+        fake.chmod(0o755)
+        self.env = {"PATH": f"{bindir}:{os.environ['PATH']}", "EXPECTED_ACCOUNT_ID": "111122223333", "AWS_PROFILE": "test"}
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    def change_set(self, stack, chosen, ids, types, removes=(), non_adds=0, replacements=0):
+        write_params(self.work, stack, chosen, pretty=False)
+        (self.work / "review" / f"{stack}.changeset").write_text(f"{stack}-test\n")
+        # The aws CLI's text output: one tab-separated line per list.
+        (self.state / "ids").write_text("\t".join(ids) + "\n")
+        (self.state / "types").write_text("\t".join(types) + "\n")
+        (self.state / "removes").write_text("\t".join(removes) + "\n")
+        (self.state / "non_adds").write_text(f"{non_adds}\n")
+        (self.state / "replacements").write_text(f"{replacements}\n")
+        return run_helper(self.work, "cs-review", stack, env=self.env, check=False)
+
+    def create(self, stack, chosen, swap=None, extra=None):
+        t = template(stack)
+        ids = resources_for(t, chosen)
+        types = [t["Resources"][i]["Type"] for i in ids]
+        if swap:
+            types[ids.index(swap[0])] = swap[1]
+        if extra:
+            ids, types = ids + [extra[0]], types + [extra[1]]
+        return self.change_set(stack, chosen, ids, types)
+
+    def assertPasses(self, r):
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("only the reviewed resource types", r.stdout)
+        self.assertNotIn("STOP", r.stdout + r.stderr)
+
+    def assertStops(self, r, why):
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("STOP:", r.stderr)
+        self.assertIn(why, r.stderr)
+
+    def test_the_phase3_foundation_change_set_passes(self):
+        """The exact Phase 3 shape: 35 additions including AWS::EC2::VPC, budget 30/35/45, no anomaly monitor."""
+        chosen = {"CostAnomalyMonitorEnabled": "false", "BudgetActualWarningUsd": "30", "BudgetForecastWarningUsd": "35", "BudgetLimitUsd": "45"}
+        self.assertEqual(len(resources_for(template("foundation"), chosen)), 35)
+        self.assertIn("AWS::EC2::VPC", [template("foundation")["Resources"][i]["Type"] for i in resources_for(template("foundation"), chosen)])
+        r = self.create("foundation", chosen)
+        self.assertPasses(r)
+        self.assertIn("35 additions, exactly the reviewed resources", r.stdout)
+
+    def test_every_legitimate_create_passes(self):
+        for stack in STACKS:
+            for _, chosen in combinations(stack):
+                with self.subTest(stack=stack, params=chosen):
+                    self.assertPasses(self.create(stack, chosen))
+
+    def test_each_allowed_type_is_accepted_wherever_it_sits_in_the_list(self):
+        """Every allowed type, first and last included, is accepted on its own."""
+        for stack in STACKS:
+            allowed = run_helper(self.work, "allowed-types", stack).stdout.split()
+            self.assertTrue(allowed)
+            for ty in allowed:
+                with self.subTest(stack=stack, type=ty):
+                    self.assertPasses(self.change_set(stack, {}, ["X"], [ty], non_adds=1))
+        self.assertEqual(run_helper(self.work, "allowed-types", "foundation").stdout.split()[0], "AWS::EC2::VPC")
+
+    def test_allowed_types_cover_each_template_and_nothing_more(self):
+        for stack in STACKS:
+            with self.subTest(stack=stack):
+                allowed = set(run_helper(self.work, "allowed-types", stack).stdout.split())
+                self.assertEqual(allowed, {r["Type"] for r in template(stack)["Resources"].values()})
+
+    def test_an_unexpected_type_stops(self):
+        for wrong in ("AWS::EC2::NatGateway", "AWS::RDS::DBInstance", "AWS::IAM::Role", "AWS::EC2::VPCEndpoint",
+                      "AWS::EC2::VP", "WS::EC2::VPC", "aws::ec2::vpc", "*", "AWS::EC2::*"):
+            with self.subTest(type=wrong):
+                r = self.create("foundation", {"CostAnomalyMonitorEnabled": "false"}, swap=("Vpc", wrong))
+                self.assertStops(r, "unexpected resource type")
+
+    def test_an_unexpected_resource_stops_before_the_type_check(self):
+        r = self.create("foundation", {"CostAnomalyMonitorEnabled": "false"}, extra=("NatGateway", "AWS::EC2::NatGateway"))
+        self.assertStops(r, "does not add exactly the reviewed resources")
+        r = self.create("foundation", {"CostAnomalyMonitorEnabled": "false"}, extra=("Vpc2", "AWS::EC2::VPC"))
+        self.assertStops(r, "does not add exactly the reviewed resources")
+
+    def test_removals_and_replacements(self):
+        park = dict(ids=["Redis", "RedisMemoryAlarm"], types=["AWS::ElastiCache::ReplicationGroup", "AWS::CloudWatch::Alarm"], non_adds=2)
+        self.assertPasses(self.change_set("data", {}, removes=["Redis", "RedisMemoryAlarm"], **park))
+        self.assertPasses(self.change_set("data", {}, removes=["RedisMemoryAlarm", "Redis"], **park))
+        for bad in (["Database"], ["Redis", "Database"], ["DatabaseSubnetGroup"], ["Redi"]):
+            with self.subTest(removes=bad):
+                self.assertStops(self.change_set("data", {}, removes=bad, **park), "REMOVES")
+        self.assertStops(self.change_set("foundation", {}, removes=["Vpc"], ids=["Vpc"], types=["AWS::EC2::VPC"], non_adds=1), "REMOVES")
+        self.assertStops(self.change_set("data", {}, replacements=1, **park), "REPLACES")
