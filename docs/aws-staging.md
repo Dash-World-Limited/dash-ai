@@ -5,10 +5,14 @@ environment as code. As of 2026-10-22 **no AWS resource exists**: nothing has be
 image has been pushed, no migration has run and no AWS API has been called from this repository's
 work. Every phase below that changes AWS needs the owner's explicit approval, given outside Claude.
 
+**Session-based (ADR 0020).** Staging runs on limited AWS promotional credits. Only the network, image
+registry, database storage and secrets persist. The ALB (edge stack), Redis and API tasks exist during
+test sessions only, and the database instance is stopped between sessions (§8).
+
 This is staging, not production. A passing staging session says nothing about production or launch
 readiness (see `docs/staging-runbook.md` and `docs/release-readiness.md` for what stays open).
 
-- Infrastructure code: `deploy/aws/templates/*.yaml` (AWS CloudFormation, ADR 0019)
+- Infrastructure code: `deploy/aws/templates/*.yaml` (AWS CloudFormation, ADR 0019; session-based staging, ADR 0020)
 - Parameter examples: `deploy/aws/parameters/*.example.json` (placeholders only)
 - Offline validation: `deploy/aws/validate.sh` (cfn-lint, policy tests, one-off database scripts)
 - Image: the existing `Dockerfile` (docs/container.md); no second Dockerfile
@@ -41,10 +45,10 @@ Four stacks, each deployed only through a reviewed change set:
 
 | Stack | Template | Creates | Phase |
 |---|---|---|---|
-| `dash-ai-staging-foundation` | `10-foundation.yaml` | VPC 10.40.0.0/16 (2 public + 2 private /24, no NAT), internet gateway, route tables, 5 security groups, ECR repository `dash-ai-staging/api`, log group `/dash-ai/staging/api` (14 days), error-log metric + alarm, ECS cluster `dash-ai-staging`, SNS alarm topic + email subscription, AWS Budgets monthly budget | 3 |
-| `dash-ai-staging-data` | `20-data.yaml` | RDS PostgreSQL 16 `dash_staging` (empty), parameter group (`rds.force_ssl=1`), ElastiCache Redis OSS 7.1 (`noeviction`), 3 alarms | 3 |
-| `dash-ai-staging-edge` | `30-edge.yaml` | ACM certificate for the staging hostname, ALB, target group (`/ready`), HTTP→HTTPS redirect, HTTPS listener, `/metrics` 404 rule, 4 alarms | 3 |
-| `dash-ai-staging-service` | `40-service.yaml` | IAM roles, API task definition, ECS service, two one-off database task definitions (classification, app role) | 5 (desired 0), 9–11 |
+| `dash-ai-staging-foundation` | `10-foundation.yaml` | VPC 10.40.0.0/16 (2 public + 2 private /24, no NAT), internet gateway, route tables, 5 security groups, ECR repository `dash-ai-staging/api` (keeps 5 images), log group `/dash-ai/staging/api` (14 days), error-log metric + alarm, ECS cluster `dash-ai-staging`, SNS alarm topic + email subscription, AWS Budgets monthly budget on **gross** usage (credits excluded), Cost Anomaly Detection monitor + daily email | 3 (always) |
+| `dash-ai-staging-data` | `20-data.yaml` | RDS PostgreSQL 16 `dash_staging` (empty), parameter group (`rds.force_ssl=1`), daily database stop (EventBridge Scheduler, `DatabaseAutoStop`), ElastiCache Redis OSS 7.1 (`noeviction`, only while `RedisEnabled=true`), 3 alarms | 3 (always; Redis per session) |
+| `dash-ai-staging-edge` | `30-edge.yaml` | ACM certificate for the staging hostname, ALB, target group (`/ready`), HTTP→HTTPS redirect, HTTPS listener, `/metrics` 404 rule, 5 alarms | 3 (verify, then delete), each session from 9 |
+| `dash-ai-staging-service` | `40-service.yaml` | IAM roles, API task definition, two one-off database task definitions (classification, app role); the ECS service only while `ServiceEnabled=true` | 5 (`ServiceEnabled=false`), sessions from 9 |
 
 Every template refuses to deploy outside **eu-west-1**, into any account other than the
 `ExpectedAccountId` the owner passes, or for any environment name other than `staging`
@@ -63,6 +67,7 @@ is no Lambda, custom resource, scheduler or pipeline: CloudFormation creates res
 | API → Redis | `sg redis` inbound tcp/6379 from `sg api` only; private subnets; in-transit encryption **required**, AUTH token, encryption at rest. | `test_redis_is_private_single_node_tls_and_auth` |
 | Data stores egress | `sg db`, `sg redis` (and `sg alb` apart from 8787) have a placeholder egress rule that matches nothing, instead of the default allow-all. | same |
 | Client IP (`TRUST_PROXY=1`) | Correct only while the ALB is the sole proxy and appends to `X-Forwarded-For` (`routing.http.xff_header_processing.mode=append`). The API then believes exactly the rightmost entry. Adding CloudFront/WAF/CDN later changes it to 2 and needs its own reviewed change. The application's own refusal of `true` and `/0` in production is unchanged. | `test_https_entry_point_and_single_trusted_proxy` |
+| IAM: database stop | `postgres-autostop` (only with `DatabaseAutoStop=true`): trusted by `scheduler.amazonaws.com` in this account only, allowed exactly `rds:StopDBInstance` on this one instance. It cannot read, modify, snapshot or delete anything. | `test_database_auto_stop_can_only_stop_this_instance` |
 | IAM: execution roles | `api-execution`: pull from the staging repository only, write to the staging log group only, read exactly the 5 API parameters. `ops-execution`: the same pull/log rights, the RDS-managed master secret, and `DATABASE_URL`. No managed policies; trust limited to `ecs-tasks` in this account (`aws:SourceAccount`, `aws:SourceArn`). `Resource: "*"` appears only for `ecr:GetAuthorizationToken` (account-wide by design) and the ECS Exec session channel. | `test_iam_is_least_privilege` |
 | IAM: application | **The API task has no task role** in normal operation, so no AWS credential exists inside the container: nothing can be read through the task metadata endpoint, and there is no Bedrock, S3, Secrets Manager or other AWS permission. A role with only the SSM session channel exists only while `EnableExecuteCommand=true`. The one-off database tasks never have a task role. | `test_no_bedrock_or_ai_service_permission_and_no_default_task_role` |
 | Container | Image by digest from the private, tag-immutable, scan-on-push repository. User `1000:1000`, read-only root filesystem, all Linux capabilities dropped, no privileged mode (Fargate does not allow it), no volumes, no Docker socket, no SSH, no bastion. Node stays PID 1 (`initProcessEnabled: false`) and drains on SIGTERM (stopTimeout 30 s > drain 20 s). | `test_container_hardening` |
@@ -196,9 +201,18 @@ In order:
    account and the owner approves may `CertificateValidationHostedZoneId` let ACM write it instead.
 6. The owner points the staging hostname at the stack output `LoadBalancerDnsName` (CNAME). Until a
    task is running, `https://<staging host>/ready` answers 503 from the ALB, which is expected.
+7. **Verify, then park (credit conservation, ADR 0020).** Once the live checks below are recorded
+   (listeners, TLS policy, HSTS, security-group ingress, RDS/Redis privacy and TLS), delete the edge
+   stack (`aws cloudformation delete-stack --stack-name dash-ai-staging-edge`). It holds no data, and
+   **leave the ACM validation CNAME in DNS** so the next session's certificate validates by itself.
+   Then update the data stack with `RedisEnabled=false` (its change set must remove only the Redis
+   group, its alarm and its outputs). `REDIS_URL` stays; the endpoint name is expected to be the same
+   on re-creation, so confirm that the first time.
 
 Result to record: stack outputs (no secret values), the database CA (`rds-ca-rsa2048-g1`), and
 `aws rds describe-db-instances … --query 'DBInstances[0].PubliclyAccessible'` = `false`.
+The budget emails start once the foundation stack exists (gross usage: $10 actual, $15 forecast,
+$25 actual by default). Confirm the Cost Anomaly Detection subscription email as well.
 
 ### PHASE 4 — RDS CA provenance (DEPLOYMENT BLOCKER)
 
@@ -238,13 +252,17 @@ docker buildx imagetools inspect "$REPO@<digest>"           # one manifest, linu
 the image that was smoke-tested. **STAGING-EXECUTION REQUIRED:** confirm with the `imagetools`
 output.) Check the ECR scan result (`aws ecr describe-image-scan-findings`) and record it.
 
-Then create `dash-ai-staging-service` with `ImageDigest=<digest>` and **`DesiredCount=0`**
-(`CAPABILITY_NAMED_IAM`). This registers the task definitions and the service without starting a
-task: the API refuses to start on an unmigrated database (`DATABASE_AUTO_MIGRATE=false`), and
-`DATABASE_URL` does not exist until Phase 8. Deployment identity = commit SHA + image digest; the tag
+Then create `dash-ai-staging-service` with `ImageDigest=<digest>`, **`ServiceEnabled=false`** and
+**`DesiredCount=0`** (`CAPABILITY_NAMED_IAM`). This registers the IAM roles and task definitions and
+creates **no ECS service at all**, so no API task can start and no ALB is needed: the API refuses to
+start on an unmigrated database (`DATABASE_AUTO_MIGRATE=false`), and `DATABASE_URL` does not exist
+until Phase 8. Deployment identity = commit SHA + image digest; the tag
 is a label only and `latest` is never used.
 
 ### PHASE 6 — Read-only migration-history classification
+
+If the daily stop has stopped the database, start it first (`aws rds start-db-instance --region eu-west-1 --db-instance-identifier dash-ai-staging-postgres`
+then `aws rds wait db-instance-available …`). Nothing else is needed: no ALB, no Redis, no API service.
 
 ```sh
 SUBNETS=<PublicSubnetIds output>; OPS_SG=<OpsSecurityGroupId output>
@@ -307,7 +325,8 @@ Only after the owner approves this phase outside Claude:
 
 ### PHASE 9 — Fake-provider staging smoke
 
-Update the service stack to `DesiredCount=1` (change set). Then:
+Start a session (§8): database running, `RedisEnabled=true`, edge stack created, CNAME updated. Then
+update the service stack to `ServiceEnabled=true` and `DesiredCount=1` (change set). Then:
 
 - Start-up log: `"backend":"redis"`, exactly two `PROVIDER_MODE=fake` warnings, nothing else at warn
   or above; `https://<staging host>/ready` → `{"status":"ready",…}`; `/health` 200; `/metrics` → 404.
@@ -330,8 +349,8 @@ specific task needs ECS Exec: a separate change set with `EnableExecuteCommand=t
 
 ### PHASE 11 — Return to 1 task
 
-Update the service stack to `DesiredCount=1` and `EnableExecuteCommand=false` (change set), or
-`DesiredCount=0` to end the session. The alarm `dash-ai-staging-second-task-left-running` emails if
+Update the service stack to `DesiredCount=1` and `EnableExecuteCommand=false` (change set), or end
+the session (§8). The alarm `dash-ai-staging-second-task-left-running` emails if
 two healthy tasks run for 3 hours.
 
 ## 6. Diagnostics (cheap, AWS-native)
@@ -345,62 +364,89 @@ two healthy tasks run for 3 hours.
   codes for unhealthy targets); alarms for unhealthy targets, API 5xx and ALB 5xx.
 - **Metrics:** `/metrics` is blocked at the ALB; read it inside a task with ECS Exec and
   `METRICS_TOKEN`. No metrics platform is paid for.
-- **Alarms (8, ≈ $0.80/month):** error-level API log lines; unhealthy targets ≥ 1 for 2 min; > 5 API 5xx in
-  5 min; any ALB 5xx; second task left running 3 h; RDS free storage < 4 GiB; RDS connections > 80;
-  Redis memory > 80 %. All go to the SNS email topic.
+- **Alarms (9, ≈ $0.30/month when only the always-on ones exist):** error-level API log lines;
+  unhealthy targets ≥ 1 for 2 min; > 5 API 5xx in 5 min; any ALB 5xx; second task left running 3 h;
+  session left running 8 h; RDS free storage < 4 GiB; RDS connections > 80; Redis memory > 80 %. All
+  go to the SNS email topic. The edge and Redis alarms exist (and are billed, prorated) only during
+  sessions.
+- **Cost:** the budget (gross usage, credits excluded) and Cost Anomaly Detection email the alert
+  address. Budgets and anomaly data lag actual usage by up to about a day.
 
 ## 7. Cost
 
 **AWS Budgets only sends notifications; it is not a spending cap.** The budget is account-wide (it also
-sees resources created outside these stacks), with notifications at **$40 actual**, **$50 forecast**
-and **$60 actual**. $60/month is an intervention threshold: at that point sessions stop until the
-owner reviews. List prices for eu-west-1 as known at planning time, **not fetched live**; re-check in
-the AWS Pricing Calculator (±15 %), excluding tax and credits.
+sees resources created outside these stacks). It measures **gross usage with credits and refunds
+excluded**. With the AWS default of including credits, it would see about $0 while promotional
+credits pay for staging, and it would never notify. Defaults: **$10 actual**, **$15 forecast**, **$25
+actual** (parameters, maximum $60). Cost Anomaly Detection adds a daily email for unusual per-service
+spend.
 
-| Cost driver | Basis | $/month |
-|---|---|---|
-| ALB hours | $0.0252/h, always on while it exists | 18.40 |
-| ALB LCUs | low staging traffic | 1–6 |
-| Public IPv4, ALB (2 AZs) | 2 × $0.005/h, while the ALB exists | 7.30 |
-| Public IPv4, API tasks | $0.005/h per **running** task | 0.30 per 60 task-hours |
-| Fargate 0.5 vCPU / 2 GB x86 | ≈ $0.029/h per running task | 1.75 per 60 task-hours (≈ 21 if 24/7) |
-| RDS db.t4g.micro single-AZ | ≈ $0.018/h | 13.15 |
-| RDS gp3 20 GiB (autoscaling cap 50) | ≈ $0.127/GiB-month | 2.55 (up to 6.35) |
-| RDS backups (7 days) + manual snapshots | within the free allowance up to the DB size; snapshots beyond it are billed | 0–1 |
-| ElastiCache cache.t4g.micro | ≈ $0.018/h while it exists (cannot be stopped) | 13.15 if kept; ≈ 1.10 per 60 h if recreated per session |
-| Secrets Manager | 1 RDS-managed master secret | 0.40 |
-| SSM Parameter Store (standard) | 6 SecureString parameters | 0 |
-| CloudWatch Logs | < 1 GB ingested at $0.57/GB, 14-day retention | ≈ 0.50 |
-| CloudWatch alarms | 8 × $0.10 | 0.80 |
-| ECR storage | ≈ 0.3 GB per image, lifecycle keeps 15 | ≈ 0.50 |
-| ACM, VPC, subnets, SGs, SNS email, Budgets (first 2) | no charge | 0 |
+Prices are AWS Price List API on-demand prices for eu-west-1, **fetched 2026-10-23**, excluding tax and
+credits; a month is 730 hours.
 
-Patterns: ALB + RDS always on, API and Redis only during sessions (~60 h): **≈ $50–55/month**.
-Redis kept 24/7 with API only in sessions: ≈ $60–65. One API task and Redis 24/7: ≈ $85. Two tasks
-24/7: ≈ $110.
+| Cost driver | Price | When it is charged | $/month |
+|---|---|---|---|
+| RDS db.t4g.micro single-AZ | $0.017/h | while the instance runs | 12.41 if always running |
+| RDS gp3 20 GiB (autoscaling cap 50) | $0.127/GiB-month | always, also while stopped | 2.54 |
+| RDS backups (7 days) | free up to the database size, then $0.095/GiB-month | always | 0 |
+| RDS master secret (Secrets Manager) | $0.40/secret | always | 0.40 |
+| ElastiCache cache.t4g.micro Redis OSS | $0.017/h | sessions only (`RedisEnabled`) | per session hour |
+| ALB | $0.0252/h + $0.008/LCU-hour | sessions only (edge stack) | per session hour |
+| Public IPv4 (ALB × 2, each running task × 1) | $0.005/h each | sessions only | per session hour |
+| Fargate 0.5 vCPU / 2 GB x86 | $0.0291/h per task | while a task runs | per task-hour |
+| CloudWatch alarms | $0.10/alarm-month, prorated | always: 3 (error logs, RDS); sessions: the rest | 0.30 |
+| CloudWatch Logs | $0.57/GB ingested, 14 days | when tasks log | < 0.50 |
+| ECR storage | ≈ 0.3 GB per image, 5 kept | always | < 0.20 |
+| VPC, subnets, SGs, IGW, ACM, ECS cluster, SNS email, Budgets, Cost Anomaly Detection, Scheduler (free tier), SSM standard parameters | none | — | 0 |
 
-## 8. Shutting staging down, and what it costs afterwards
+**Idle burn ≈ $3.40/month.** A session hour costs **≈ $0.111** with 1 task (RDS 0.017 + Redis 0.017
++ ALB 0.0252 + LCU ≈ 0.008 + ALB IPv4 0.010 + task 0.0291 + its IPv4 0.005), and ≈ $0.145 with 2
+tasks. Typical months: 40 session-hours ≈ $7.90, 80 session-hours ≈ $12.70. Everything left running
+for a month by mistake ≈ $82. The budget, the anomaly email and the session-left-running alarm exist
+to catch that.
 
-Nothing is automated: no scheduled shutdown or deletion exists (deliberately).
+The reviewed always-on shape, for comparison, was ≈ $56/month idle. The cheaper alternatives that were
+considered and rejected are API Gateway HTTP API (30 s integration limit, no streamed responses),
+CloudFront + internal ALB (still an ALB, second proxy), an EC2 reverse proxy (a host to manage), App
+Runner/Lightsail (no hardening controls, no managed Redis), Aurora Serverless v2 (different engine,
+~15 s resume, dearer per active hour), self-hosted PostgreSQL/Redis, ElastiCache Serverless (multi-key
+Lua scripts), Valkey (pennies, not CI-tested), Fargate Spot/ARM64 (negligible, distorts tests) and an
+IPv6-only ALB (clients without IPv6). See ADR 0020.
 
-- **API (cheap, instant):** service stack `DesiredCount=0`. Stops Fargate and task-IPv4 charges.
-  Stateless; nothing is lost.
-- **Redis:** ElastiCache cannot be stopped. To stop its charge between sessions, set the API to
-  `DesiredCount=0` first, then update the data stack with `RedisEnabled=false` (change set: it must
-  show only the Redis replication group, its alarm and outputs being removed, never the database).
-  Its contents are disposable by design. `RedisEnabled=true` recreates it with the same id, so the
-  endpoint name should stay the same (confirm on the first recreate; otherwise update `REDIS_URL`).
-- **RDS:** `aws rds stop-db-instance` stops instance charges for at most **7 days**; AWS then starts it
-  again automatically. Storage and backups are still billed while stopped.
-- **ALB and its public IPv4:** cannot be paused; they cost ≈ $26/month while they exist. Deleting the
-  edge stack removes them; recreating gives a new ALB DNS name (the staging CNAME must be updated) and
-  needs the certificate again.
-- **Everything (destroy):** delete in reverse order: service → edge → data → foundation. The data
-  stack needs termination protection off and the instance's deletion protection off (a deliberate,
-  reviewed `DeletionProtection: false` change set) and leaves a **final snapshot**, which keeps
-  costing storage until deleted by hand. The ECR repository and its images are retained (delete
-  manually if wanted). SSM parameters are free but should be deleted with the environment. Deleting
-  the database is irreversible apart from that snapshot.
+## 8. Sessions: starting and ending, and destroying staging
+
+Nothing starts or ends a session automatically. The one exception is the daily 01:00 UTC database stop
+(`DatabaseAutoStop=true`), which also counters AWS's automatic restart of a stopped instance after 7
+days. A session still running at 01:00 UTC loses its database until it is started again.
+
+**Start a session** (≈ 15–25 minutes, each step a change set or a single command):
+
+1. `aws rds start-db-instance --region eu-west-1 --db-instance-identifier dash-ai-staging-postgres`,
+   then `aws rds wait db-instance-available …`.
+2. Data stack change set with `RedisEnabled=true` (must show only the Redis group, its alarm and
+   outputs being added). Confirm that the `RedisAddress` output equals the host in `REDIS_URL`; if it
+   does not, rewrite `REDIS_URL` (§4).
+3. Create the edge stack (change set). The certificate validates by itself because the validation CNAME
+   is still in DNS. Point the staging hostname's CNAME at the new `LoadBalancerDnsName`.
+4. Service stack change set with `ServiceEnabled=true` and `DesiredCount=1` (2 only for Phase 10).
+
+**End a session** (≈ 10 minutes, reverse order):
+
+1. Service stack change set with `ServiceEnabled=false` (removes the ECS service; the task definitions
+   stay).
+2. `aws cloudformation delete-stack --region eu-west-1 --stack-name dash-ai-staging-edge` (ALB,
+   listeners, certificate, edge alarms; no data). Leave the ACM validation CNAME in DNS.
+3. Data stack change set with `RedisEnabled=false` (must remove only Redis, its alarm and outputs,
+   never the database). Redis contents are disposable by design.
+4. `aws rds stop-db-instance --region eu-west-1 --db-instance-identifier dash-ai-staging-postgres`
+   (or leave it to the 01:00 UTC stop). Storage and backups are still billed while it is stopped.
+
+**Destroy everything:** delete in reverse order: service → edge (if present) → data → foundation. The
+data stack needs termination protection off and the instance's deletion protection off (a deliberate,
+reviewed `DeletionProtection: false` change set). It leaves a **final snapshot**, which keeps costing
+storage until it is deleted by hand. The ECR repository and its images are retained (delete them
+manually if wanted). SSM parameters are free but should be deleted with the environment. Deleting the
+database is irreversible apart from that snapshot.
 
 ## 9. Validation (offline, no AWS)
 

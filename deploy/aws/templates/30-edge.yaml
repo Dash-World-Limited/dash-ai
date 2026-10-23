@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   DASH AI STAGING (eu-west-1) 3/4 edge: ACM certificate (DNS validation, owner-published record),
   internet-facing Application Load Balancer (HTTPS only, HTTP redirects), API target group on /ready.
-  Creates no DNS record for the API hostname. Not production.
+  Creates no DNS record for the API hostname. Exists only during test sessions. Not production.
 
 Rules:
   StagingRegionOnly:
@@ -222,6 +222,27 @@ Resources:
       Period: 3600
       EvaluationPeriods: 3
       Threshold: 2
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-AlarmTopicArn" }
+
+  # Credit guard: the edge stack exists only during test sessions (docs/aws-staging.md, "Sessions").
+  # An API task healthy behind the ALB for 8 hours means a session was probably left running.
+  SessionLeftRunningAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "dash-ai-${EnvironmentName}-session-left-running"
+      AlarmDescription: An API task has served behind the ALB for 8 hours - end the session (session-stop) if nobody is testing.
+      Namespace: AWS/ApplicationELB
+      MetricName: HealthyHostCount
+      Dimensions:
+        - { Name: LoadBalancer, Value: !GetAtt LoadBalancer.LoadBalancerFullName }
+        - { Name: TargetGroup, Value: !GetAtt ApiTargetGroup.TargetGroupFullName }
+      Statistic: Minimum
+      Period: 3600
+      EvaluationPeriods: 8
+      Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
       AlarmActions:

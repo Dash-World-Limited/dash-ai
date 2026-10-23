@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   DASH AI STAGING (eu-west-1) 4/4 service: API task definition (image pinned by digest, Linux X86_64,
-  0.5 vCPU / 2 GB, fake providers only), the ECS service behind the ALB, least-privilege IAM, and two
-  one-off database task definitions that run only when an operator starts them. Nothing here runs a
-  migration. Not production.
+  0.5 vCPU / 2 GB, fake providers only), the ECS service behind the ALB (only while ServiceEnabled),
+  least-privilege IAM, and two one-off database task definitions that run only when an operator starts
+  them. Nothing here runs a migration. Not production.
 
 Rules:
   StagingRegionOnly:
@@ -50,8 +50,19 @@ Parameters:
       the read-only root filesystem off for that revision (the ECS Exec agent needs to write). Return
       to "false" after the session.
 
+  ServiceEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["false", "true"]
+    Description: >-
+      "false" (default) keeps the IAM roles and task definitions (the one-off database tasks need them)
+      but has NO ECS service, so no API task can start and the stack does not depend on the edge stack
+      (the ALB can be deleted between sessions). "true" creates the service behind the ALB during a
+      test session; it needs the edge stack.
+
 Conditions:
   ExecEnabled: !Equals [!Ref EnableExecuteCommand, "true"]
+  WithService: !Equals [!Ref ServiceEnabled, "true"]
 
 Resources:
   # ---- IAM -------------------------------------------------------------------------------------
@@ -287,6 +298,7 @@ Resources:
 
   ApiService:
     Type: AWS::ECS::Service
+    Condition: WithService
     Properties:
       ServiceName: !Sub "dash-ai-${EnvironmentName}-api"
       Cluster: !ImportValue { "Fn::Sub": "dash-ai-${EnvironmentName}-ClusterName" }
@@ -501,6 +513,7 @@ Resources:
 
 Outputs:
   ApiServiceName:
+    Condition: WithService
     Value: !GetAtt ApiService.Name
   ApiTaskDefinitionArn:
     Value: !Ref ApiTaskDefinition

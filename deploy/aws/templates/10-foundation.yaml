@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   DASH AI STAGING (eu-west-1) 1/4 foundation: VPC without a NAT gateway, security groups, ECR
-  repository, API log group, ECS cluster, alarm topic and the monthly cost budget. Not production.
+  repository, API log group, ECS cluster, alarm topic, the monthly cost budget (gross of credits) and
+  cost anomaly alerts. Not production.
   See docs/aws-staging.md. Deployed only through a reviewed change set (Phase 3).
 
 # Every template refuses to run outside eu-west-1, outside the account the owner names, or for any
@@ -35,6 +36,43 @@ Parameters:
     Default: 10.40.0.0/16
     AllowedPattern: "^10\\.[0-9]{1,3}\\.0\\.0/16$"
     Description: Private /16 for the staging VPC; four /24 subnets are carved from it.
+  # Staging runs on limited promotional credits, so the budget measures GROSS usage (credits and
+  # refunds excluded): with credits included it would see ~$0 and never notify.
+  BudgetLimitUsd:
+    Type: Number
+    Default: 25
+    MinValue: 5
+    MaxValue: 60
+    Description: Monthly gross-usage budget (USD) and its final actual-spend notification. $60 is the hard ceiling.
+  BudgetActualWarningUsd:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    MaxValue: 59
+    Description: Early actual-spend notification (USD); keep it below BudgetLimitUsd.
+  BudgetForecastWarningUsd:
+    Type: Number
+    Default: 15
+    MinValue: 1
+    MaxValue: 60
+    Description: Forecast notification (USD) - the month is on course to exceed this.
+  CostAnomalyMonitorEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      "true" creates an AWS-services cost anomaly monitor with a daily email (no charge). An account
+      can hold only one such monitor: use "false" if `aws ce get-anomaly-monitors` already lists one,
+      and subscribe the alert email to that monitor instead.
+  CostAnomalyThresholdUsd:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    MaxValue: 50
+    Description: Total anomaly impact (USD) that triggers the daily anomaly email.
+
+Conditions:
+  WithCostAnomalyMonitor: !Equals [!Ref CostAnomalyMonitorEnabled, "true"]
 
 Resources:
   # ---- Network: 2 public subnets (ALB, API tasks) and 2 private subnets (RDS, Redis), no NAT ----
@@ -299,7 +337,7 @@ Resources:
         EncryptionType: AES256
       LifecyclePolicy:
         LifecyclePolicyText: |
-          {"rules":[{"rulePriority":1,"description":"Keep the 15 most recent images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":15},"action":{"type":"expire"}}]}
+          {"rules":[{"rulePriority":1,"description":"Keep the 5 most recent images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}}]}
 
   # ---- Logs: API and one-off tasks; no request bodies, prompts or secrets are logged by the API ---
   ApiLogGroup:
@@ -360,7 +398,8 @@ Resources:
       Endpoint: !Ref AlertEmail
 
   # AWS Budgets NOTIFIES; it does not cap or stop spending. Account-wide on purpose: it also sees
-  # anything created outside these stacks. Thresholds: $40 actual, $50 forecast, $60 actual.
+  # anything created outside these stacks. GROSS usage: credits, refunds and other credits-like
+  # adjustments are excluded, so promotional-credit consumption is what it measures.
   MonthlyCostBudget:
     Type: AWS::Budgets::Budget
     Properties:
@@ -369,30 +408,61 @@ Resources:
         BudgetType: COST
         TimeUnit: MONTHLY
         BudgetLimit:
-          Amount: 60
+          Amount: !Ref BudgetLimitUsd
           Unit: USD
+        CostTypes:
+          IncludeCredit: false
+          IncludeRefund: false
+          IncludeOtherSubscription: true
+          IncludeRecurring: true
+          IncludeSubscription: true
+          IncludeSupport: true
+          IncludeTax: true
+          IncludeUpfront: true
+          UseBlended: false
       NotificationsWithSubscribers:
         - Notification:
             NotificationType: ACTUAL
             ComparisonOperator: GREATER_THAN
-            Threshold: 40
+            Threshold: !Ref BudgetActualWarningUsd
             ThresholdType: ABSOLUTE_VALUE
           Subscribers:
             - { SubscriptionType: EMAIL, Address: !Ref AlertEmail }
         - Notification:
             NotificationType: FORECASTED
             ComparisonOperator: GREATER_THAN
-            Threshold: 50
+            Threshold: !Ref BudgetForecastWarningUsd
             ThresholdType: ABSOLUTE_VALUE
           Subscribers:
             - { SubscriptionType: EMAIL, Address: !Ref AlertEmail }
         - Notification:
             NotificationType: ACTUAL
             ComparisonOperator: GREATER_THAN
-            Threshold: 60
+            Threshold: !Ref BudgetLimitUsd
             ThresholdType: ABSOLUTE_VALUE
           Subscribers:
             - { SubscriptionType: EMAIL, Address: !Ref AlertEmail }
+
+  # Daily email when AWS detects unusual spend per service (for example an ALB or Redis left running
+  # after a session). Cost Anomaly Detection has no charge.
+  CostAnomalyMonitor:
+    Type: AWS::CE::AnomalyMonitor
+    Condition: WithCostAnomalyMonitor
+    Properties:
+      MonitorName: !Sub "dash-ai-${EnvironmentName}-services"
+      MonitorType: DIMENSIONAL
+      MonitorDimension: SERVICE
+
+  CostAnomalySubscription:
+    Type: AWS::CE::AnomalySubscription
+    Condition: WithCostAnomalyMonitor
+    Properties:
+      SubscriptionName: !Sub "dash-ai-${EnvironmentName}-daily-anomalies"
+      Frequency: DAILY
+      MonitorArnList: [!Ref CostAnomalyMonitor]
+      Subscribers:
+        - { Type: EMAIL, Address: !Ref AlertEmail }
+      ThresholdExpression: !Sub '{"Dimensions":{"Key":"ANOMALY_TOTAL_IMPACT_ABSOLUTE","MatchOptions":["GREATER_THAN_OR_EQUAL"],"Values":["${CostAnomalyThresholdUsd}"]}}'
 
 Outputs:
   VpcId:

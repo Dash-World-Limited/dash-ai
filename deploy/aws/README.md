@@ -5,10 +5,10 @@ approval gates: [docs/aws-staging.md](../../docs/aws-staging.md). Decision: ADR 
 
 | Path | What |
 |---|---|
-| `templates/10-foundation.yaml` | VPC (no NAT), security groups, ECR, log group, ECS cluster, alarm topic, budget |
-| `templates/20-data.yaml` | RDS PostgreSQL 16 (empty database), ElastiCache Redis OSS 7.1 |
+| `templates/10-foundation.yaml` | VPC (no NAT), security groups, ECR, log group, ECS cluster, alarm topic, gross-usage budget, cost anomaly alerts |
+| `templates/20-data.yaml` | RDS PostgreSQL 16 (empty database, optional daily stop), ElastiCache Redis OSS 7.1 (per session) |
 | `templates/30-edge.yaml` | ACM certificate, ALB, target group, listeners |
-| `templates/40-service.yaml` | IAM, API task definition and service, one-off database task definitions |
+| `templates/40-service.yaml` | IAM, API task definition, one-off database task definitions, the ECS service only while `ServiceEnabled=true` |
 | `parameters/*.example.json` | Parameter files with placeholders (copy outside the repository and fill in) |
 | `validate.sh` | Offline validation: cfn-lint, policy tests, `--ops-db` database script tests |
 | `tests/` | The tests and a throwaway local TLS PostgreSQL helper |

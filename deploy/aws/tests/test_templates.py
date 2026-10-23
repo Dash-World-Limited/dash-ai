@@ -28,6 +28,8 @@ ALLOWED_TYPES = {
     "AWS::CertificateManager::Certificate", "AWS::ElasticLoadBalancingV2::LoadBalancer",
     "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::ElasticLoadBalancingV2::Listener",
     "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::IAM::Role", "AWS::ECS::TaskDefinition", "AWS::ECS::Service",
+    # Credit conservation (ADR 0020): free cost-anomaly alerts and the daily database stop.
+    "AWS::CE::AnomalyMonitor", "AWS::CE::AnomalySubscription", "AWS::Scheduler::Schedule",
 }
 
 API_SECRETS = {"DATABASE_URL", "REDIS_URL", "DATA_ENCRYPTION_KEY", "METRICS_TOKEN", "OPERATOR_TOKEN"}
@@ -376,13 +378,14 @@ class Configuration(unittest.TestCase):
 
     def test_iam_is_least_privilege(self):
         roles = resources("AWS::IAM::Role")
-        self.assertEqual({n for n, _ in roles}, {"ApiExecutionRole", "ApiExecSessionTaskRole", "OpsExecutionRole"})
+        self.assertEqual({n for n, _ in roles}, {"ApiExecutionRole", "ApiExecSessionTaskRole", "OpsExecutionRole", "DatabaseAutoStopRole"})
         wildcard_ok = {"ecr:GetAuthorizationToken", "ssmmessages:CreateControlChannel", "ssmmessages:CreateDataChannel", "ssmmessages:OpenControlChannel", "ssmmessages:OpenDataChannel"}
         for name, role in roles:
             p = role["Properties"]
             self.assertNotIn("ManagedPolicyArns", p, name)
             (trust,) = p["AssumeRolePolicyDocument"]["Statement"]
-            self.assertEqual(trust["Principal"], {"Service": "ecs-tasks.amazonaws.com"}, name)
+            service = "scheduler.amazonaws.com" if name == "DatabaseAutoStopRole" else "ecs-tasks.amazonaws.com"
+            self.assertEqual(trust["Principal"], {"Service": service}, name)
             self.assertIn("aws:SourceAccount", trust["Condition"]["StringEquals"], name)
             for policy in p["Policies"]:
                 for st in policy["PolicyDocument"]["Statement"]:
@@ -398,12 +401,34 @@ class Configuration(unittest.TestCase):
         api_actions = json.dumps(SERVICE["ApiExecutionRole"])
         self.assertNotIn("secretsmanager", api_actions)  # the API never sees the master password
 
+    def test_database_auto_stop_can_only_stop_this_instance(self):
+        role = DATA["DatabaseAutoStopRole"]
+        self.assertEqual(role["Condition"], "WithDatabaseAutoStop")
+        (policy,) = role["Properties"]["Policies"]
+        (st,) = policy["PolicyDocument"]["Statement"]
+        self.assertEqual(st["Action"], "rds:StopDBInstance")
+        self.assertEqual(st["Resource"], {"Fn::Sub": "arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:db:${Database}"})
+        schedule = DATA["DatabaseAutoStopSchedule"]
+        self.assertEqual(schedule["Condition"], "WithDatabaseAutoStop")
+        target = schedule["Properties"]["Target"]
+        self.assertEqual(target["Arn"], {"Fn::Sub": "arn:${AWS::Partition}:scheduler:::aws-sdk:rds:stopDBInstance"})
+        self.assertEqual(target["Input"], {"Fn::Sub": '{"DbInstanceIdentifier":"${Database}"}'})
+        self.assertEqual(target["RetryPolicy"], {"MaximumRetryAttempts": 0})
+        # A stop never deletes: the database keeps deletion protection and a snapshot-on-delete policy.
+        self.assertIs(DATA["Database"]["Properties"]["DeletionProtection"], True)
+        self.assertEqual(DATA["Database"]["DeletionPolicy"], "Snapshot")
+
     def test_provisioning_never_migrates(self):
         self.assertEqual(api_env()["DATABASE_AUTO_MIGRATE"], "false")
         everything = json.dumps(T)
         self.assertFalse("migrate-cli" in everything or "data-cli" in everything, "a template references a migration CLI")
         services = resources("AWS::ECS::Service")
         self.assertEqual([n for n, _ in services], ["ApiService"])
+        # No ECS service at all unless a session turns it on (and it needs the edge stack then).
+        self.assertEqual(services[0][1]["Condition"], "WithService")
+        self.assertEqual(T["40-service.yaml"]["Parameters"]["ServiceEnabled"]["Default"], "false")
+        unconditional = json.dumps({n: r for n, r in SERVICE.items() if r.get("Condition") != "WithService"})
+        self.assertNotIn("ApiTargetGroupArn", unconditional)  # the stack does not need the ALB without the service
         self.assertEqual(services[0][1]["Properties"]["TaskDefinition"], ref("ApiTaskDefinition"))
         for name, t in T.items():
             for logical, r in t["Resources"].items():
@@ -445,7 +470,7 @@ class Configuration(unittest.TestCase):
         for example in (ROOT / "deploy" / "aws" / "parameters").glob("*.json"):
             for entry in json.loads(example.read_text()):
                 value = entry["ParameterValue"]
-                self.assertTrue(value.startswith("<") or entry["ParameterKey"] in {"EnvironmentName", "DesiredCount", "ApiTaskCpu", "EnableExecuteCommand", "PostgresEngineVersion", "RedisAuthTokenParameterName", "RedisEnabled", "CertificateValidationHostedZoneId", "VpcCidr"}, f"{example.name}: {entry}")
+                self.assertTrue(value.startswith("<") or entry["ParameterKey"] in {"EnvironmentName", "DesiredCount", "ApiTaskCpu", "EnableExecuteCommand", "PostgresEngineVersion", "RedisAuthTokenParameterName", "RedisEnabled", "CertificateValidationHostedZoneId", "VpcCidr", "ServiceEnabled", "DatabaseAutoStop", "BudgetLimitUsd", "BudgetActualWarningUsd", "BudgetForecastWarningUsd", "CostAnomalyMonitorEnabled", "CostAnomalyThresholdUsd"}, f"{example.name}: {entry}")
 
 
     def test_parameter_examples_match_the_templates(self):
@@ -457,10 +482,11 @@ class Configuration(unittest.TestCase):
             self.assertLessEqual({k for k, p in params.items() if "Default" not in p}, keys, stack)
         service = {e["ParameterKey"]: e["ParameterValue"] for e in json.loads((ROOT / "deploy" / "aws" / "parameters" / "service.example.json").read_text())}
         self.assertEqual(service["DesiredCount"], "0")  # first service deploy (Phase 5) starts no task
+        self.assertEqual(service["ServiceEnabled"], "false")  # ... and creates no ECS service at all
 
 
 class Cost(unittest.TestCase):
-    """17: the staging shape stays small; budgets notify at $40 / $50 forecast / $60."""
+    """17: the staging shape stays small; the budget measures gross usage (credits excluded)."""
 
     def test_sizes(self):
         data = T["20-data.yaml"]["Parameters"]
@@ -481,11 +507,36 @@ class Cost(unittest.TestCase):
         self.assertEqual(len(resources("AWS::ECS::Service")), 1)
 
     def test_budget_notifications(self):
+        params = T["10-foundation.yaml"]["Parameters"]
+        self.assertEqual((params["BudgetActualWarningUsd"]["Default"], params["BudgetForecastWarningUsd"]["Default"], params["BudgetLimitUsd"]["Default"]), (10, 15, 25))
+        self.assertEqual(params["BudgetLimitUsd"]["MaxValue"], 60)  # the owner's intervention ceiling
         b = FOUNDATION["MonthlyCostBudget"]["Properties"]
-        self.assertEqual(b["Budget"]["BudgetLimit"], {"Amount": 60, "Unit": "USD"})
+        self.assertEqual(b["Budget"]["BudgetLimit"], {"Amount": ref("BudgetLimitUsd"), "Unit": "USD"})
         got = [(n["Notification"]["NotificationType"], n["Notification"]["Threshold"], n["Notification"]["ThresholdType"]) for n in b["NotificationsWithSubscribers"]]
-        self.assertEqual(got, [("ACTUAL", 40, "ABSOLUTE_VALUE"), ("FORECASTED", 50, "ABSOLUTE_VALUE"), ("ACTUAL", 60, "ABSOLUTE_VALUE")])
+        self.assertEqual(got, [("ACTUAL", ref("BudgetActualWarningUsd"), "ABSOLUTE_VALUE"), ("FORECASTED", ref("BudgetForecastWarningUsd"), "ABSOLUTE_VALUE"), ("ACTUAL", ref("BudgetLimitUsd"), "ABSOLUTE_VALUE")])
         self.assertIn("does not cap", (TEMPLATES / "10-foundation.yaml").read_text())
+
+    def test_budget_sees_credit_consumption(self):
+        # With credits included (the AWS default) the budget would see ~$0 while promotional credits
+        # pay, and never notify.
+        cost_types = FOUNDATION["MonthlyCostBudget"]["Properties"]["Budget"]["CostTypes"]
+        self.assertIs(cost_types["IncludeCredit"], False)
+        self.assertIs(cost_types["IncludeRefund"], False)
+
+    def test_cost_anomaly_alerts(self):
+        monitor = FOUNDATION["CostAnomalyMonitor"]
+        self.assertEqual(monitor["Condition"], "WithCostAnomalyMonitor")
+        self.assertEqual((monitor["Properties"]["MonitorType"], monitor["Properties"]["MonitorDimension"]), ("DIMENSIONAL", "SERVICE"))
+        sub = FOUNDATION["CostAnomalySubscription"]["Properties"]
+        self.assertEqual(sub["Frequency"], "DAILY")
+        self.assertEqual(sub["Subscribers"], [{"Type": "EMAIL", "Address": ref("AlertEmail")}])
+        self.assertEqual(T["10-foundation.yaml"]["Parameters"]["CostAnomalyMonitorEnabled"]["Default"], "true")
+
+    def test_session_guards(self):
+        alarm = EDGE["SessionLeftRunningAlarm"]["Properties"]
+        self.assertEqual((alarm["MetricName"], alarm["Period"] * alarm["EvaluationPeriods"], alarm["Threshold"]), ("HealthyHostCount", 8 * 3600, 1))
+        self.assertEqual(T["20-data.yaml"]["Parameters"]["DatabaseAutoStop"]["Default"], "true")
+        self.assertIn('"countNumber":5', FOUNDATION["ApiRepository"]["Properties"]["LifecyclePolicy"]["LifecyclePolicyText"])
 
 
 if __name__ == "__main__":
