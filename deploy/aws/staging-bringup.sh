@@ -63,6 +63,24 @@ need() { [ -n "${!1:-}" ] || die "set $1 first"; }
 awsr() { aws --region "$R" "$@" | awk '{ sub(/\r$/, ""); print }'; }
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 secure_rm() { shred -u "$1" 2>/dev/null || rm -P "$1" 2>/dev/null || rm -f "$1"; }
+# file_arg PATH: the file://PATH argument the AWS CLI reads. On Windows (Git Bash / MINGW64) the AWS CLI is a
+# native program and cannot open MSYS paths such as /tmp/x (incident 2026-10-24, first secret not stored);
+# cygpath -m gives the same file as C:/... . Elsewhere there is no cygpath and the path is used as it is.
+file_arg() { if command -v cygpath >/dev/null 2>&1; then printf 'file://%s' "$(cygpath -m "$1")"; else printf 'file://%s' "$1"; fi; }
+# Files holding a secret live in $WORK_DIR/tmp (mode 700, files 600), never in the system /tmp, and are
+# removed when the helper exits for any reason: success, a failed aws call (set -e), STOP, Ctrl-C.
+SECRET_FILES=()
+remove_secret_files() { local f; for f in ${SECRET_FILES[@]+"${SECRET_FILES[@]}"}; do [ ! -e "$f" ] || secure_rm "$f"; done; }
+trap remove_secret_files EXIT
+trap 'exit 130' INT TERM HUP
+new_secret_file() { # new_secret_file VAR: VAR = a new empty 600 file in $WORK_DIR/tmp, removed at exit
+  # (locals are prefixed so that printf -v sets the caller's variable, not a local of the same name)
+  local _nsf_dir="$WORK_DIR/tmp" _nsf_file
+  mkdir -p "$_nsf_dir"; chmod 700 "$WORK_DIR" "$_nsf_dir"
+  _nsf_file="$(umask 077; mktemp "$_nsf_dir/secret.XXXXXXXX")" || die "cannot create a file in $_nsf_dir"
+  SECRET_FILES+=("$_nsf_file")
+  printf -v "$1" '%s' "$_nsf_file"
+}
 confirm() { # confirm "<exact phrase>"
   printf '\nType exactly:  %s\n> ' "$1"; read -r answer
   [ "$answer" = "$1" ] || die "confirmation did not match; nothing was executed"
@@ -227,7 +245,7 @@ step_cs_create() {
   case "$(stack_status "$st")" in ABSENT|REVIEW_IN_PROGRESS) type=CREATE ;; *) type=UPDATE ;; esac
   name="$s-$(date -u +%Y%m%dT%H%M%SZ)"
   awsr cloudformation create-change-set --stack-name "$st" --change-set-name "$name" --change-set-type "$type" \
-    --template-body "file://$tpl" --parameters "file://$PARAMS/$s.json" ${caps[@]+"${caps[@]}"} \
+    --template-body "$(file_arg "$tpl")" --parameters "$(file_arg "$PARAMS/$s.json")" ${caps[@]+"${caps[@]}"} \
     --tags Key=Project,Value=dash-ai Key=Environment,Value=staging >/dev/null
   echo "$name" >"$REVIEW/$s.changeset"; echo "$type" >"$REVIEW/$s.type"
   awsr cloudformation wait change-set-create-complete --stack-name "$st" --change-set-name "$name" || {
@@ -294,12 +312,12 @@ step_cs_execute() {
 put_secret() { # put_secret NAME GENERATOR...
   local name="/dash-ai/$ENV_NAME/$1" f; shift
   if param_exists "$name"; then info "$name already exists: left unchanged (never overwritten)"; return; fi
-  umask 077; f="$(mktemp)"
+  new_secret_file f
   "$@" | tr -d '\n' >"$f"
   if [ "$name" = "/dash-ai/$ENV_NAME/DATA_ENCRYPTION_KEY" ]; then
-    printf '\nESCROW NOW: open %s locally and copy the key into your offline escrow\n(password manager vault / sealed offline copy). Never paste it into a chat, ticket or repository.\nPress Enter when the escrow copy is saved... ' "$f"; read -r _
+    printf '\nESCROW NOW: open %s locally and copy the key into your offline escrow\n(password manager vault / sealed offline copy). Never paste it into a chat, ticket or repository.\nIf you stop here (Ctrl-C), the file is deleted and the next run generates a new key.\nPress Enter when the escrow copy is saved... ' "$f"; read -r _
   fi
-  awsr ssm put-parameter --name "$name" --type SecureString --value "file://$f" >/dev/null
+  awsr ssm put-parameter --name "$name" --type SecureString --value "$(file_arg "$f")" >/dev/null
   secure_rm "$f"
   ok "$name created (SecureString, value not shown)"
 }
@@ -343,12 +361,12 @@ step_redis_url() {
   local name="/dash-ai/$ENV_NAME/REDIS_URL" addr tf uf token
   if param_exists "$name"; then info "$name already exists: left unchanged"; return; fi
   addr="$(output_of data RedisAddress)"; [ -n "$addr" ] || die "no RedisAddress output"
-  umask 077; tf="$(mktemp)"; uf="$(mktemp)"
+  new_secret_file tf; new_secret_file uf
   awsr ssm get-parameter --name "/dash-ai/$ENV_NAME/REDIS_AUTH_TOKEN" --with-decryption --query Parameter.Value --output text >"$tf"
   token="$(tr -d '\n' <"$tf")"
   printf 'rediss://:%s@%s:6379' "$token" "$addr" >"$uf"   # printf is a shell builtin: not in the process list
   unset token
-  awsr ssm put-parameter --name "$name" --type SecureString --value "file://$uf" >/dev/null
+  awsr ssm put-parameter --name "$name" --type SecureString --value "$(file_arg "$uf")" >/dev/null
   secure_rm "$tf"; secure_rm "$uf"
   ok "$name created (rediss://, value not shown)"
 }

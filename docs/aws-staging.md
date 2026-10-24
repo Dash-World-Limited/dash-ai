@@ -136,13 +136,18 @@ pasted into a chat, ticket or commit):
 
 No provider key, no `FCM_SERVICE_ACCOUNT`, no AWS access key. Nothing else is needed.
 
-To write a parameter without the value appearing in shell history or the process list:
+The helper's `secrets` and `redis-url` steps do this for you. To write a parameter by hand without the
+value appearing in shell history, the process list or the system `/tmp`, and with the file removed even
+when the AWS call fails:
 
 ```sh
-umask 077; f="$(mktemp)"
-openssl rand -hex 32 | tr -d '\n' >"$f"          # or the value for that row
-aws ssm put-parameter --region eu-west-1 --name /dash-ai/staging/<NAME> --type SecureString --value "file://$f"
-shred -u "$f" 2>/dev/null || rm -f "$f"
+( set -e
+  d="${DASH_STAGING_DIR:-$HOME/dash-ai-staging}/tmp"; mkdir -p "$d"; chmod 700 "$d"
+  f="$(umask 077; mktemp "$d/secret.XXXXXXXX")"
+  trap 'shred -u "$f" 2>/dev/null || rm -f "$f"' EXIT     # removed on success and on failure
+  openssl rand -hex 32 | tr -d '\n' >"$f"                # or the value for that row
+  p="$f"; if command -v cygpath >/dev/null; then p="$(cygpath -m "$f")"; fi   # Windows Git Bash: C:/... path for the AWS CLI
+  aws ssm put-parameter --region eu-west-1 --name /dash-ai/staging/<NAME> --type SecureString --value "file://$p" )
 ```
 
 ## 5. Controlled sequence (Phases 1–11)
