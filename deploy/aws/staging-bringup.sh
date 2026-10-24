@@ -32,6 +32,7 @@
 #   classify                        PHASE 6: the read-only migration-history task, then prints the log
 #   capabilities foundation|data|edge|service        no AWS call: the IAM capability cs-create passes
 #   expected-resources foundation|data|edge|service  no AWS call: the resources a CREATE must add
+#   allowed-types foundation|data|edge|service       no AWS call: the resource types cs-review accepts
 #
 # Required environment (non-secret):
 #   DASH_REPO            path to a clean checkout of Dash-World-Limited/dash-ai at the SHA below
@@ -113,6 +114,10 @@ expected_resources() {
     *) die "unknown stack '$s' (foundation|data|edge|service)" ;;
   esac | tr ' ' '\n' | grep -v '^$' | sort
 }
+# in_list WORD ITEM...: WORD equals one ITEM exactly. The review gates use it instead of
+# `case " $(list) " in *" $w "*`, which stopped the Phase 3 foundation review on AWS::EC2::VPC (the first
+# allowed type) on the owner's workstation although the type is allowed.
+in_list() { local w="$1" x; shift; for x; do [ "$x" = "$w" ] && return 0; done; return 1; }
 # Removals a reviewed UPDATE may contain (parking Redis, ending a session). Never the database.
 allowed_removals() { case "$1" in data) echo "Redis RedisMemoryAlarm" ;; service) echo "ApiService" ;; esac; }
 allowed_types() {
@@ -240,7 +245,7 @@ step_cs_review() {
   [ "$(awsr cloudformation describe-change-set --stack-name "$st" --change-set-name "$name" --query "length(Changes[?ResourceChange.Replacement=='True' || ResourceChange.Replacement=='Conditional'])" --output text)" = 0 ] \
     || die "change set REPLACES resources: do not execute; report to the owner"
   for bad in $(awsr cloudformation describe-change-set --stack-name "$st" --change-set-name "$name" --query "Changes[?ResourceChange.Action=='Remove'].ResourceChange.LogicalResourceId" --output text); do
-    case " $(allowed_removals "$s") " in *" $bad "*) info "reviewed removal: $bad" ;; *) die "change set REMOVES $bad: do not execute; report to the owner" ;; esac
+    if in_list "$bad" $(allowed_removals "$s"); then info "reviewed removal: $bad"; else die "change set REMOVES $(printf %q "$bad"): do not execute; report to the owner"; fi
   done
   if [ "$(awsr cloudformation describe-change-set --stack-name "$st" --change-set-name "$name" --query 'length(Changes[?ResourceChange.Action!=`Add`])' --output text)" = 0 ]; then
     adds="$(awsr cloudformation describe-change-set --stack-name "$st" --change-set-name "$name" --query 'Changes[].ResourceChange.LogicalResourceId' --output text | tr '\t' '\n' | grep -v '^$' | sort)"
@@ -254,7 +259,7 @@ step_cs_review() {
     info "UPDATE change set: review every Modify line above by hand"
   fi
   types="$(awsr cloudformation describe-change-set --stack-name "$st" --change-set-name "$name" --query 'Changes[].ResourceChange.ResourceType' --output text | tr '\t' '\n' | sort -u)"
-  for t in $types; do case " $(allowed_types "$s") " in *" $t "*) ;; *) die "unexpected resource type $t: report to the owner" ;; esac; done
+  for t in $types; do in_list "$t" $(allowed_types "$s") || die "unexpected resource type $(printf %q "$t"): report to the owner"; done
   ok "only the reviewed resource types"
   if grep -Eiq '(^|[^a-z])prod([^a-z]|uction\.)' "$f"; then
     info "lines mentioning prod (NODE_ENV=production is expected; anything else is a STOP):"
@@ -535,5 +540,6 @@ case "$step" in
   classify) step_classify ;;
   capabilities) stack_capabilities "${1:?stack}" ;;
   expected-resources) expected_resources "${1:?stack}" ;;
-  *) sed -n '2,43p' "$0"; exit 2 ;;
+  allowed-types) allowed_types "${1:?stack}" | tr ' ' '\n' ;;
+  *) sed -n '2,44p' "$0"; exit 2 ;;
 esac
