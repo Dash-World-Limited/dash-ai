@@ -229,6 +229,8 @@ class RunbookCost(unittest.TestCase):
 class ReviewGate(unittest.TestCase):
     """cs-review, end to end against a stand-in aws: the reviewed change sets pass, anything else STOPs."""
 
+    crlf = False  # CrlfReviewGate reruns every test with Windows (Git Bash) CRLF line endings
+
     def setUp(self):
         self._d = tempfile.TemporaryDirectory()
         self.work = Path(self._d.name)
@@ -241,7 +243,7 @@ class ReviewGate(unittest.TestCase):
         # Answers each describe-change-set query cs-review makes from files the test writes.
         fake.write_text(f"""#!/usr/bin/env bash
 S={self.state}
-case "$*" in
+{{ case "$*" in
   *"sts get-caller-identity"*Account*) echo 111122223333 ;;
   *"sts get-caller-identity"*Arn*) echo arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_Test_0/test ;;
   *"--include-property-values"*) echo '{{"Changes": []}}' ;;
@@ -254,9 +256,11 @@ case "$*" in
   *"--query Changes[].ResourceChange.LogicalResourceId"*) cat "$S/ids" ;;
   *"--query Changes[].ResourceChange.ResourceType"*) cat "$S/types" ;;
   *) echo "unexpected aws call: $*" >&2; exit 99 ;;
-esac
+esac; }} | if [ -f "$S/crlf" ]; then sed 's/$/\r/'; else cat; fi
 """)
         fake.chmod(0o755)
+        if self.crlf:
+            (self.state / "crlf").write_text("")
         self.env = {"PATH": f"{bindir}:{os.environ['PATH']}", "EXPECTED_ACCOUNT_ID": "111122223333", "AWS_PROFILE": "test"}
 
     def tearDown(self):
@@ -346,3 +350,47 @@ esac
                 self.assertStops(self.change_set("data", {}, removes=bad, **park), "REMOVES")
         self.assertStops(self.change_set("foundation", {}, removes=["Vpc"], ids=["Vpc"], types=["AWS::EC2::VPC"], non_adds=1), "REMOVES")
         self.assertStops(self.change_set("data", {}, replacements=1, **park), "REPLACES")
+
+
+class CrlfReviewGate(ReviewGate):
+    """The same gate when the AWS CLI ends every text line with CRLF (Windows Git Bash / MINGW64).
+
+    The Phase 3 foundation review stopped on "AWS::EC2::VPC\\r": Vpc is the last logical id, so its type was
+    the last value of the tab-separated line and kept the CR. Every ReviewGate test runs again here.
+    """
+
+    crlf = True
+
+    def test_the_stand_in_really_ends_lines_with_crlf(self):
+        self.create("foundation", {"CostAnomalyMonitorEnabled": "false"})
+        out = subprocess.run([str(self.work / "bin" / "aws"), "cloudformation", "describe-change-set", "--query",
+                              "Changes[].ResourceChange.ResourceType"], capture_output=True).stdout
+        self.assertTrue(out.endswith(b"AWS::EC2::VPC\r\n"), out[-40:])
+
+    def test_a_carriage_return_inside_a_line_still_stops(self):
+        """Only a CR that ends a line is dropped; one anywhere else stays part of the value and fails."""
+        t = template("foundation")
+        ids = resources_for(t, {"CostAnomalyMonitorEnabled": "false"})
+        types = [t["Resources"][i]["Type"] for i in ids]
+        types[0] = types[0] + "\r"
+        self.assertStops(self.change_set("foundation", {"CostAnomalyMonitorEnabled": "false"}, ids, types), "unexpected resource type")
+        park = dict(ids=["Redis", "RedisMemoryAlarm"], types=["AWS::ElastiCache::ReplicationGroup", "AWS::CloudWatch::Alarm"], non_adds=2)
+        self.assertStops(self.change_set("data", {}, removes=["Redis\r", "RedisMemoryAlarm"], **park), "REMOVES")
+
+
+class AwsTextOutput(unittest.TestCase):
+    """Every AWS call goes through awsr, which drops only line-ending CRs."""
+
+    def test_no_aws_call_bypasses_awsr(self):
+        def invokes_aws(line):
+            code = re.sub(r'"[^"]*"', '""', line.split("#", 1)[0] if line.lstrip().startswith("#") else line)
+            return re.search(r"(^|[\s;|&(])aws\s", code) and "command -v aws" not in code
+        calls = [l.strip() for l in HELPER.read_text().splitlines() if invokes_aws(l)]
+        self.assertEqual([l for l in calls if not l.startswith("awsr() {") and not l.startswith("aws --version")], [])
+        self.assertTrue(any(l.startswith("awsr() {") for l in calls))
+
+    def test_awsr_strips_only_line_ending_carriage_returns(self):
+        body = [l for l in HELPER.read_text().splitlines() if l.startswith("awsr() {")][0]
+        self.assertIn("sub(/\\r$/, \"\")", body)
+        out = subprocess.run(["awk", '{ sub(/\\r$/, ""); print }'], input=b"a\tAWS::EC2::VPC\r\nx\ry\r\n", capture_output=True, check=True).stdout
+        self.assertEqual(out, b"a\tAWS::EC2::VPC\nx\ry\n")
