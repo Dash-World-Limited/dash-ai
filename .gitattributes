@@ -1,0 +1,4 @@
+# Reviewed trust material: byte-exact on every platform (Git for Windows core.autocrlf=true would write CRLF and
+# change the SHA-256 the Dockerfile and deploy/aws/staging-bringup.sh rds-ca check).
+deploy/container/certs/rds-eu-west-1-bundle.pem text eol=lf
+deploy/container/certs/SHA256SUMS text eol=lf
