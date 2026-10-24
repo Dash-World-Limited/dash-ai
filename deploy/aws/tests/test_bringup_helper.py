@@ -6,10 +6,12 @@ and the budget thresholds the runbook quotes. Nothing here calls AWS: the change
 recording stand-in for the `aws` command first on PATH.
 """
 
+import hashlib
 import itertools
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -598,13 +600,33 @@ class FileArguments(unittest.TestCase):
         self.assertFalse([l for l in code if "mktemp)" in l or 'mktemp"' in l], "a bare mktemp (system /tmp) remains")
 
 
-class RdsCaDownload(unittest.TestCase):
-    """rds-ca: curl writes the bundle where the platform's curl can open it, and the provenance checks that
-    follow still read the same file through its POSIX path.
+# The reviewed RDS eu-west-1 bundle: its SHA-256 and the SHA-256 fingerprints of its three roots (same as the helper).
+RDS_BUNDLE = ROOT / "deploy" / "container" / "certs" / "rds-eu-west-1-bundle.pem"
+RDS_BUNDLE_SHA256 = "a11cf9a1d0aadd7db86f92cbaa496466daeb501bf1c5e429d8ce8914a01c15d6"
+RDS_ROOT_FINGERPRINTS = (
+    "62:E2:9E:F9:03:10:94:7E:ED:5D:55:46:02:1D:63:60:08:FA:D3:29:FA:B9:EA:31:BA:1A:E7:68:B7:34:F2:9A",
+    "6F:7E:01:B6:2A:F2:40:58:41:71:30:B2:1E:5F:B9:AD:9F:29:B2:9C:77:5C:51:07:B6:57:41:90:10:97:58:86",
+    "88:EC:F0:27:44:8F:71:98:F3:C1:A6:76:24:74:C4:65:8D:AB:35:A1:86:86:AF:6B:65:DE:3C:40:23:C6:D0:B2",
+)
+# A cygpath stand-in (Git Bash): marks a converted path with a W: drive so the native stand-ins can tell.
+CYGPATH = '#!/bin/sh\n[ "$1" = -m ] || exit 2\nprintf "W:%s\\n" "$2"\n'
 
-    windows = True adds a cygpath stand-in (Git Bash) and a curl stand-in that, like native MinGW curl, cannot
-    write to an MSYS path (incident 2026-10-24: curl: (23) client returned ERROR on write of 4576 bytes).
-    No network: the stand-in serves the committed bundle, or a tampered copy.
+
+def stand_in(bindir, name, body):
+    f = bindir / name
+    f.write_text(body)
+    f.chmod(0o755)
+
+
+class RdsCaDownload(unittest.TestCase):
+    """rds-ca: curl and openssl get the bundle path in the form the platform's programs can open, and the
+    provenance checks still read the same file through its POSIX path.
+
+    windows = True adds a cygpath stand-in (Git Bash), a curl stand-in that, like native MinGW curl, cannot
+    write to an MSYS path (incident 2026-10-24: curl: (23) client returned ERROR on write of 4576 bytes) and an
+    openssl wrapper that, like native Windows OpenSSL, cannot open one for -certfile (incident 2026-10-24:
+    BIO_new_file: No such process). The wrapper hands everything else to the real openssl, so the real
+    fingerprints are computed. No network: the curl stand-in serves the committed bundle, or a tampered copy.
     """
 
     windows = False
@@ -612,14 +634,14 @@ class RdsCaDownload(unittest.TestCase):
     def setUp(self):
         self._d = tempfile.TemporaryDirectory()
         root = Path(self._d.name)
-        self.work, self.state, self.systmp, bindir = root / "work", root / "state", root / "systmp", root / "bin"
-        for d in (self.work, self.state, self.systmp, bindir):
+        self.work, self.state, self.systmp, self.bindir = root / "work", root / "state", root / "systmp", root / "bin"
+        for d in (self.work, self.state, self.systmp, self.bindir):
             d.mkdir()
         self.served = self.state / "served.pem"
-        self.served.write_bytes((ROOT / "deploy" / "container" / "certs" / "rds-eu-west-1-bundle.pem").read_bytes())
+        self.served.write_bytes(RDS_BUNDLE.read_bytes())
+        self.repo = ROOT
         S = self.state
-        curl = bindir / "curl"
-        curl.write_text(f"""#!/usr/bin/env bash
+        stand_in(self.bindir, "curl", f"""#!/usr/bin/env bash
 S={S}
 out=""; prev=""; for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
 printf '%s\\n' "$out" >>"$S/outputs"
@@ -628,49 +650,216 @@ if [ -f "$S/windows" ]; then
 fi
 cat "$S/served.pem" >"$out"
 """)
-        curl.chmod(0o755)
+        stand_in(self.bindir, "openssl", f"""#!/usr/bin/env bash
+S={S}
+args=(); prev=""
+for a in "$@"; do
+  if [ "$prev" = -certfile ]; then
+    printf '%s\\n' "$a" >>"$S/certfiles"
+    if [ -f "$S/windows" ]; then
+      case "$a" in W:/*) a="${{a#W:}}" ;; *) printf 'error opening the file, %s\\nBIO_new_file: No such process\\n' "$a" >&2; exit 1 ;; esac
+    fi
+  fi
+  args+=("$a"); prev="$a"
+done
+if [ "${{1:-}}" = x509 ] && [ -f "$S/wrong-fingerprint" ]; then cat >/dev/null; echo "sha256 Fingerprint=00:11:22"; exit 0; fi
+exec {shutil.which("openssl")} "${{args[@]}}"
+""")
         if self.windows:
             (S / "windows").write_text("")
-            cyg = bindir / "cygpath"
-            cyg.write_text('#!/bin/sh\n[ "$1" = -m ] || exit 2\nprintf "W:%s\\n" "$2"\n')
-            cyg.chmod(0o755)
+            stand_in(self.bindir, "cygpath", CYGPATH)
 
     def tearDown(self):
         self._d.cleanup()
 
     def run_step(self):
         return run_helper(self.work, "rds-ca", check=False, env={
-            "PATH": f"{self.work / 'deny-aws'}:{self._d.name}/bin:{os.environ['PATH']}",
-            "DASH_REPO": str(ROOT), "TMPDIR": str(self.systmp)})
+            "PATH": f"{self.work / 'deny-aws'}:{self.bindir}:{os.environ['PATH']}",
+            "DASH_REPO": str(self.repo), "TMPDIR": str(self.systmp)})
 
-    def outputs(self):
-        return (self.state / "outputs").read_text().splitlines()
+    def recorded(self, name):
+        return (self.state / name).read_text().splitlines()
+
+    def assertNative(self, path):
+        posix = path[2:] if self.windows else path
+        self.assertEqual(path.startswith("W:/"), self.windows, path)
+        self.assertTrue(posix.startswith(str(self.systmp) + "/") and posix.endswith("/eu-west-1-bundle.pem"), path)
+
+    def assertStopped(self, r, message):
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(message, r.stderr)
+        self.assertFalse((self.work / "review" / "rds-ca-provenance.txt").exists())
 
     def test_download_passes_provenance(self):
         r = self.run_step()
         self.assertEqual(r.returncode, 0, r.stderr[-500:])
         self.assertIn("RDS CA provenance check PASSED", r.stdout)
-        self.assertIn("a11cf9a1d0aadd7db86f92cbaa496466daeb501bf1c5e429d8ce8914a01c15d6", (self.work / "review" / "rds-ca-provenance.txt").read_text())
-        [out] = self.outputs()
-        posix = out[2:] if self.windows else out
-        self.assertEqual(out.startswith("W:/"), self.windows, out)
-        self.assertTrue(posix.startswith(str(self.systmp) + "/") and posix.endswith("/eu-west-1-bundle.pem"), out)
+        self.assertIn(RDS_BUNDLE_SHA256, (self.work / "review" / "rds-ca-provenance.txt").read_text())
+        for fp in RDS_ROOT_FINGERPRINTS:
+            self.assertIn(f"fingerprint  {fp}", r.stdout)
+        [out] = self.recorded("outputs")
+        [certfile] = self.recorded("certfiles")
+        self.assertNative(out)
+        self.assertEqual(certfile, out, "openssl must read the file curl wrote")
         self.assertEqual(list(self.systmp.iterdir()), [], "the download directory was left behind")
 
     def test_tampered_download_still_stops(self):
         self.served.write_bytes(self.served.read_bytes().replace(b"MII", b"MIJ", 1))
-        r = self.run_step()
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("downloaded bundle SHA-256 differs: DO NOT BUILD, PUSH OR DEPLOY", r.stderr)
-        self.assertFalse((self.work / "review" / "rds-ca-provenance.txt").exists())
+        self.assertStopped(self.run_step(), "downloaded bundle SHA-256 differs: DO NOT BUILD, PUSH OR DEPLOY")
 
-    def test_only_the_curl_output_is_converted(self):
+    def test_tampered_committed_bundle_still_stops(self):
+        self.repo = Path(self._d.name) / "repo"
+        certs = self.repo / "deploy" / "container" / "certs"
+        certs.mkdir(parents=True)
+        # The CRLF copy a Windows checkout without .gitattributes produced (SHA-256 35871bb1...), then a byte flip.
+        crlf = RDS_BUNDLE.read_bytes().replace(b"\n", b"\r\n")
+        for bundle in (crlf, RDS_BUNDLE.read_bytes().replace(b"MII", b"MIJ", 1)):
+            with self.subTest(crlf=bundle is crlf):
+                (certs / "rds-eu-west-1-bundle.pem").write_bytes(bundle)
+                self.assertStopped(self.run_step(), "committed bundle differs from the expected SHA-256")
+
+    def test_fingerprint_mismatch_still_stops(self):
+        (self.state / "wrong-fingerprint").write_text("")
+        self.assertStopped(self.run_step(), "certificate fingerprints differ: DO NOT BUILD, PUSH OR DEPLOY")
+
+    def test_only_native_program_arguments_are_converted(self):
         body = HELPER.read_text().split("step_rds_ca() {", 1)[1].split("\n}\n", 1)[0]
-        self.assertEqual(body.count("native_path"), 1)
+        self.assertEqual(body.count("native_path"), 2)
         self.assertIn('-o "$(native_path "$f")"', body)
+        self.assertIn('-certfile "$(native_path "$f")"', body)
         self.assertIn('got="$(sha256 "$f")"', body)
-        self.assertIn('-certfile "$f"', body)
+        self.assertIn('rm -rf "$d"', body)
+        self.assertNotRegex(body, r'\bf="\$\(native_path')
+
+    def test_expected_bundle_and_fingerprints_unchanged(self):
+        body = HELPER.read_text().split("step_rds_ca() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn(f"want={RDS_BUNDLE_SHA256}", body)
+        self.assertEqual(sorted(re.findall(r"^\s+((?:[0-9A-F]{2}:){31}[0-9A-F]{2})", body, re.M)), sorted(RDS_ROOT_FINGERPRINTS))
+        self.assertIn('[ "$fp" = "$(printf', body)
+        self.assertIn(f"{RDS_BUNDLE_SHA256}  rds-eu-west-1-bundle.pem", (RDS_BUNDLE.parent / "SHA256SUMS").read_text())
 
 
 class WindowsRdsCaDownload(RdsCaDownload):
     windows = True
+
+
+class RepositoryCheck(unittest.TestCase):
+    """check_repo (preflight, cs-create, image): the SHA and clean-tree checks run through git -C with a path
+    native git can open. windows = True adds a cygpath stand-in and a git wrapper that, like native git.exe,
+    cannot change to an MSYS path such as /c/Users/... (incident 2026-10-24); the wrapper then runs real git.
+    cs-create data is used because it runs check_repo right after the identity check; the aws stand-in answers
+    only the identity calls, so the step stops at its first later AWS call, never reaching AWS.
+    """
+
+    windows = False
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        root = Path(self._d.name)
+        self.work, self.state, self.repo, self.bindir = root / "work", root / "state", root / "repo", root / "bin"
+        for d in (self.work, self.state, self.repo, self.bindir):
+            d.mkdir()
+        g = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "HOME": str(root), "PATH": os.environ["PATH"]}
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", str(self.repo)]
+        subprocess.run(git + ["init", "-q"], check=True, env=g)
+        (self.repo / "README").write_text("x\n")
+        subprocess.run(git + ["add", "README"], check=True, env=g)
+        subprocess.run(git + ["commit", "-qm", "x"], check=True, env=g)
+        self.sha = subprocess.run(git + ["rev-parse", "HEAD"], check=True, env=g, capture_output=True, text=True).stdout.strip()
+        S = self.state
+        stand_in(self.bindir, "aws", """#!/usr/bin/env bash
+case "$*" in
+  *"sts get-caller-identity"*Account*) echo 111122223333 ;;
+  *"sts get-caller-identity"*Arn*) echo arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_Test_0/test ;;
+  *) echo "unexpected aws call: $*" >&2; exit 99 ;;
+esac
+""")
+        stand_in(self.bindir, "git", f"""#!/usr/bin/env bash
+S={S}
+if [ "${{1:-}}" = -C ]; then
+  printf '%s\\n' "$2" >>"$S/dirs"
+  d="$2"
+  if [ -f "$S/windows" ]; then
+    case "$d" in W:/*) d="${{d#W:}}" ;; *) echo "fatal: cannot change to '$d': No such file or directory" >&2; exit 128 ;; esac
+  fi
+  shift 2; exec {shutil.which("git")} -C "$d" "$@"
+fi
+exec {shutil.which("git")} "$@"
+""")
+        if self.windows:
+            (S / "windows").write_text("")
+            stand_in(self.bindir, "cygpath", CYGPATH)
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    def run_step(self, sha=None):
+        return run_helper(self.work, "cs-create", "data", check=False, env={
+            "PATH": f"{self.bindir}:{os.environ['PATH']}", "DASH_REPO": str(self.repo), "EXPECTED_SHA": sha or self.sha,
+            "EXPECTED_ACCOUNT_ID": "111122223333", "AWS_PROFILE": "test", "GIT_CONFIG_GLOBAL": os.devnull})
+
+    def test_clean_repository_at_the_sha_passes(self):
+        r = self.run_step()
+        self.assertIn(f"OK    repository at {self.sha}, clean", r.stdout, r.stderr[-500:])
+        dirs = (self.state / "dirs").read_text().splitlines()
+        self.assertEqual(dirs, [("W:" if self.windows else "") + str(self.repo)] * 2)
+
+    def test_other_sha_still_stops(self):
+        r = self.run_step(sha="1" * 40)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("DASH_REPO is not at " + "1" * 40, r.stderr)
+
+    def test_dirty_tree_still_stops(self):
+        (self.repo / "README").write_text("changed\n")
+        r = self.run_step()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("DASH_REPO working tree is not clean", r.stderr)
+
+
+class WindowsRepositoryCheck(RepositoryCheck):
+    windows = True
+
+
+class TrustMaterialLineEndings(unittest.TestCase):
+    """.gitattributes keeps the reviewed PEM and SHA256SUMS byte-exact (LF) on checkout, even with Git for
+    Windows' core.autocrlf=true, which otherwise writes CRLF (SHA-256 35871bb1... instead of a11cf9a1...)."""
+
+    PATHS = ("deploy/container/certs/rds-eu-west-1-bundle.pem", "deploy/container/certs/SHA256SUMS")
+
+    def git(self, *args, cwd=ROOT, **kw):
+        env = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "HOME": str(cwd), "PATH": os.environ["PATH"]}
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args], cwd=cwd, env=env,
+                              check=True, capture_output=True, text=True, **kw).stdout
+
+    def test_attributes_pin_lf(self):
+        out = self.git("check-attr", "text", "eol", "--", *self.PATHS)
+        for path in self.PATHS:
+            self.assertIn(f"{path}: text: set", out)
+            self.assertIn(f"{path}: eol: lf", out)
+
+    def checkout_with_autocrlf(self, with_attributes):
+        with tempfile.TemporaryDirectory() as d:
+            src, dst = Path(d) / "src", Path(d) / "dst"
+            for path in self.PATHS:
+                (src / path).parent.mkdir(parents=True, exist_ok=True)
+                (src / path).write_bytes((ROOT / path).read_bytes())
+            if with_attributes:
+                (src / ".gitattributes").write_bytes((ROOT / ".gitattributes").read_bytes())
+            self.git("init", "-q", cwd=src)
+            self.git("add", "-A", cwd=src)
+            self.git("commit", "-qm", "x", cwd=src)
+            self.git("-c", "core.autocrlf=true", "clone", "-q", "-c", "core.autocrlf=true", str(src), str(dst), cwd=Path(d))
+            return {path: (dst / path).read_bytes() for path in self.PATHS}
+
+    def test_autocrlf_checkout_is_byte_exact(self):
+        files = self.checkout_with_autocrlf(with_attributes=True)
+        self.assertEqual(hashlib.sha256(files[self.PATHS[0]]).hexdigest(), RDS_BUNDLE_SHA256)
+        for path, data in files.items():
+            self.assertNotIn(b"\r", data, path)
+            self.assertEqual(data, (ROOT / path).read_bytes(), path)
+
+    def test_without_the_attributes_autocrlf_breaks_the_hash(self):
+        # The control: the incident this file prevents, reproduced (so the test above cannot pass vacuously).
+        files = self.checkout_with_autocrlf(with_attributes=False)
+        self.assertIn(b"\r\n", files[self.PATHS[0]])
+        self.assertNotEqual(hashlib.sha256(files[self.PATHS[0]]).hexdigest(), RDS_BUNDLE_SHA256)

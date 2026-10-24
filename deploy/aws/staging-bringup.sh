@@ -63,9 +63,9 @@ need() { [ -n "${!1:-}" ] || die "set $1 first"; }
 awsr() { aws --region "$R" "$@" | awk '{ sub(/\r$/, ""); print }'; }
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 secure_rm() { shred -u "$1" 2>/dev/null || rm -P "$1" 2>/dev/null || rm -f "$1"; }
-# native_path PATH: PATH as a native Windows program (the AWS CLI, MinGW curl) can open it. On Windows (Git Bash /
-# MINGW64) those programs cannot open MSYS paths such as /tmp/x (incidents 2026-10-24: first secret not stored;
-# rds-ca curl error 23); cygpath -m gives the same file as C:/... . Elsewhere there is no cygpath and the path
+# native_path PATH: PATH as a native Windows program (the AWS CLI, MinGW curl, openssl, git) can open it. On Windows
+# (Git Bash / MINGW64) those programs cannot open MSYS paths such as /tmp/x (incidents 2026-10-24: first secret not
+# stored; rds-ca curl error 23 and openssl BIO_new_file; git -C /c/Users/...); cygpath -m gives the same file as C:/... . Elsewhere there is no cygpath and the path
 # is used as it is. Only arguments handed to a native program go through it; bash tools keep the MSYS path.
 native_path() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 # file_arg PATH: the file://PATH argument the AWS CLI reads.
@@ -168,8 +168,9 @@ check_identity() {
 }
 check_repo() {
   need DASH_REPO
-  [ "$(git -C "$DASH_REPO" rev-parse HEAD)" = "$SHA" ] || die "DASH_REPO is not at $SHA (git -C \$DASH_REPO checkout --detach $SHA)"
-  [ -z "$(git -C "$DASH_REPO" status --porcelain)" ] || die "DASH_REPO working tree is not clean"
+  local repo; repo="$(native_path "$DASH_REPO")"
+  [ "$(git -C "$repo" rev-parse HEAD)" = "$SHA" ] || die "DASH_REPO is not at $SHA (git -C \$DASH_REPO checkout --detach $SHA)"
+  [ -z "$(git -C "$repo" status --porcelain)" ] || die "DASH_REPO working tree is not clean"
   ok "repository at $SHA, clean"
 }
 check_no_database_url() {
@@ -415,7 +416,7 @@ step_rds_ca() {
   got="$(sha256 "$f")"; info "downloaded bundle SHA-256: $got"
   [ "$got" = "$want" ] || die "downloaded bundle SHA-256 differs: DO NOT BUILD, PUSH OR DEPLOY; report to the owner"
   [ "$(sha256 "$DASH_REPO/deploy/container/certs/rds-eu-west-1-bundle.pem")" = "$want" ] || die "committed bundle differs from the expected SHA-256"
-  fp="$(openssl crl2pkcs7 -nocrl -certfile "$f" | openssl pkcs7 -print_certs | \
+  fp="$(openssl crl2pkcs7 -nocrl -certfile "$(native_path "$f")" | openssl pkcs7 -print_certs | \
     awk '/BEGIN/{c=""} {c=c $0 "\n"} /END/{printf "%s", c | "openssl x509 -noout -fingerprint -sha256"; close("openssl x509 -noout -fingerprint -sha256")}' | sed 's/.*=//' | sort)"
   printf '%s\n' "$fp" | sed 's/^/      fingerprint  /'
   [ "$fp" = "$(printf '%s\n' \
