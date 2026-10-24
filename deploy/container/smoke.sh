@@ -23,9 +23,13 @@ REDIS="$RUN_ID-redis"
 API="$RUN_ID-api"
 WORK="$(mktemp -d)"
 # Git Bash/MSYS exposes paths such as /tmp/x to shell tools, but native Windows programs such as
-# openssl.exe need the corresponding Windows path. Linux/macOS have no cygpath, so this is identity.
+# openssl.exe, docker.exe, python.exe and curl.exe need the corresponding Windows host path.
+# Linux/macOS have no cygpath, so native_path is an identity there. On Git Bash, disable MSYS's
+# automatic argument rewriting so Docker container paths such as /tls and /smoke stay Linux paths.
 native_path() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
-OPENSSL_WORK="$(native_path "$WORK")"
+HOST_WORK="$(native_path "$WORK")"
+OPENSSL_WORK="$HOST_WORK"
+if command -v cygpath >/dev/null 2>&1; then export MSYS_NO_PATHCONV=1; fi
 chmod 0755 "$WORK" # the PostgreSQL and Redis containers read their throwaway certificates from it
 API_PORT="${SMOKE_API_PORT:-18787}"
 BASE="http://127.0.0.1:$API_PORT"
@@ -69,12 +73,14 @@ OPERATOR_TOKEN="$(openssl rand -hex 32)"
 docker network create "$NET" >/dev/null
 # "pg" matches the certificate; "pg-wrong-name" reaches the same server under a name it does not match.
 docker run -d --name "$PG" --network "$NET" --network-alias pg --network-alias pg-wrong-name \
-  -e POSTGRES_PASSWORD="$PG_PASSWORD" -e POSTGRES_DB=dash_smoke -v "$WORK:/tls:ro" \
+  -e POSTGRES_PASSWORD="$PG_PASSWORD" -e POSTGRES_DB=dash_smoke \
+  --mount "type=bind,source=$HOST_WORK,target=/tls,readonly" \
   --entrypoint sh postgres:16 -c '
     install -o postgres -g postgres -m 0600 /tls/server.key /tmp/server.key
     install -o postgres -g postgres -m 0644 /tls/server.pem /tmp/server.pem
     exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/tmp/server.pem -c ssl_key_file=/tmp/server.key' >/dev/null
-docker run -d --name "$REDIS" --network "$NET" --network-alias redis -v "$WORK:/tls:ro" redis:7 \
+docker run -d --name "$REDIS" --network "$NET" --network-alias redis \
+  --mount "type=bind,source=$HOST_WORK,target=/tls,readonly" redis:7 \
   redis-server --requirepass "$REDIS_PASSWORD" --save "" --appendonly no --port 0 --tls-port 6379 \
   --tls-cert-file /tls/redis.pem --tls-key-file /tls/redis.key --tls-ca-cert-file /tls/ca.pem --tls-auth-clients no >/dev/null
 for _ in $(seq 1 60); do
@@ -88,6 +94,7 @@ for _ in $(seq 1 30); do [ "$(redis_ping)" = "PONG" ] && break; sleep 1; done
 
 # --- The environment: committed staging template + first bring-up overlay + throwaway secrets ---------
 ENV_FILE="$WORK/api.env"
+HOST_ENV_FILE="$HOST_WORK/api.env"
 {
   grep -v '^\s*#' "$REPO/deploy/staging/staging.env.example" | grep '='
   grep -v '^\s*#' "$REPO/deploy/staging/first-bringup.env.example" | grep '='
@@ -104,7 +111,7 @@ grep -q '^PROVIDER_MODE=fake$' "$ENV_FILE" || fail "the first bring-up overlay n
 
 # Fargate-like hardening for every run of the image.
 HARDEN=(--read-only --cap-drop ALL --security-opt no-new-privileges --network "$NET")
-run_tool() { docker run --rm "${HARDEN[@]}" -v "$WORK/ca.pem:/smoke/ca.pem:ro" --env-file "$ENV_FILE" "$@"; }
+run_tool() { docker run --rm "${HARDEN[@]}" --mount "type=bind,source=$HOST_WORK/ca.pem,target=/smoke/ca.pem,readonly" --env-file "$HOST_ENV_FILE" "$@"; }
 
 # --- A/B. The image targets linux/amd64, runs as non-root, with Node 22 and the expected command ------
 # The staging task runs on Fargate X86_64; an image built for another platform must never pass.
@@ -140,7 +147,7 @@ docker run --rm "${HARDEN[@]}" --entrypoint node "$IMAGE" -e '
 ' || fail "the RDS bundle is not loaded as extra CA certificates"
 pass "image trust: NODE_EXTRA_CA_CERTS loads the 3 RDS eu-west-1 roots in addition to Node's public CAs"
 
-untrusted_env=(--env-file "$ENV_FILE" -e NODE_EXTRA_CA_CERTS=/etc/dash-ai/certs/rds-eu-west-1-bundle.pem)
+untrusted_env=(--env-file "$HOST_ENV_FILE" -e NODE_EXTRA_CA_CERTS=/etc/dash-ai/certs/rds-eu-west-1-bundle.pem)
 out="$(docker run --rm "${HARDEN[@]}" "${untrusted_env[@]}" "$IMAGE" node dist/migrate-cli.js 2>&1)" && fail "connected to a database whose CA the image does not trust"
 grep -qiE "certificate|self.signed|unable to verify" <<<"$out" || fail "unexpected error for an untrusted certificate: $out"
 pass "untrusted certificate refused with DATABASE_SSL=require (image defaults): $(grep -oiE 'self[- ]signed certificate in certificate chain|unable to verify the first certificate|unable to get local issuer certificate' <<<"$out" | head -1)"
@@ -159,7 +166,7 @@ pass "migrations idempotent: $out"
 
 start_api() {
   docker run -d --name "$API" "${HARDEN[@]}" -p "127.0.0.1:$API_PORT:8787" \
-    -v "$WORK/ca.pem:/smoke/ca.pem:ro" --env-file "$ENV_FILE" "$@" "$IMAGE" >/dev/null
+    --mount "type=bind,source=$HOST_WORK/ca.pem,target=/smoke/ca.pem,readonly" --env-file "$HOST_ENV_FILE" "$@" "$IMAGE" >/dev/null
   for _ in $(seq 1 60); do
     curl -sf "$BASE/health" >/dev/null 2>&1 && return 0
     [ "$(docker inspect -f '{{.State.Running}}' "$API")" = "true" ] || fail "the API exited during start-up"
@@ -207,7 +214,7 @@ grep -q '^event: stream.end' <<<"$stream" || fail "the stream did not end normal
 pass "demonstration chat streamed (demo: true, stream.end, no provider identity in the consumer stream)"
 
 # --- F. Document extraction in its child process ----------------------------------------------------
-python3 - "$WORK" <<'PY'
+python3 - "$HOST_WORK" <<'PY'
 import sys, zipfile
 work = sys.argv[1]
 text = "DASH container extraction check"
@@ -241,7 +248,7 @@ WATCH=$!
 for kind in pdf docx; do
   mime=application/pdf
   [ "$kind" = docx ] && mime=application/vnd.openxmlformats-officedocument.wordprocessingml.document
-  doc="$(curl -sf -X POST "$BASE/v1/documents" "${AUTH[@]}" -F "file=@$WORK/check.$kind;type=$mime")" || fail "$kind upload"
+  doc="$(curl -sf -X POST "$BASE/v1/documents" "${AUTH[@]}" -F "file=@$HOST_WORK/check.$kind;type=$mime")" || fail "$kind upload"
   [ "$(json 'd["status"]' <<<"$doc")" = "ready" ] && [ "$(json 'd["extractedChars"] > 20' <<<"$doc")" = "True" ] || fail "$kind not extracted: $doc"
   pass "$kind extracted in the container: $(json '{k: d[k] for k in ("kind", "status", "extractedChars", "pageCount")}' <<<"$doc")"
 done
@@ -296,7 +303,7 @@ docker stop -t 40 "$API" >/dev/null
 docker rm "$API" >/dev/null
 
 # A different key must not silently read or overwrite the data: the server refuses to start.
-out="$(timeout 60 docker run --rm "${HARDEN[@]}" -v "$WORK/ca.pem:/smoke/ca.pem:ro" --env-file "$ENV_FILE" \
+out="$(timeout 60 docker run --rm "${HARDEN[@]}" --mount "type=bind,source=$HOST_WORK/ca.pem,target=/smoke/ca.pem,readonly" --env-file "$HOST_ENV_FILE" \
   -e DATA_ENCRYPTION_KEY="$(openssl rand -base64 32)" "$IMAGE" 2>&1)" && fail "started with a different DATA_ENCRYPTION_KEY"
 grep -q "DATA_ENCRYPTION_KEY does not match" <<<"$out" || fail "unexpected result with a different key: $out"
 pass "a different DATA_ENCRYPTION_KEY is refused at start-up (no data read or overwritten)"
