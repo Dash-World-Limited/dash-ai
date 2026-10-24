@@ -400,7 +400,8 @@ class AwsTextOutput(unittest.TestCase):
 
 # A fixed, non-secret stand-in for the value get-parameter returns in the redis-url tests.
 STAND_IN = "standin" + "0" * 57
-SECRET_NAMES = ("REDIS_AUTH_TOKEN", "DATA_ENCRYPTION_KEY", "METRICS_TOKEN", "OPERATOR_TOKEN")
+# The SSM parameter paths the secrets step creates, in order (names only; no value is ever involved).
+INITIAL_PARAMETER_PATHS = tuple("/dash-ai/staging/" + p for p in ("REDIS_AUTH_TOKEN", "DATA_ENCRYPTION_KEY", "METRICS_TOKEN", "OPERATOR_TOKEN"))
 
 
 class SecretFiles(unittest.TestCase):
@@ -498,7 +499,7 @@ esac
     def test_secrets_are_written_through_protected_files_and_removed(self):
         r = self.run_step("secrets")
         self.assertEqual(r.returncode, 0, r.stderr[-500:])
-        self.assertEqual([a.split("--name ")[1].split()[0] for a in self.puts()], [f"/dash-ai/staging/{n}" for n in SECRET_NAMES])
+        self.assertEqual([a.split("--name ")[1].split()[0] for a in self.puts()], list(INITIAL_PARAMETER_PATHS))
         self.assertEqual(len(self.files()), 4)
         self.assertFromWorkDir()
         self.assertEqual(len(set(self.values())), 4)
@@ -546,7 +547,7 @@ esac
         self.assertNoSecretLeft()
 
     def test_existing_secrets_are_never_regenerated_or_overwritten(self):
-        (self.state / "existing").write_text("".join(f"/dash-ai/staging/{n}\n" for n in SECRET_NAMES))
+        (self.state / "existing").write_text("\n".join(INITIAL_PARAMETER_PATHS) + "\n")
         r = self.run_step("secrets")
         self.assertEqual(r.returncode, 0, r.stderr[-500:])
         self.assertEqual(self.puts(), [])
@@ -554,7 +555,7 @@ esac
         self.assertNoSecretLeft()
 
     def test_database_url_guard_still_stops(self):
-        (self.state / "existing").write_text("".join(f"/dash-ai/staging/{n}\n" for n in SECRET_NAMES) + "/dash-ai/staging/DATABASE_URL\n")
+        (self.state / "existing").write_text("\n".join(INITIAL_PARAMETER_PATHS) + "\n" + "/dash-ai/staging/DATABASE_URL\n")
         r = self.run_step("secrets")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("DATABASE_URL exists", r.stderr)
