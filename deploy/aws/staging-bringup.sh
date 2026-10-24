@@ -56,7 +56,11 @@ die() { printf '\nSTOP: %s\n' "$*" >&2; exit 1; }
 ok() { printf 'OK    %s\n' "$*"; }
 info() { printf '      %s\n' "$*"; }
 need() { [ -n "${!1:-}" ] || die "set $1 first"; }
-awsr() { aws --region "$R" "$@"; }
+# Every AWS call goes through awsr. On Windows (Git Bash / MINGW64) the AWS CLI ends its text output lines
+# with CRLF; the trailing CR then sticks to the last value of a line (AWS::EC2::VPC<CR> in the Phase 3
+# foundation review) and breaks the exact comparisons below. Strip a CR only where it ends a line; any other
+# CR stays and fails the comparison. pipefail keeps the aws exit status.
+awsr() { aws --region "$R" "$@" | awk '{ sub(/\r$/, ""); print }'; }
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 secure_rm() { shred -u "$1" 2>/dev/null || rm -P "$1" 2>/dev/null || rm -f "$1"; }
 confirm() { # confirm "<exact phrase>"
