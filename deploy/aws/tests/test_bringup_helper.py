@@ -398,6 +398,8 @@ class AwsTextOutput(unittest.TestCase):
         self.assertEqual(out, b"a\tAWS::EC2::VPC\nx\ry\n")
 
 
+# A fixed, non-secret stand-in for the value get-parameter returns in the redis-url tests.
+STAND_IN = "standin" + "0" * 57
 SECRET_NAMES = ("REDIS_AUTH_TOKEN", "DATA_ENCRYPTION_KEY", "METRICS_TOKEN", "OPERATOR_TOKEN")
 
 
@@ -432,7 +434,7 @@ case "$*" in
   *"describe-stacks --stack-name dash-ai-staging-data"*RedisAddress*) echo master.dash-ai-staging-redis.example.euw1.cache.amazonaws.com ;;
   *"ssm describe-parameters"*)
     n=0; for e in $(cat "$S/existing" 2>/dev/null); do case "$*" in *"Values=$e "*|*"Values=$e") n=1 ;; esac; done; echo $n ;;
-  *"ssm get-parameter"*REDIS_AUTH_TOKEN*--with-decryption*) cat "$S/token" ;;
+  *"ssm get-parameter"*REDIS_AUTH_TOKEN*--with-decryption*) echo {STAND_IN} ;;
   *"ssm put-parameter"*)
     v=""; prev=""; for a in "$@"; do [ "$prev" = --value ] && v="$a"; prev="$a"; done
     case "$v" in file://*) ;; *) echo "value is not a file:// argument" >&2; exit 97 ;; esac
@@ -558,20 +560,17 @@ esac
         self.assertIn("DATABASE_URL exists", r.stderr)
 
     def test_redis_url_uses_the_same_protected_files(self):
-        token = subprocess.run(["openssl", "rand", "-hex", "32"], capture_output=True, text=True, check=True).stdout.strip()
-        (self.state / "token").write_text(token + "\n")
         r = self.run_step("redis-url")
         self.assertEqual(r.returncode, 0, r.stderr[-500:])
         self.assertEqual(len(self.puts()), 1)
         self.assertIn("--name /dash-ai/staging/REDIS_URL", self.puts()[0])
         self.assertFromWorkDir()
-        self.assertTrue(self.values() == [f"rediss://:{token}@master.dash-ai-staging-redis.example.euw1.cache.amazonaws.com:6379"], "unexpected REDIS_URL value")
+        self.assertTrue(self.values() == [f"rediss://:{STAND_IN}@master.dash-ai-staging-redis.example.euw1.cache.amazonaws.com:6379"], "unexpected REDIS_URL value")
         self.assertNotExposed(r)
-        self.assertTrue(token not in r.stdout + r.stderr + (self.state / "argv").read_text(), "token exposed")
+        self.assertTrue(STAND_IN not in r.stdout + r.stderr + (self.state / "argv").read_text(), "stand-in value exposed")
         self.assertNoSecretLeft()
 
     def test_redis_url_failure_removes_both_files(self):
-        (self.state / "token").write_text(subprocess.run(["openssl", "rand", "-hex", "32"], capture_output=True, text=True, check=True).stdout)
         (self.state / "fail-put").write_text("")
         r = self.run_step("redis-url")
         self.assertNotEqual(r.returncode, 0)
