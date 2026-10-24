@@ -539,5 +539,56 @@ class Cost(unittest.TestCase):
         self.assertIn('"countNumber":5', FOUNDATION["ApiRepository"]["Properties"]["LifecyclePolicy"]["LifecyclePolicyText"])
 
 
+class Backups(unittest.TestCase):
+    """RDS takes no automated backup while the instance is stopped, so the daily stop must not cut it off."""
+
+    BUFFER_MINUTES = 60  # a backup may run past its window's end; the stop must leave room for that
+
+    @staticmethod
+    def minutes(hhmm):
+        h, m = (int(x) for x in hhmm.split(":"))
+        assert 0 <= h < 24 and 0 <= m < 60, hhmm
+        return h * 60 + m
+
+    def daily_stop_minute(self):
+        schedule = DATA["DatabaseAutoStopSchedule"]
+        self.assertEqual(schedule["Condition"], "WithDatabaseAutoStop")
+        p = schedule["Properties"]
+        self.assertEqual(p["ScheduleExpressionTimezone"], "UTC")
+        self.assertEqual(p["FlexibleTimeWindow"], {"Mode": "OFF"})
+        m = re.fullmatch(r"cron\((\d{1,2}) (\d{1,2}) \* \* \? \*\)", p["ScheduleExpression"])
+        self.assertIsNotNone(m, "the stop must be one fixed time every day, so the ordering below holds daily")
+        minute, hour = int(m.group(1)), int(m.group(2))
+        self.assertTrue(0 <= hour < 24 and 0 <= minute < 60)
+        return hour * 60 + minute
+
+    def backup_window(self):
+        db = DATA["Database"]["Properties"]
+        self.assertGreater(db["BackupRetentionPeriod"], 0)
+        start, end = (self.minutes(t) for t in db["PreferredBackupWindow"].split("-"))
+        length = (end - start) % 1440
+        self.assertTrue(30 <= length <= 120, "RDS needs a backup window of at least 30 minutes")
+        return start, end, length
+
+    def test_backup_window_finishes_before_the_daily_stop_with_a_buffer(self):
+        start, end, length = self.backup_window()
+        stop = self.daily_stop_minute()
+        after_end = (stop - end) % 1440      # minutes from the window's end to the next stop
+        after_start = (stop - start) % 1440  # minutes from the window's start to the next stop
+        self.assertGreater(after_start, length, "the daily stop falls inside the backup window")
+        self.assertGreaterEqual(after_end, self.BUFFER_MINUTES, f"only {after_end} min between the backup window and the stop")
+        # Outside sessions the instance is stopped from the daily stop until someone starts it again, so a
+        # window long after the stop (for example 02:00 with a 01:00 stop) would usually find it stopped.
+        # Keep the window in the few hours just before the stop, the end of a day that had a session.
+        self.assertLessEqual(after_end, 4 * 60, "the backup window is far from the stop, so the database is usually stopped then")
+
+    def test_backup_and_maintenance_windows_do_not_overlap(self):
+        start, _, length = self.backup_window()
+        _, s, _, e = re.fullmatch(r"(\w{3}):(\d\d:\d\d)-(\w{3}):(\d\d:\d\d)", DATA["Database"]["Properties"]["PreferredMaintenanceWindow"]).groups()
+        ms, me = self.minutes(s), self.minutes(e)
+        backup = {(start + i) % 1440 for i in range(length)}
+        self.assertFalse(backup & {(ms + i) % 1440 for i in range((me - ms) % 1440)}, "RDS rejects overlapping windows")
+
+
 if __name__ == "__main__":
     unittest.main()
