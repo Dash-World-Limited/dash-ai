@@ -596,3 +596,81 @@ class FileArguments(unittest.TestCase):
         raw = [l.strip() for l in code if "file://" in l and not l.startswith("file_arg() {")]
         self.assertEqual(raw, [])
         self.assertFalse([l for l in code if "mktemp)" in l or 'mktemp"' in l], "a bare mktemp (system /tmp) remains")
+
+
+class RdsCaDownload(unittest.TestCase):
+    """rds-ca: curl writes the bundle where the platform's curl can open it, and the provenance checks that
+    follow still read the same file through its POSIX path.
+
+    windows = True adds a cygpath stand-in (Git Bash) and a curl stand-in that, like native MinGW curl, cannot
+    write to an MSYS path (incident 2026-10-24: curl: (23) client returned ERROR on write of 4576 bytes).
+    No network: the stand-in serves the committed bundle, or a tampered copy.
+    """
+
+    windows = False
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        root = Path(self._d.name)
+        self.work, self.state, self.systmp, bindir = root / "work", root / "state", root / "systmp", root / "bin"
+        for d in (self.work, self.state, self.systmp, bindir):
+            d.mkdir()
+        self.served = self.state / "served.pem"
+        self.served.write_bytes((ROOT / "deploy" / "container" / "certs" / "rds-eu-west-1-bundle.pem").read_bytes())
+        S = self.state
+        curl = bindir / "curl"
+        curl.write_text(f"""#!/usr/bin/env bash
+S={S}
+out=""; prev=""; for a in "$@"; do [ "$prev" = -o ] && out="$a"; prev="$a"; done
+printf '%s\\n' "$out" >>"$S/outputs"
+if [ -f "$S/windows" ]; then
+  case "$out" in W:/*) out="${{out#W:}}" ;; *) echo "curl: (23) client returned ERROR on write of 4576 bytes" >&2; exit 23 ;; esac
+fi
+cat "$S/served.pem" >"$out"
+""")
+        curl.chmod(0o755)
+        if self.windows:
+            (S / "windows").write_text("")
+            cyg = bindir / "cygpath"
+            cyg.write_text('#!/bin/sh\n[ "$1" = -m ] || exit 2\nprintf "W:%s\\n" "$2"\n')
+            cyg.chmod(0o755)
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    def run_step(self):
+        return run_helper(self.work, "rds-ca", check=False, env={
+            "PATH": f"{self.work / 'deny-aws'}:{self._d.name}/bin:{os.environ['PATH']}",
+            "DASH_REPO": str(ROOT), "TMPDIR": str(self.systmp)})
+
+    def outputs(self):
+        return (self.state / "outputs").read_text().splitlines()
+
+    def test_download_passes_provenance(self):
+        r = self.run_step()
+        self.assertEqual(r.returncode, 0, r.stderr[-500:])
+        self.assertIn("RDS CA provenance check PASSED", r.stdout)
+        self.assertIn("a11cf9a1d0aadd7db86f92cbaa496466daeb501bf1c5e429d8ce8914a01c15d6", (self.work / "review" / "rds-ca-provenance.txt").read_text())
+        [out] = self.outputs()
+        posix = out[2:] if self.windows else out
+        self.assertEqual(out.startswith("W:/"), self.windows, out)
+        self.assertTrue(posix.startswith(str(self.systmp) + "/") and posix.endswith("/eu-west-1-bundle.pem"), out)
+        self.assertEqual(list(self.systmp.iterdir()), [], "the download directory was left behind")
+
+    def test_tampered_download_still_stops(self):
+        self.served.write_bytes(self.served.read_bytes().replace(b"MII", b"MIJ", 1))
+        r = self.run_step()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("downloaded bundle SHA-256 differs: DO NOT BUILD, PUSH OR DEPLOY", r.stderr)
+        self.assertFalse((self.work / "review" / "rds-ca-provenance.txt").exists())
+
+    def test_only_the_curl_output_is_converted(self):
+        body = HELPER.read_text().split("step_rds_ca() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertEqual(body.count("native_path"), 1)
+        self.assertIn('-o "$(native_path "$f")"', body)
+        self.assertIn('got="$(sha256 "$f")"', body)
+        self.assertIn('-certfile "$f"', body)
+
+
+class WindowsRdsCaDownload(RdsCaDownload):
+    windows = True
