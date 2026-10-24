@@ -122,7 +122,9 @@ Resources:
       # The server certificate chains to this root, which is in the image's reviewed RDS bundle.
       CACertificateIdentifier: rds-ca-rsa2048-g1
       BackupRetentionPeriod: 7
-      PreferredBackupWindow: "02:00-02:30"
+      # Ends before the daily stop at 01:00 UTC (DatabaseAutoStopSchedule): RDS takes no automated backup
+      # while the instance is stopped. deploy/aws/tests/test_templates.py keeps the two in order.
+      PreferredBackupWindow: "23:00-23:30"
       PreferredMaintenanceWindow: "sun:03:00-sun:03:30"
       CopyTagsToSnapshot: true
       DeletionProtection: true
