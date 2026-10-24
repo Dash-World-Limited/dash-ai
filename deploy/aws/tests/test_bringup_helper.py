@@ -10,8 +10,10 @@ import itertools
 import json
 import os
 import re
+import signal
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -394,3 +396,203 @@ class AwsTextOutput(unittest.TestCase):
         self.assertIn("sub(/\\r$/, \"\")", body)
         out = subprocess.run(["awk", '{ sub(/\\r$/, ""); print }'], input=b"a\tAWS::EC2::VPC\r\nx\ry\r\n", capture_output=True, check=True).stdout
         self.assertEqual(out, b"a\tAWS::EC2::VPC\nx\ry\n")
+
+
+SECRET_NAMES = ("REDIS_AUTH_TOKEN", "DATA_ENCRYPTION_KEY", "METRICS_TOKEN", "OPERATOR_TOKEN")
+
+
+class SecretFiles(unittest.TestCase):
+    """secrets and redis-url: values reach the AWS CLI only through a 600 file in the protected working
+    directory, never argv, output or the system /tmp, and the file is removed on success and on failure.
+
+    windows = True adds a cygpath stand-in (Git Bash) and an aws stand-in that, like the native Windows AWS
+    CLI, cannot open an MSYS path (incident 2026-10-24: file:///tmp/tmp.l48OJHr9K7, no such file).
+    Values are random per run, live only in the test's temporary directory and are never printed.
+    """
+
+    windows = False
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        root = Path(self._d.name)
+        self.work, self.state, self.systmp = root / "work", root / "state", root / "systmp"
+        for d in (self.work, self.state, self.systmp):
+            d.mkdir()
+        bindir = root / "bin"
+        bindir.mkdir()
+        S = self.state
+        fake = bindir / "aws"
+        fake.write_text(f"""#!/usr/bin/env bash
+S={S}
+printf '%s\\n' "$*" >>"$S/argv"
+case "$*" in
+  *"sts get-caller-identity"*Account*) echo 111122223333 ;;
+  *"sts get-caller-identity"*Arn*) echo arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_Test_0/test ;;
+  *"describe-stacks --stack-name dash-ai-staging-foundation"*) echo CREATE_COMPLETE ;;
+  *"describe-stacks --stack-name dash-ai-staging-data"*RedisAddress*) echo master.dash-ai-staging-redis.example.euw1.cache.amazonaws.com ;;
+  *"ssm describe-parameters"*)
+    n=0; for e in $(cat "$S/existing" 2>/dev/null); do case "$*" in *"Values=$e "*|*"Values=$e") n=1 ;; esac; done; echo $n ;;
+  *"ssm get-parameter"*REDIS_AUTH_TOKEN*--with-decryption*) cat "$S/token" ;;
+  *"ssm put-parameter"*)
+    v=""; prev=""; for a in "$@"; do [ "$prev" = --value ] && v="$a"; prev="$a"; done
+    case "$v" in file://*) ;; *) echo "value is not a file:// argument" >&2; exit 97 ;; esac
+    p="${{v#file://}}"
+    if [ -f "$S/windows" ]; then
+      case "$p" in W:/*) p="${{p#W:}}" ;; *) echo "aws: [ERROR]: Unable to load paramfile $v: [Errno 2] No such file or directory" >&2; exit 252 ;; esac
+    fi
+    printf '%s %s %s\\n' "$p" "$(stat -c %a "$p")" "$(stat -c %a "$(dirname "$p")")" >>"$S/files"
+    {{ cat "$p"; echo; }} >>"$S/values"
+    [ ! -f "$S/fail-put" ] || {{ echo "An error occurred (AccessDeniedException)" >&2; exit 254; }} ;;
+  *) echo "unexpected aws call: $*" >&2; exit 99 ;;
+esac
+""")
+        fake.chmod(0o755)
+        if self.windows:
+            (S / "windows").write_text("")
+            cyg = bindir / "cygpath"
+            cyg.write_text('#!/bin/sh\n[ "$1" = -m ] || exit 2\nprintf "W:%s\\n" "$2"\n')
+            cyg.chmod(0o755)
+        self.env = {"PATH": f"{bindir}:{os.environ['PATH']}", "EXPECTED_ACCOUNT_ID": "111122223333",
+                    "AWS_PROFILE": "test", "TMPDIR": str(self.systmp)}
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    def run_step(self, *args, stdin="\n"):
+        e = {"PATH": os.environ["PATH"], "HOME": str(self.work), "EXPECTED_SHA": "0" * 40, "DASH_STAGING_DIR": str(self.work)}
+        e.update(self.env)
+        return subprocess.run(["bash", str(HELPER), *args], env=e, input=stdin, capture_output=True, text=True)
+
+    def puts(self):
+        argv = (self.state / "argv").read_text().splitlines() if (self.state / "argv").exists() else []
+        return [a for a in argv if "ssm put-parameter" in a]
+
+    def values(self):
+        p = self.state / "values"
+        return [v for v in p.read_text().splitlines() if v] if p.exists() else []
+
+    def files(self):
+        p = self.state / "files"
+        return [l.split() for l in p.read_text().splitlines()] if p.exists() else []
+
+    def assertNoSecretLeft(self):
+        tmp = self.work / "tmp"
+        self.assertEqual(sorted(os.listdir(tmp)) if tmp.exists() else [], [], "a secret file was left in the working directory")
+        self.assertEqual(os.listdir(self.systmp), [], "the system temporary directory was used")
+
+    def assertNotExposed(self, r):
+        argv = (self.state / "argv").read_text()
+        for v in self.values():
+            self.assertTrue(v not in argv and v not in r.stdout and v not in r.stderr, "a secret value was exposed")
+
+    def assertFromWorkDir(self):
+        for path, mode, dmode in self.files():
+            self.assertTrue(path.startswith(str(self.work / "tmp") + "/"), "secret file outside the working directory")
+            self.assertEqual((mode, dmode), ("600", "700"))
+        if self.windows:
+            for a in self.puts():
+                self.assertIn("--value file://W:/", a)
+
+    def test_secrets_are_written_through_protected_files_and_removed(self):
+        r = self.run_step("secrets")
+        self.assertEqual(r.returncode, 0, r.stderr[-500:])
+        self.assertEqual([a.split("--name ")[1].split()[0] for a in self.puts()], [f"/dash-ai/staging/{n}" for n in SECRET_NAMES])
+        self.assertEqual(len(self.files()), 4)
+        self.assertFromWorkDir()
+        self.assertEqual(len(set(self.values())), 4)
+        self.assertNotExposed(r)
+        self.assertNoSecretLeft()
+        self.assertIn("ESCROW NOW: open " + str(self.work / "tmp") + "/secret.", r.stdout)
+        self.assertIn("DATABASE_URL does not exist", r.stdout)
+
+    def test_a_failed_put_parameter_removes_the_file(self):
+        (self.state / "fail-put").write_text("")
+        r = self.run_step("secrets")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(len(self.puts()), 1)
+        self.assertFromWorkDir()
+        self.assertNotExposed(r)
+        self.assertNoSecretLeft()
+
+    def test_a_failure_after_the_escrow_pause_removes_the_key_file(self):
+        (self.state / "existing").write_text("/dash-ai/staging/REDIS_AUTH_TOKEN\n")
+        (self.state / "fail-put").write_text("")
+        r = self.run_step("secrets")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("ESCROW NOW", r.stdout)
+        self.assertIn("/dash-ai/staging/DATA_ENCRYPTION_KEY", self.puts()[0])
+        self.assertNotExposed(r)
+        self.assertNoSecretLeft()
+
+    def test_stopping_at_the_escrow_pause_removes_the_key_file(self):
+        e = {"PATH": os.environ["PATH"], "HOME": str(self.work), "EXPECTED_SHA": "0" * 40, "DASH_STAGING_DIR": str(self.work)}
+        e.update(self.env)
+        (self.state / "existing").write_text("/dash-ai/staging/REDIS_AUTH_TOKEN\n")
+        p = subprocess.Popen(["bash", str(HELPER), "secrets"], env=e, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            for _ in range(200):
+                if any(n.startswith("secret.") for n in os.listdir(self.work / "tmp")) if (self.work / "tmp").exists() else False:
+                    break
+                time.sleep(0.05)
+            time.sleep(0.3)  # the generator has written the file; the helper now waits at the escrow prompt
+            p.send_signal(signal.SIGTERM)
+            p.communicate(timeout=20)
+        finally:
+            p.kill() if p.poll() is None else None
+        self.assertEqual(p.returncode, 130)
+        self.assertEqual(self.puts(), [])
+        self.assertNoSecretLeft()
+
+    def test_existing_secrets_are_never_regenerated_or_overwritten(self):
+        (self.state / "existing").write_text("".join(f"/dash-ai/staging/{n}\n" for n in SECRET_NAMES))
+        r = self.run_step("secrets")
+        self.assertEqual(r.returncode, 0, r.stderr[-500:])
+        self.assertEqual(self.puts(), [])
+        self.assertEqual(r.stdout.count("already exists: left unchanged (never overwritten)"), 4)
+        self.assertNoSecretLeft()
+
+    def test_database_url_guard_still_stops(self):
+        (self.state / "existing").write_text("".join(f"/dash-ai/staging/{n}\n" for n in SECRET_NAMES) + "/dash-ai/staging/DATABASE_URL\n")
+        r = self.run_step("secrets")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("DATABASE_URL exists", r.stderr)
+
+    def test_redis_url_uses_the_same_protected_files(self):
+        token = subprocess.run(["openssl", "rand", "-hex", "32"], capture_output=True, text=True, check=True).stdout.strip()
+        (self.state / "token").write_text(token + "\n")
+        r = self.run_step("redis-url")
+        self.assertEqual(r.returncode, 0, r.stderr[-500:])
+        self.assertEqual(len(self.puts()), 1)
+        self.assertIn("--name /dash-ai/staging/REDIS_URL", self.puts()[0])
+        self.assertFromWorkDir()
+        self.assertTrue(self.values() == [f"rediss://:{token}@master.dash-ai-staging-redis.example.euw1.cache.amazonaws.com:6379"], "unexpected REDIS_URL value")
+        self.assertNotExposed(r)
+        self.assertTrue(token not in r.stdout + r.stderr + (self.state / "argv").read_text(), "token exposed")
+        self.assertNoSecretLeft()
+
+    def test_redis_url_failure_removes_both_files(self):
+        (self.state / "token").write_text(subprocess.run(["openssl", "rand", "-hex", "32"], capture_output=True, text=True, check=True).stdout)
+        (self.state / "fail-put").write_text("")
+        r = self.run_step("redis-url")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotExposed(r)
+        self.assertNoSecretLeft()
+
+    def test_existing_redis_url_is_left_unchanged(self):
+        (self.state / "existing").write_text("/dash-ai/staging/REDIS_URL\n")
+        r = self.run_step("redis-url")
+        self.assertEqual(r.returncode, 0, r.stderr[-500:])
+        self.assertEqual(self.puts(), [])
+        self.assertNoSecretLeft()
+
+
+class WindowsSecretFiles(SecretFiles):
+    windows = True
+
+
+class FileArguments(unittest.TestCase):
+    def test_every_file_argument_goes_through_file_arg(self):
+        code = [l for l in HELPER.read_text().splitlines() if not l.lstrip().startswith("#")]
+        raw = [l.strip() for l in code if "file://" in l and not l.startswith("file_arg() {")]
+        self.assertEqual(raw, [])
+        self.assertFalse([l for l in code if "mktemp)" in l or 'mktemp"' in l], "a bare mktemp (system /tmp) remains")
