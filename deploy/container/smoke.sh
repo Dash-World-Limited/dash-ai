@@ -22,6 +22,10 @@ PG="$RUN_ID-pg"
 REDIS="$RUN_ID-redis"
 API="$RUN_ID-api"
 WORK="$(mktemp -d)"
+# Git Bash/MSYS exposes paths such as /tmp/x to shell tools, but native Windows programs such as
+# openssl.exe need the corresponding Windows path. Linux/macOS have no cygpath, so this is identity.
+native_path() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
+OPENSSL_WORK="$(native_path "$WORK")"
 chmod 0755 "$WORK" # the PostgreSQL and Redis containers read their throwaway certificates from it
 API_PORT="${SMOKE_API_PORT:-18787}"
 BASE="http://127.0.0.1:$API_PORT"
@@ -44,16 +48,16 @@ json() { python3 -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.arg
 
 # --- Throwaway TLS material: a test CA and a PostgreSQL server certificate for the name "pg" -----------
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=DASH smoke test CA" \
-  -keyout "$WORK/ca.key" -out "$WORK/ca.pem" 2>/dev/null
-openssl req -newkey rsa:2048 -nodes -subj "/CN=pg" -keyout "$WORK/server.key" -out "$WORK/server.csr" 2>/dev/null
+  -keyout "$OPENSSL_WORK/ca.key" -out "$OPENSSL_WORK/ca.pem" 2>/dev/null
+openssl req -newkey rsa:2048 -nodes -subj "/CN=pg" -keyout "$OPENSSL_WORK/server.key" -out "$OPENSSL_WORK/server.csr" 2>/dev/null
 printf 'subjectAltName=DNS:pg\n' >"$WORK/san.ext"
-openssl x509 -req -in "$WORK/server.csr" -CA "$WORK/ca.pem" -CAkey "$WORK/ca.key" -CAcreateserial \
-  -days 1 -extfile "$WORK/san.ext" -out "$WORK/server.pem" 2>/dev/null
+openssl x509 -req -in "$OPENSSL_WORK/server.csr" -CA "$OPENSSL_WORK/ca.pem" -CAkey "$OPENSSL_WORK/ca.key" -CAcreateserial \
+  -days 1 -extfile "$OPENSSL_WORK/san.ext" -out "$OPENSSL_WORK/server.pem" 2>/dev/null
 # Redis gets a certificate from the same CA (ElastiCache in-transit encryption: rediss://).
-openssl req -newkey rsa:2048 -nodes -subj "/CN=redis" -keyout "$WORK/redis.key" -out "$WORK/redis.csr" 2>/dev/null
+openssl req -newkey rsa:2048 -nodes -subj "/CN=redis" -keyout "$OPENSSL_WORK/redis.key" -out "$OPENSSL_WORK/redis.csr" 2>/dev/null
 printf 'subjectAltName=DNS:redis\n' >"$WORK/redis-san.ext"
-openssl x509 -req -in "$WORK/redis.csr" -CA "$WORK/ca.pem" -CAkey "$WORK/ca.key" -CAcreateserial \
-  -days 1 -extfile "$WORK/redis-san.ext" -out "$WORK/redis.pem" 2>/dev/null
+openssl x509 -req -in "$OPENSSL_WORK/redis.csr" -CA "$OPENSSL_WORK/ca.pem" -CAkey "$OPENSSL_WORK/ca.key" -CAcreateserial \
+  -days 1 -extfile "$OPENSSL_WORK/redis-san.ext" -out "$OPENSSL_WORK/redis.pem" 2>/dev/null
 chmod 0644 "$WORK"/*.pem "$WORK/server.key" "$WORK/redis.key"
 
 PG_PASSWORD="$(openssl rand -hex 16)"
