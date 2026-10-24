@@ -63,10 +63,13 @@ need() { [ -n "${!1:-}" ] || die "set $1 first"; }
 awsr() { aws --region "$R" "$@" | awk '{ sub(/\r$/, ""); print }'; }
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 secure_rm() { shred -u "$1" 2>/dev/null || rm -P "$1" 2>/dev/null || rm -f "$1"; }
-# file_arg PATH: the file://PATH argument the AWS CLI reads. On Windows (Git Bash / MINGW64) the AWS CLI is a
-# native program and cannot open MSYS paths such as /tmp/x (incident 2026-10-24, first secret not stored);
-# cygpath -m gives the same file as C:/... . Elsewhere there is no cygpath and the path is used as it is.
-file_arg() { if command -v cygpath >/dev/null 2>&1; then printf 'file://%s' "$(cygpath -m "$1")"; else printf 'file://%s' "$1"; fi; }
+# native_path PATH: PATH as a native Windows program (the AWS CLI, MinGW curl) can open it. On Windows (Git Bash /
+# MINGW64) those programs cannot open MSYS paths such as /tmp/x (incidents 2026-10-24: first secret not stored;
+# rds-ca curl error 23); cygpath -m gives the same file as C:/... . Elsewhere there is no cygpath and the path
+# is used as it is. Only arguments handed to a native program go through it; bash tools keep the MSYS path.
+native_path() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
+# file_arg PATH: the file://PATH argument the AWS CLI reads.
+file_arg() { printf 'file://%s' "$(native_path "$1")"; }
 # Files holding a secret live in $WORK_DIR/tmp (mode 700, files 600), never in the system /tmp, and are
 # removed when the helper exits for any reason: success, a failed aws call (set -e), STOP, Ctrl-C.
 SECRET_FILES=()
@@ -407,7 +410,7 @@ step_rds_ca() {
   need DASH_REPO
   local d f want got fp
   d="$(mktemp -d)"; f="$d/eu-west-1-bundle.pem"
-  curl -fsS --proto '=https' --tlsv1.2 -o "$f" https://truststore.pki.rds.amazonaws.com/eu-west-1/eu-west-1-bundle.pem
+  curl -fsS --proto '=https' --tlsv1.2 -o "$(native_path "$f")" https://truststore.pki.rds.amazonaws.com/eu-west-1/eu-west-1-bundle.pem
   want=a11cf9a1d0aadd7db86f92cbaa496466daeb501bf1c5e429d8ce8914a01c15d6
   got="$(sha256 "$f")"; info "downloaded bundle SHA-256: $got"
   [ "$got" = "$want" ] || die "downloaded bundle SHA-256 differs: DO NOT BUILD, PUSH OR DEPLOY; report to the owner"
